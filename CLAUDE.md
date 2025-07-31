@@ -95,4 +95,5 @@ deadcode -test ./...
 - If you want to know if some Go code is likely to compile, use `go vet ./...` instead of `go build ./...`
 - If you're writing tests and the tests are failing, before changing the test code, make sure it's the _test_ that needs fixing and not the _implementation_.
 - Tests should be comprehensive and cover failure modes, resource exhaustion, and the _critical_ edge cases.
+- To run the benchmarks we care _most_ about not regressing, use `mise run bench:core`
 - Run `go vet ./...`, `go test ./...`, `go test ./... -bench=. -benchmem` after significant changes.

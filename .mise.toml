@@ -42,8 +42,20 @@ description = "Run only integration tests"
 run = ["go test -v -tags=integration ./... -race -timeout 30s -run=Integration"]
 
 [tasks.bench]
-description = "Run benchmarks"
+description = "Run all benchmarks (2-3 minutes)"
 run = ["go test ./... -bench=. -benchmem -run=^$"]
+
+[tasks."bench:core"]
+description = "Core benchmarks: 1/10/100/1K/10K entries, single vs multi-process, acks (~25s)"
+run = [
+  """go test ./... -bench='BenchmarkWrite_(SingleEntry|SmallBatch|LargeBatch|HugeBatch|MegaBatch)$|BenchmarkMultiProcessThroughput/(SingleEntry|SmallBatch|LargeBatch|HugeBatch|MegaBatch)$|BenchmarkConsumerAck/(SingleAck|BatchAckMultiShard)$' -benchmem -run=^$ -benchtime=1s""",
+]
+
+[tasks."bench:quick"]
+description = "Quick comparison: 1/10/100/1K/10K entries, single vs multi-process (~10s)"
+run = [
+  """go test ./... -bench='BenchmarkWrite_(SingleEntry|SmallBatch|LargeBatch|HugeBatch|MegaBatch)$|BenchmarkMultiProcessThroughput/(SingleEntry|SmallBatch|LargeBatch|HugeBatch|MegaBatch)$|BenchmarkConsumerAck/SingleAck$' -benchmem -run=^$ -benchtime=0.5s""",
+]
 
 [settings]
 experimental = true

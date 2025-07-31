@@ -1992,7 +1992,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 		b.ReportMetric(entriesPerSec/1000, "K_entries_per_sec")
 	})
 
-	b.Run("Batch10", func(b *testing.B) {
+	b.Run("SmallBatch", func(b *testing.B) {
 		dir := b.TempDir()
 		config := MultiProcessConfig()
 		client, err := NewClientWithConfig(dir, config)
@@ -2022,7 +2022,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 		b.ReportMetric(entriesPerSec/1000, "K_entries_per_sec")
 	})
 
-	b.Run("Batch100", func(b *testing.B) {
+	b.Run("LargeBatch", func(b *testing.B) {
 		dir := b.TempDir()
 		config := MultiProcessConfig()
 		client, err := NewClientWithConfig(dir, config)
@@ -2052,7 +2052,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 		b.ReportMetric(entriesPerSec/1000, "K_entries_per_sec")
 	})
 
-	b.Run("Batch1000", func(b *testing.B) {
+	b.Run("HugeBatch", func(b *testing.B) {
 		dir := b.TempDir()
 		config := MultiProcessConfig()
 		client, err := NewClientWithConfig(dir, config)
@@ -2078,6 +2078,36 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 		// Calculate entries/sec (each operation writes 1000 entries)
 		totalEntries := float64(b.N * 1000)
+		entriesPerSec := totalEntries / b.Elapsed().Seconds()
+		b.ReportMetric(entriesPerSec/1000, "K_entries_per_sec")
+	})
+
+	b.Run("MegaBatch", func(b *testing.B) {
+		dir := b.TempDir()
+		config := MultiProcessConfig()
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer client.Close()
+
+		batch := make([][]byte, 10000)
+		for i := 0; i < 10000; i++ {
+			batch[i] = entry
+		}
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, batch)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		// Calculate entries/sec (each operation writes 10000 entries)
+		totalEntries := float64(b.N * 10000)
 		entriesPerSec := totalEntries / b.Elapsed().Seconds()
 		b.ReportMetric(entriesPerSec/1000, "K_entries_per_sec")
 	})
