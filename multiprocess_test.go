@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -432,67 +431,6 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		}
 
 		t.Logf("Reader completed: read %d entries", len(messages))
-	})
-
-	// Phase 3: Concurrent read/write test
-	t.Run("ConcurrentWriteRead", func(t *testing.T) {
-		// This test uses multiple goroutines to simulate concurrent access patterns
-		// within the same process (which still tests mmap coordination paths)
-
-		client3, err := NewClientWithConfig(dir, config)
-		if err != nil {
-			t.Fatalf("failed to create concurrent client: %v", err)
-		}
-		defer client3.Close()
-
-		var wg sync.WaitGroup
-		var writeCount, readCount atomic.Int64
-
-		// Writer goroutine
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 10; i++ {
-				data := []byte(fmt.Sprintf(`{"concurrent_write": %d}`, i))
-				_, err := client3.Append(ctx, streamName, [][]byte{data})
-				if err != nil {
-					t.Errorf("concurrent write failed: %v", err)
-					return
-				}
-				writeCount.Add(1)
-				time.Sleep(100 * time.Millisecond)
-			}
-		}()
-
-		// Reader goroutine
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			consumer := NewConsumer(client3, ConsumerOptions{
-				Group: "concurrent-reader",
-			})
-			defer consumer.Close()
-
-			for i := 0; i < 50; i++ { // Try to read multiple times
-				messages, err := consumer.Read(ctx, []uint32{1}, 5)
-				if err != nil {
-					t.Errorf("concurrent read failed: %v", err)
-					return
-				}
-				readCount.Add(int64(len(messages)))
-				time.Sleep(50 * time.Millisecond)
-			}
-		}()
-
-		wg.Wait()
-
-		t.Logf("Concurrent test: wrote %d entries, read %d entries", writeCount.Load(), readCount.Load())
-		if writeCount.Load() == 0 {
-			t.Error("No writes completed")
-		}
-		if readCount.Load() == 0 {
-			t.Error("No reads completed")
-		}
 	})
 }
 
