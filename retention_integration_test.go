@@ -6,6 +6,7 @@ package comet
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
@@ -254,4 +255,117 @@ func TestRetentionWithConcurrentFileRotation(t *testing.T) {
 	if len(messages) == 0 {
 		t.Error("Expected to read messages after concurrent retention")
 	}
+}
+
+// TestIndexRebuildIntegration tests index rebuilding across actual separate processes
+func TestIndexRebuildIntegration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	// Build the test worker binary
+	workerBinary := filepath.Join(dir, "test_worker")
+	cmd := exec.Command("go", "build", "-o", workerBinary, "./cmd/test_worker")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to build test worker: %v", err)
+	}
+
+	// Create initial data with the main process
+	config := MultiProcessConfig()
+	config.Storage.MaxFileSize = 1024 // Small files to create multiple
+	client, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+
+	streamName := "events:v1:shard:0001"
+
+	// Write initial data to create multiple files
+	for i := 0; i < 20; i++ {
+		data := []byte(fmt.Sprintf(`{"id": %d, "process": "main", "data": "initial rebuild test data with padding to make it bigger"}`, i))
+		_, err := client.Append(ctx, streamName, [][]byte{data})
+		if err != nil {
+			t.Fatalf("failed to write initial data: %v", err)
+		}
+	}
+
+	// Force sync and get initial state
+	client.Sync(ctx)
+	shard, _ := client.getOrCreateShard(1)
+	shard.mu.Lock()
+	shard.persistIndex()
+	initialFiles := len(shard.index.Files)
+	initialEntries := shard.index.CurrentEntryNumber
+	t.Logf("Initial state: %d files, %d entries", initialFiles, initialEntries)
+	shard.mu.Unlock()
+
+	client.Close()
+
+	if initialFiles < 2 {
+		t.Fatalf("Need at least 2 files for this test, got %d", initialFiles)
+	}
+
+	// Delete index and coordination files to force rebuild
+	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	coordPath := filepath.Join(dir, "shard-0001", "coordination.state")
+	sequencePath := filepath.Join(dir, "shard-0001", "sequence.state")
+
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(coordPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sequencePath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+
+	t.Log("Deleted index and coordination files")
+
+	// Start a worker process that will need to rebuild the index
+	args := []string{
+		"index-rebuild-test",
+		"--dir", dir,
+		"--stream", streamName,
+		"--initial-files", fmt.Sprintf("%d", initialFiles),
+		"--initial-entries", fmt.Sprintf("%d", initialEntries),
+	}
+
+	cmd = exec.Command(workerBinary, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Worker process failed: %v\nOutput: %s", err, output)
+	}
+
+	t.Logf("Worker output: %s", output)
+
+	// Verify the index was rebuilt by checking if we can read from a new process
+	client2, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatalf("failed to create verification client: %v", err)
+	}
+	defer client2.Close()
+
+	// Check that index file exists again
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		t.Error("Index file was not recreated by worker process")
+	}
+
+	// Verify we can read data (proving the index rebuild worked)
+	consumer := NewConsumer(client2, ConsumerOptions{Group: "verify-rebuild"})
+	defer consumer.Close()
+
+	messages, err := consumer.Read(ctx, []uint32{1}, 50)
+	if err != nil {
+		t.Fatalf("failed to read after index rebuild: %v", err)
+	}
+
+	if len(messages) < 20 {
+		t.Errorf("Expected to read at least 20 messages after rebuild, got %d", len(messages))
+	}
+
+	t.Logf("Successfully verified index rebuild across processes: read %d messages", len(messages))
 }

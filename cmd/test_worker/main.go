@@ -18,6 +18,11 @@ func main() {
 		runRetentionTest()
 		return
 	}
+	
+	if len(os.Args) > 1 && os.Args[1] == "index-rebuild-test" {
+		runIndexRebuildTest()
+		return
+	}
 
 	var (
 		mode     = flag.String("mode", "writer", "Mode: writer, reader, or benchmark")
@@ -254,4 +259,62 @@ func runRetentionTest() {
 	client.Sync(ctx)
 
 	fmt.Printf("Worker %d completed successfully\n", *workerID)
+}
+
+func runIndexRebuildTest() {
+	// Parse index rebuild test specific flags
+	rebuildCmd := flag.NewFlagSet("index-rebuild-test", flag.ExitOnError)
+	dir := rebuildCmd.String("dir", "", "Data directory")
+	streamName := rebuildCmd.String("stream", "", "Stream name")
+	initialFiles := rebuildCmd.Int("initial-files", 0, "Expected initial file count")
+	initialEntries := rebuildCmd.Int("initial-entries", 0, "Expected initial entry count")
+
+	// Skip the command name
+	rebuildCmd.Parse(os.Args[2:])
+
+	if *dir == "" || *streamName == "" {
+		log.Fatal("--dir and --stream are required")
+	}
+
+	log.Printf("Starting index rebuild test in separate process")
+	log.Printf("Expected: %d files, %d entries", *initialFiles, *initialEntries)
+
+	config := comet.MultiProcessConfig()
+	client, err := comet.NewClientWithConfig(*dir, config)
+	if err != nil {
+		log.Fatalf("Failed to create client (this should trigger index rebuild): %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+
+	// Access shard to verify the index was rebuilt
+	// This will trigger the getOrCreateShard call which should rebuild if needed
+	time.Sleep(100 * time.Millisecond) // Give a moment for initialization
+
+	// Verify we can read the existing data
+	consumer := comet.NewConsumer(client, comet.ConsumerOptions{
+		Group: "rebuild-test-worker",
+	})
+	defer consumer.Close()
+
+	messages, err := consumer.Read(ctx, []uint32{1}, 50)
+	if err != nil {
+		log.Fatalf("Failed to read after index rebuild: %v", err)
+	}
+
+	log.Printf("Successfully read %d messages after index rebuild", len(messages))
+
+	// Verify we can write new data after rebuild
+	for i := 0; i < 3; i++ {
+		data := []byte(fmt.Sprintf(`{"id": %d, "test": "post_rebuild_write", "process": "worker"}`, i))
+		_, err := client.Append(ctx, *streamName, [][]byte{data})
+		if err != nil {
+			log.Fatalf("Failed to write after index rebuild: %v", err)
+		}
+	}
+
+	log.Printf("Successfully wrote new data after index rebuild")
+
+	fmt.Printf("Index rebuild test completed successfully: read %d messages, wrote 3 new entries\n", len(messages))
 }

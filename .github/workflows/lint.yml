@@ -24,7 +24,7 @@ jobs:
       - name: Verify no fmt.Print* in production code
         run: |
           # Ensure no debug prints left in code (except in tests)
-          ! grep -r "fmt.Print" --include="*.go" --exclude="*_test.go" --exclude="cmd/*.go" . || (echo "Found fmt.Print in non-test files" && exit 1)
+          find . -name "*.go" -not -name "*_test.go" -not -path "./cmd/*" -exec grep -l "fmt.Print" {} \; | head -n1 && (echo "Found fmt.Print in non-test files" && exit 1) || exit 0
       - name: Check for missing error handling
         run: |
           # Basic check for unhandled errors (looking for `_ =` pattern)

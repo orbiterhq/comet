@@ -351,3 +351,144 @@ func TestScanFileForEntries(t *testing.T) {
 		t.Error("expected at least one index node")
 	}
 }
+
+// TestIndexRebuildMultiProcess tests index rebuilding in multi-process mode
+func TestIndexRebuildMultiProcess(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	
+	// Create initial client in multi-process mode and write data
+	config := MultiProcessConfig()
+	config.Storage.MaxFileSize = 2048 // Small files to force rotation
+	client, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	// Write test data across multiple files
+	streamName := "events:v1:shard:0001"
+	numEntries := 50
+	for i := 0; i < numEntries; i++ {
+		// Use larger data to force file rotation
+		data := []byte(fmt.Sprintf(`{"id": %d, "test": "multiprocess_rebuild", "data": "entry_%d", "padding": "this is extra data to make entries larger and force file rotation more easily"}`, i, i))
+		_, err := client.Append(ctx, streamName, [][]byte{data})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	
+	// Force file rotation to create multiple files
+	shard, _ := client.getOrCreateShard(1)
+	shard.mu.Lock()
+	err = shard.rotateFile(&client.metrics, &config)
+	shard.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	// Write more data in the new file
+	for i := numEntries; i < numEntries+15; i++ {
+		data := []byte(fmt.Sprintf(`{"id": %d, "test": "multiprocess_rebuild", "data": "entry_%d", "padding": "additional data"}`, i, i))
+		_, err := client.Append(ctx, streamName, [][]byte{data})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	
+	// Force persistence and get state before closing
+	shard.mu.Lock()
+	shard.persistIndex()
+	fileCount := len(shard.index.Files)
+	totalEntries := shard.index.CurrentEntryNumber
+	t.Logf("Before rebuild: %d files, %d entries", fileCount, totalEntries)
+	shard.mu.Unlock()
+	
+	if fileCount < 2 {
+		t.Fatalf("Expected at least 2 files, got %d", fileCount)
+	}
+	
+	client.Close()
+
+	// Delete both index file and coordination state to force complete rebuild
+	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	coordPath := filepath.Join(dir, "shard-0001", "coordination.state")
+	
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(coordPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	
+	// Create new client in multi-process mode - should rebuild everything
+	client2, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client2.Close()
+	
+	// Verify index was rebuilt correctly
+	shard2, _ := client2.getOrCreateShard(1)
+	shard2.mu.RLock()
+	rebuiltFiles := len(shard2.index.Files)
+	rebuiltEntries := shard2.index.CurrentEntryNumber
+	hasSequenceState := shard2.sequenceState != nil
+	hasMmapState := shard2.mmapState != nil
+	t.Logf("After rebuild: %d files, %d entries", rebuiltFiles, rebuiltEntries)
+	shard2.mu.RUnlock()
+	
+	// The rebuild should find at least as many files as we had before
+	if rebuiltFiles < fileCount {
+		t.Errorf("Expected at least %d files after multi-process rebuild, got %d", fileCount, rebuiltFiles)
+	}
+	
+	// Entry count should be at least what we had (might be more due to background processes)
+	if rebuiltEntries < totalEntries {
+		t.Errorf("Expected at least %d entries after multi-process rebuild, got %d", totalEntries, rebuiltEntries)
+	}
+	
+	// Verify multi-process coordination state was rebuilt
+	if !hasSequenceState {
+		t.Error("SequenceState should be initialized in multi-process mode")
+	}
+	
+	if !hasMmapState {
+		t.Error("MmapState should be initialized in multi-process mode")
+	}
+	
+	// Verify we can read data after rebuild (at least what we wrote)
+	consumer := NewConsumer(client2, ConsumerOptions{Group: "test-mp"})
+	defer consumer.Close()
+	
+	messages, err := consumer.Read(ctx, []uint32{1}, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	// Should be able to read at least the 65 messages we wrote
+	if len(messages) < 65 {
+		t.Errorf("Expected to read at least 65 messages after multi-process rebuild, got %d", len(messages))
+	}
+	t.Logf("Successfully read %d messages after rebuild", len(messages))
+	
+	// Verify binary index was rebuilt
+	shard2.mu.RLock()
+	indexNodes := len(shard2.index.BinaryIndex.Nodes)
+	shard2.mu.RUnlock()
+	
+	if indexNodes == 0 {
+		t.Error("Binary index nodes were not rebuilt in multi-process mode")
+	}
+	
+	// Test that we can continue writing after rebuild
+	for i := 0; i < 5; i++ {
+		data := []byte(fmt.Sprintf(`{"id": %d, "test": "post_rebuild_write"}`, i))
+		_, err := client2.Append(ctx, streamName, [][]byte{data})
+		if err != nil {
+			t.Fatalf("Failed to write after multi-process rebuild: %v", err)
+		}
+	}
+	
+	t.Log("Multi-process index rebuild completed successfully")
+}
+
