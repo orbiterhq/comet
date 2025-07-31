@@ -673,11 +673,21 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 
 	// In multi-process mode, check if we need to rebuild index AFTER reloading
 	if shard.mmapState != nil {
-		// Need write lock for rebuild
+		// Check if rebuild needed while holding read lock
+		needsRebuild := shard.checkIfRebuildNeeded()
 		shard.mu.RUnlock()
-		shard.mu.Lock()
-		shard.lazyRebuildIndexIfNeeded(c.config, filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shard.shardID)))
-		shard.mu.Unlock()
+		
+		if needsRebuild {
+			// Acquire write lock for rebuild
+			shard.mu.Lock()
+			// Double-check after acquiring write lock
+			if shard.checkIfRebuildNeeded() {
+				shard.lazyRebuildIndexIfNeeded(c.config, filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shard.shardID)))
+			}
+			shard.mu.Unlock()
+		}
+		
+		// Re-acquire read lock
 		shard.mu.RLock()
 	}
 
@@ -1505,6 +1515,20 @@ func (s *Shard) loadIndexWithRetry() error {
 // lazyRebuildIndexIfNeeded checks if the index needs rebuilding based on file sizes
 // This is called on read path in multi-process mode to ensure consistency
 // Caller must hold the shard lock
+// checkIfRebuildNeeded checks if the index needs rebuilding without acquiring locks
+// Must be called while holding at least a read lock
+func (s *Shard) checkIfRebuildNeeded() bool {
+	if s.mmapWriter == nil || s.mmapWriter.CoordinationState() == nil {
+		return false
+	}
+	
+	coordState := s.mmapWriter.CoordinationState()
+	currentTotalWrites := coordState.TotalWrites.Load()
+	
+	// Check if total writes in coordination state exceed what we have in index
+	return currentTotalWrites > s.index.CurrentEntryNumber
+}
+
 func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 	if len(s.index.Files) == 0 {
 		return
