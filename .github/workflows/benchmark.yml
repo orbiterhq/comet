@@ -35,7 +35,13 @@ jobs:
         run: mise run setup
       - name: Run benchmarks (PR)
         run: |
-          go test -bench=. -benchmem -benchtime=1s -count=3 | tee new.bench
+          echo "Running benchmarks on PR branch..."
+          # benchtime=100ms: Run each benchmark for 100ms (enough for thousands of iterations)
+          # count=3: Run each benchmark 3 times for statistical validity (required by benchstat)
+          # 2>&1: Capture both stdout and stderr to see any errors
+          go test -bench="BenchmarkWrite_|BenchmarkConsumer_" -benchmem -benchtime=100ms -count=3 -run=^$ -timeout=5m > new.bench 2>&1
+          echo "Benchmark results:"
+          cat new.bench
       - name: Checkout base branch
         if: github.event_name == 'pull_request'
         run: |
@@ -50,7 +56,10 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           mise run setup
-          go test -bench=. -benchmem -benchtime=1s -count=3 | tee old.bench
+          echo "Running benchmarks on base branch..."
+          go test -bench="BenchmarkWrite_|BenchmarkConsumer_" -benchmem -benchtime=100ms -count=3 -run=^$ -timeout=5m > old.bench 2>&1
+          echo "Base branch benchmark results:"
+          cat old.bench
       - name: Compare benchmarks
         if: github.event_name == 'pull_request'
         run: |
