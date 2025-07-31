@@ -394,9 +394,14 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 		CurrentWriteOffset: shard.index.CurrentWriteOffset,
 		CurrentEntryNumber: shard.index.CurrentEntryNumber,
 		ConsumerOffsets:    make(map[string]int64),
-		BinaryIndex:        shard.index.BinaryIndex, // This is immutable once created
+		BinaryIndex: BinarySearchableIndex{
+			IndexInterval: shard.index.BinaryIndex.IndexInterval,
+			MaxNodes:      shard.index.BinaryIndex.MaxNodes,
+			Nodes:         make([]EntryIndexNode, len(shard.index.BinaryIndex.Nodes)),
+		},
 	}
 	copy(indexCopy.Files, shard.index.Files)
+	copy(indexCopy.BinaryIndex.Nodes, shard.index.BinaryIndex.Nodes)
 	maps.Copy(indexCopy.ConsumerOffsets, shard.index.ConsumerOffsets)
 	shard.mu.RUnlock()
 
@@ -421,11 +426,16 @@ func (c *Consumer) findEntryPosition(shard *Shard, entryNum int64) (EntryPositio
 	if len(shard.index.BinaryIndex.Nodes) > 0 {
 		// Get the best starting position for scanning
 		if startPos, startEntry, found := shard.index.BinaryIndex.GetScanStartPosition(entryNum); found {
-			if startEntry == entryNum {
-				return startPos, nil
+			// Safety check: if the position is invalid, fall back to linear scan
+			if startPos.FileIndex < 0 || startPos.FileIndex >= len(shard.index.Files) {
+				// Binary index has stale data, fall back to scanning from beginning
+			} else {
+				if startEntry == entryNum {
+					return startPos, nil
+				}
+				// Scan forward from the closest indexed entry
+				return c.scanForwardToEntry(shard, startPos, startEntry, entryNum)
 			}
-			// Scan forward from the closest indexed entry
-			return c.scanForwardToEntry(shard, startPos, startEntry, entryNum)
 		}
 	}
 
@@ -440,13 +450,26 @@ func (c *Consumer) findEntryPosition(shard *Shard, entryNum int64) (EntryPositio
 		ByteOffset: 0,
 	}
 
-	// If looking for entry 0, return immediately
-	if entryNum == 0 {
+	// In multi-process mode, entries might not start from 0
+	// Calculate the first entry number based on total entries written
+	totalEntries := int64(0)
+	for _, f := range shard.index.Files {
+		totalEntries += f.Entries
+	}
+	firstEntryNum := shard.index.CurrentEntryNumber - totalEntries
+	
+	// If looking for an entry before the first one, it doesn't exist
+	if entryNum < firstEntryNum {
+		return EntryPosition{}, fmt.Errorf("entry %d does not exist (first entry is %d)", entryNum, firstEntryNum)
+	}
+	
+	// If looking for the first entry, return the start position
+	if entryNum == firstEntryNum {
 		return startPos, nil
 	}
-
-	// Otherwise scan forward from the beginning
-	return c.scanForwardToEntry(shard, startPos, 0, entryNum)
+	
+	// Otherwise scan forward from the first entry
+	return c.scanForwardToEntry(shard, startPos, firstEntryNum, entryNum)
 }
 
 // scanForwardToEntry scans forward from a known position to find the target entry
@@ -562,6 +585,18 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 					return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 				}
 				shard.lastMmapCheck = currentTimestamp
+
+				// Also invalidate any cached readers since the index changed
+				c.readers.Range(func(key, value any) bool {
+					if key.(uint32) == shard.shardID {
+						if reader, ok := value.(*Reader); ok {
+							reader.Close()
+						}
+						c.readers.Delete(key)
+						return false // Stop after finding this shard's reader
+					}
+					return true
+				})
 			}
 			shard.mu.Unlock()
 		}
@@ -574,10 +609,16 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		startEntryNum = 0
 	}
 	endEntryNum := shard.index.CurrentEntryNumber
+	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()
 
 	if startEntryNum >= endEntryNum {
 		return nil, nil // No new data
+	}
+
+	// Safety check: if we have entries but no files, something is wrong
+	if endEntryNum > 0 && fileCount == 0 {
+		return nil, fmt.Errorf("shard %d has %d entries but no data files", shard.shardID, endEntryNum)
 	}
 
 	// Preallocate slice capacity based on available entries and maxCount
@@ -601,19 +642,29 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		shard.mu.RUnlock()
 
 		if err != nil {
-			return nil, fmt.Errorf("failed to find entry %d position: %w", entryNum, err)
+			// In multi-process mode, some entries might not exist due to gaps in the sequence
+			// Skip these entries instead of failing the entire read
+			if strings.Contains(err.Error(), "does not exist") {
+				continue
+			}
+			return nil, fmt.Errorf("failed to find entry %d position in shard %d: %w", entryNum, shard.shardID, err)
+		}
+
+		// Safety check for invalid position
+		if position.FileIndex < 0 {
+			return nil, fmt.Errorf("invalid position for entry %d in shard %d: FileIndex=%d, ByteOffset=%d", entryNum, shard.shardID, position.FileIndex, position.ByteOffset)
 		}
 
 		// Get reader for this shard
 		reader, err := c.getOrCreateReader(shard)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get reader: %w", err)
+			return nil, fmt.Errorf("failed to get reader for shard %d: %w", shard.shardID, err)
 		}
 
 		// Read the specific entry
 		data, err := reader.ReadEntryAtPosition(position)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read entry %d: %w", entryNum, err)
+			return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
 		}
 
 		message := StreamMessage{
@@ -702,6 +753,24 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 	shard, err := c.client.getOrCreateShard(shardID)
 	if err != nil {
 		return 0, err
+	}
+
+	// Check mmap state for instant change detection
+	if shard.mmapState != nil {
+		currentTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+		if currentTimestamp != shard.lastMmapCheck {
+			// Index changed - reload it under write lock
+			shard.mu.Lock()
+			// Double-check after acquiring lock
+			if currentTimestamp != shard.lastMmapCheck {
+				if err := shard.loadIndex(); err != nil {
+					shard.mu.Unlock()
+					return 0, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
+				}
+				shard.lastMmapCheck = currentTimestamp
+			}
+			shard.mu.Unlock()
+		}
 	}
 
 	shard.mu.RLock()
@@ -793,6 +862,24 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 	shard, err := c.client.getOrCreateShard(shardID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Check mmap state for instant change detection
+	if shard.mmapState != nil {
+		currentTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+		if currentTimestamp != shard.lastMmapCheck {
+			// Index changed - reload it under write lock
+			shard.mu.Lock()
+			// Double-check after acquiring lock
+			if currentTimestamp != shard.lastMmapCheck {
+				if err := shard.loadIndex(); err != nil {
+					shard.mu.Unlock()
+					return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
+				}
+				shard.lastMmapCheck = currentTimestamp
+			}
+			shard.mu.Unlock()
+		}
 	}
 
 	shard.mu.RLock()

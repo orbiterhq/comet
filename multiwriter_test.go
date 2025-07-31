@@ -139,7 +139,7 @@ func TestMultiWriter_DisabledLocking(t *testing.T) {
 
 	// Create config with file locking disabled
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -195,7 +195,7 @@ func TestMultiWriter_Configuration(t *testing.T) {
 				client, err = NewClient(dir)
 			} else {
 				config := DefaultCometConfig()
-				config.Concurrency.EnableFileLocking = tc.enableLocking
+				config.Concurrency.EnableMultiProcessMode = tc.enableLocking
 				client, err = NewClientWithConfig(dir, config)
 			}
 
@@ -235,7 +235,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 
 	// Create config with file locking enabled (this enables mmap coordination)
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = true
+	config.Concurrency.EnableMultiProcessMode = true
 
 	streamName := "events:v1:shard:0001"
 	ctx := context.Background()
@@ -295,8 +295,9 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		}
 
 		// Verify message contents
+		// In multi-process mode, entries start from 1 due to shared sequence counter
 		for i, msg := range messages {
-			expectedID := MessageID{EntryNumber: int64(i), ShardID: 1}
+			expectedID := MessageID{EntryNumber: int64(i + 1), ShardID: 1}
 			if msg.ID != expectedID {
 				t.Errorf("message %d: expected ID %v, got %v", i, expectedID, msg.ID)
 			}
@@ -394,7 +395,7 @@ func TestMmapStateFile(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = true
+	config.Concurrency.EnableMultiProcessMode = true
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -437,7 +438,7 @@ func TestMmapTimestampUpdates(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = true
+	config.Concurrency.EnableMultiProcessMode = true
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

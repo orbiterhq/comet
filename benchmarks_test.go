@@ -804,7 +804,7 @@ func BenchmarkConsumer_MultiConsumer(b *testing.B) {
 func BenchmarkSimpleConsumerRead(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Indexing.BoundaryInterval = 100
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -879,7 +879,7 @@ func BenchmarkSimpleConsumerRead(b *testing.B) {
 func BenchmarkConsumerAck(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
@@ -1500,7 +1500,7 @@ func BenchmarkAllocation_MemoryLeaks(b *testing.B) {
 func BenchmarkFileLocking_Enabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = true // Explicitly enable for clarity
+	config.Concurrency.EnableMultiProcessMode = true // Explicitly enable for clarity
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
@@ -1531,7 +1531,7 @@ func BenchmarkFileLocking_Enabled(b *testing.B) {
 func BenchmarkFileLocking_Disabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false // Disable file locking
+	config.Concurrency.EnableMultiProcessMode = false // Disable file locking
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
@@ -1562,7 +1562,7 @@ func BenchmarkFileLocking_Disabled(b *testing.B) {
 func BenchmarkFileLocking_ConcurrentEnabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = true
+	config.Concurrency.EnableMultiProcessMode = true
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
@@ -1602,7 +1602,7 @@ func BenchmarkFileLocking_ConcurrentEnabled(b *testing.B) {
 func BenchmarkFileLocking_ConcurrentDisabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
@@ -1642,7 +1642,7 @@ func BenchmarkFileLocking_ConcurrentDisabled(b *testing.B) {
 func BenchmarkFileLocking_BatchWrites_Enabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = true
+	config.Concurrency.EnableMultiProcessMode = true
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
@@ -1680,7 +1680,7 @@ func BenchmarkFileLocking_BatchWrites_Enabled(b *testing.B) {
 func BenchmarkFileLocking_BatchWrites_Disabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)

@@ -24,7 +24,7 @@ import (
 func TestConcurrentRotationStorm(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = true
+	config.Concurrency.EnableMultiProcessMode = true
 	config.Storage.MaxFileSize = 1 << 16         // Small files to trigger rotation quickly (64KB)
 	config.Compression.MinCompressSize = 1 << 30 // Disable compression for predictable sizing
 	client, err := NewClientWithConfig(dir, config)
@@ -95,7 +95,7 @@ func TestConcurrentRotationStorm(t *testing.T) {
 func TestPartialWriteRecovery(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Storage.MaxFileSize = 1 << 20 // 1MB files
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -155,7 +155,7 @@ func TestPartialWriteRecovery(t *testing.T) {
 
 	// Reopen client - it should recover gracefully
 	config2 := DefaultCometConfig()
-	config2.Concurrency.EnableFileLocking = false
+	config2.Concurrency.EnableMultiProcessMode = false
 	client2, err := NewClientWithConfig(dir, config2)
 	if err != nil {
 		t.Fatalf("failed to create client after corruption: %v", err)
@@ -202,7 +202,7 @@ func TestPartialWriteRecovery(t *testing.T) {
 func TestIndexReconstructionWithGaps(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Indexing.BoundaryInterval = 5 // Index every 5 entries for testing
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -240,7 +240,7 @@ func TestIndexReconstructionWithGaps(t *testing.T) {
 
 	// Reopen client - should reconstruct index from data files
 	config2 := DefaultCometConfig()
-	config2.Concurrency.EnableFileLocking = false
+	config2.Concurrency.EnableMultiProcessMode = false
 	config2.Indexing.BoundaryInterval = 5
 	client2, err := NewClientWithConfig(dir, config2)
 	if err != nil {
@@ -284,7 +284,7 @@ func TestIndexReconstructionWithGaps(t *testing.T) {
 func TestConsumerOffsetDurability(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Storage.CheckpointTime = 1 // Checkpoint every 1ms (effectively after every write)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -340,7 +340,7 @@ func TestConsumerOffsetDurability(t *testing.T) {
 
 	// Simulate crash/restart - reopen client
 	config2 := DefaultCometConfig()
-	config2.Concurrency.EnableFileLocking = false
+	config2.Concurrency.EnableMultiProcessMode = false
 	client2, err := NewClientWithConfig(dir, config2)
 	if err != nil {
 		t.Fatalf("failed to reopen client: %v", err)
@@ -378,7 +378,7 @@ func TestConsumerOffsetDurability(t *testing.T) {
 func TestMaxIndexEntriesEnforcement(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Indexing.BoundaryInterval = 1 // Index every entry
 	config.Indexing.MaxIndexEntries = 10 // Very small limit for testing
 	client, err := NewClientWithConfig(dir, config)
@@ -704,7 +704,7 @@ func TestFileGrowthRaceCondition(t *testing.T) {
 func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Storage.MaxFileSize = 1024 // Very small to force multiple files
 	config.Indexing.BoundaryInterval = 10
 	client, err := NewClientWithConfig(dir, config)
@@ -832,7 +832,7 @@ func TestConsumerReadEntryAtFileBoundary(t *testing.T) {
 	// Configure to rotate after exactly 3 entries (header + data size)
 	// Header = 12 bytes, small data = ~30 bytes, so 3 entries = ~126 bytes
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Storage.MaxFileSize = 130     // Force rotation after 3 entries
 	config.Indexing.BoundaryInterval = 1 // Store every entry position
 	client, err := NewClientWithConfig(dir, config)
@@ -918,7 +918,7 @@ func TestIndexEntryLimit(t *testing.T) {
 
 	// Configure with a very low limit
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Indexing.BoundaryInterval = 5 // Store every 5th entry
 	config.Indexing.MaxIndexEntries = 10 // Only keep 10 entries
 	config.Storage.MaxFileSize = 1 << 20 // 1MB files
@@ -1016,7 +1016,7 @@ func TestIndexLimitWithConsumer(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Indexing.BoundaryInterval = 5 // Store every 5th entry
 	config.Indexing.MaxIndexEntries = 20 // Keep 20 boundary entries
 	config.Storage.MaxFileSize = 1 << 20 // 1MB files
@@ -1089,8 +1089,8 @@ func TestIndexLimitWithConsumer(t *testing.T) {
 func TestIO_OutsideLock(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false // Single writer test
-	config.Compression.MinCompressSize = 100     // Enable compression for some entries
+	config.Concurrency.EnableMultiProcessMode = false // Single writer test
+	config.Compression.MinCompressSize = 100          // Enable compression for some entries
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -1147,7 +1147,7 @@ func BenchmarkLockContention(b *testing.B) {
 			dir := b.TempDir()
 
 			config := DefaultCometConfig()
-			config.Concurrency.EnableFileLocking = true
+			config.Concurrency.EnableMultiProcessMode = true
 			config.Compression.MinCompressSize = 1 << 30 // Disable compression by default
 
 			if scenario.enableCompression {
@@ -1195,7 +1195,7 @@ func BenchmarkLockContention(b *testing.B) {
 func TestOptimizationShowcase(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = true
+	config.Concurrency.EnableMultiProcessMode = true
 	config.Compression.MinCompressSize = 1000
 	config.Indexing.BoundaryInterval = 10 // Frequent indexing for binary search demo
 	client, err := NewClientWithConfig(dir, config)
@@ -1285,7 +1285,7 @@ func TestOptimizationShowcase(t *testing.T) {
 func TestCorruptedIndexFileRecovery(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableFileLocking = false
+	config.Concurrency.EnableMultiProcessMode = false
 	config.Indexing.BoundaryInterval = 5
 
 	// Create client and write some data

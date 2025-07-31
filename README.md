@@ -1,4 +1,4 @@
-# Comet
+# ☄️ Comet
 
 High-performance embedded segmented log for edge observability. Built for single-digit microsecond latency and bounded resources.
 
