@@ -13,15 +13,26 @@ import (
 )
 
 // TestMultiProcessSimple tests multiple processes writing/reading concurrently
+// This test spawns actual OS processes and requires the 'multiprocess' build tag
 func TestMultiProcessSimple(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping multi-process test in short mode")
 	}
+	
+	// Log start for CI debugging
+	t.Logf("Starting multi-process test, CI=%s", os.Getenv("CI"))
 
 	// Check if we're the parent or child process
 	if workerID := os.Getenv("COMET_TEST_WORKER"); workerID != "" {
 		// We're a child process - run the worker
+		t.Logf("Running as worker process: %s", workerID)
 		runTestWorker(t, workerID)
+		return
+	}
+	
+	// Safety check - don't spawn if we're already in a subprocess
+	if os.Getenv("GO_TEST_SUBPROCESS") == "1" {
+		t.Skip("Skipping test in subprocess to prevent recursion")
 		return
 	}
 
@@ -49,11 +60,12 @@ func TestMultiProcessSimple(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 
-			cmd := exec.CommandContext(ctx, executable, "-test.run", testName, "-test.v")
+			cmd := exec.CommandContext(ctx, executable, "-test.run", "^" + testName + "$", "-test.v")
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("COMET_TEST_WORKER=writer-%d", id),
 				fmt.Sprintf("COMET_TEST_DIR=%s", dir),
 				fmt.Sprintf("COMET_TEST_DURATION=%s", duration),
+				"GO_TEST_SUBPROCESS=1",
 			)
 
 			output, err := cmd.CombinedOutput()
@@ -72,11 +84,12 @@ func TestMultiProcessSimple(t *testing.T) {
 			defer wg.Done()
 			time.Sleep(500 * time.Millisecond) // Let writers start first
 
-			cmd := exec.CommandContext(ctx, executable, "-test.run", testName, "-test.v")
+			cmd := exec.CommandContext(ctx, executable, "-test.run", "^" + testName + "$", "-test.v")
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("COMET_TEST_WORKER=reader-%d", id),
 				fmt.Sprintf("COMET_TEST_DIR=%s", dir),
 				fmt.Sprintf("COMET_TEST_DURATION=%s", duration),
+				"GO_TEST_SUBPROCESS=1",
 			)
 
 			output, err := cmd.CombinedOutput()

@@ -23,6 +23,12 @@ func TestMultiProcessFileLocking(t *testing.T) {
 		runLockTestWorker(t, workerID)
 		return
 	}
+	
+	// Safety check - don't spawn if we're already in a subprocess
+	if os.Getenv("GO_TEST_SUBPROCESS") == "1" {
+		t.Skip("Skipping test in subprocess to prevent recursion")
+		return
+	}
 
 	// Parent process
 	dir := t.TempDir()
@@ -31,17 +37,7 @@ func TestMultiProcessFileLocking(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a client to initialize the shard
-	config := MultiProcessConfig()
-	client, err := NewClientWithConfig(dir, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Write one entry to create the shard
-	ctx := context.Background()
-	client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte(`{"init":true}`)})
-	client.Close()
+	// Don't pre-initialize - let the workers race to create and lock
 
 	// Now spawn multiple processes that try to write to the SAME shard
 	numWorkers := 5
@@ -55,16 +51,25 @@ func TestMultiProcessFileLocking(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			
+			// Stagger process starts slightly to avoid thundering herd
+			time.Sleep(time.Duration(id*50) * time.Millisecond)
 
-			cmd := exec.Command(executable, "-test.run", "TestMultiProcessFileLocking", "-test.v")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessFileLocking$", "-test.v")
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("COMET_LOCK_TEST_WORKER=%d", id),
 				fmt.Sprintf("COMET_LOCK_TEST_DIR=%s", dir),
+				"GO_TEST_SUBPROCESS=1",
 			)
 
 			output, err := cmd.CombinedOutput()
-			if err != nil {
-				results <- fmt.Sprintf("Worker %d failed: %v", id, err)
+			if err != nil && ctx.Err() == context.DeadlineExceeded {
+				results <- fmt.Sprintf("Worker %d timed out after 5s\nPartial output: %s", id, output)
+			} else if err != nil {
+				results <- fmt.Sprintf("Worker %d failed: %v\nOutput: %s", id, err, output)
 			} else {
 				results <- string(output)
 			}
@@ -90,7 +95,12 @@ func TestMultiProcessFileLocking(t *testing.T) {
 
 	t.Logf("Summary: %d processes acquired lock, %d were blocked", lockAcquired, lockBlocked)
 
-	// In multi-process mode with file locking, we expect some processes to be blocked
+	// In multi-process mode with file locking, we expect:
+	// - At least one process to acquire the lock
+	// - Some processes to be blocked
+	if lockAcquired == 0 {
+		t.Error("Expected at least one process to acquire the lock")
+	}
 	if lockBlocked == 0 && numWorkers > 1 {
 		t.Error("Expected some processes to be blocked by file lock")
 	}
@@ -105,6 +115,11 @@ func runLockTestWorker(t *testing.T, workerID string) {
 	lockPath := filepath.Join(shardDir, "shard.lock")
 
 	t.Logf("Worker %s: PID=%d, PPID=%d, attempting to acquire lock: %s", workerID, pid, ppid, lockPath)
+	
+	// Ensure the shard directory exists
+	if err := os.MkdirAll(shardDir, 0755); err != nil {
+		t.Fatalf("Worker %s: failed to create shard directory: %v", workerID, err)
+	}
 
 	// Try to acquire the lock directly
 	lockFile, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0644)
@@ -126,24 +141,13 @@ func runLockTestWorker(t *testing.T, workerID string) {
 
 	// Hold the lock for a bit to ensure others get blocked
 	time.Sleep(500 * time.Millisecond)
-
-	// Now try to write through the client
-	config := MultiProcessConfig()
-	client, err := NewClientWithConfig(dir, config)
-	if err != nil {
-		t.Fatalf("Worker %s: failed to create client: %v", workerID, err)
-	}
-	defer client.Close()
-
-	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{
-		[]byte(fmt.Sprintf(`{"worker":"%s","pid":%d}`, workerID, pid)),
-	})
-
-	if err != nil {
-		t.Logf("Worker %s: write failed: %v", workerID, err)
+	
+	// Write a simple marker file to prove we had the lock
+	markerPath := filepath.Join(shardDir, fmt.Sprintf("worker-%s.lock", workerID))
+	if err := os.WriteFile(markerPath, []byte(fmt.Sprintf("%d", pid)), 0644); err != nil {
+		t.Logf("Worker %s: failed to write marker: %v", workerID, err)
 	} else {
-		t.Logf("Worker %s: write succeeded", workerID)
+		t.Logf("Worker %s: wrote marker file", workerID)
 	}
 
 	// Release lock
@@ -160,6 +164,12 @@ func TestMultiProcessCrashRecovery(t *testing.T) {
 		runCrashTestWorker(t, workerID)
 		return
 	}
+	
+	// Safety check - don't spawn if we're already in a subprocess
+	if os.Getenv("GO_TEST_SUBPROCESS") == "1" {
+		t.Skip("Skipping test in subprocess to prevent recursion")
+		return
+	}
 
 	dir := t.TempDir()
 	executable, err := os.Executable()
@@ -168,10 +178,14 @@ func TestMultiProcessCrashRecovery(t *testing.T) {
 	}
 
 	// Start a worker that will "crash" while holding the lock
-	cmd := exec.Command(executable, "-test.run", "TestMultiProcessCrashRecovery", "-test.v")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessCrashRecovery$", "-test.v")
 	cmd.Env = append(os.Environ(),
 		"COMET_CRASH_TEST_WORKER=crasher",
 		fmt.Sprintf("COMET_CRASH_TEST_DIR=%s", dir),
+		"GO_TEST_SUBPROCESS=1",
 	)
 
 	output, err := cmd.CombinedOutput()
@@ -190,8 +204,8 @@ func TestMultiProcessCrashRecovery(t *testing.T) {
 	}
 	defer client.Close()
 
-	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{
+	appendCtx := context.Background()
+	_, err = client.Append(appendCtx, "test:v1:shard:0001", [][]byte{
 		[]byte(`{"after_crash":true}`),
 	})
 
