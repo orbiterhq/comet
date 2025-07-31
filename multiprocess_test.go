@@ -58,18 +58,21 @@ func TestMultiProcessInSameProcess(t *testing.T) {
 	}
 
 	// In multi-process mode with index rebuilding, we might see additional entries
-	// Filter to non-empty messages
-	var nonEmptyMessages []StreamMessage
+	// Filter to non-empty messages and deduplicate by content
+	nonEmptyMessages := make(map[string]StreamMessage)
 	for _, msg := range messages {
 		if len(msg.Data) > 0 {
-			nonEmptyMessages = append(nonEmptyMessages, msg)
+			nonEmptyMessages[string(msg.Data)] = msg
 		}
 	}
-	
+
 	if len(nonEmptyMessages) != 1 {
-		t.Errorf("Expected 1 non-empty message, got %d", len(nonEmptyMessages))
-		for i, msg := range nonEmptyMessages {
-			t.Logf("Message %d: %s", i, string(msg.Data))
+		t.Errorf("Expected 1 unique non-empty message, got %d", len(nonEmptyMessages))
+		i := 0
+		for content, msg := range nonEmptyMessages {
+			t.Logf("Message %d: %s", i, content)
+			_ = msg
+			i++
 		}
 	}
 

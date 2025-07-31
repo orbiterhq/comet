@@ -670,10 +670,9 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 			}
 		}
 	}
-	
+
 	// In multi-process mode, check if we need to rebuild index AFTER reloading
 	if shard.mmapState != nil {
-		log.Printf("[LEN] Shard %d: checking if rebuild needed after index reload", shard.shardID)
 		// Need write lock for rebuild
 		shard.mu.RUnlock()
 		shard.mu.Lock()
@@ -740,7 +739,7 @@ func (c *Client) Sync(ctx context.Context) error {
 					// Merge our changes with the disk state
 					// Important: We need to merge carefully to avoid losing entries
 					// The disk state represents entries written by other processes
-					
+
 					// Always use the highest entry number and write offset
 					if diskIndex.CurrentEntryNumber > indexCopy.CurrentEntryNumber {
 						indexCopy.CurrentEntryNumber = diskIndex.CurrentEntryNumber
@@ -748,20 +747,20 @@ func (c *Client) Sync(ctx context.Context) error {
 					if diskIndex.CurrentWriteOffset > indexCopy.CurrentWriteOffset {
 						indexCopy.CurrentWriteOffset = diskIndex.CurrentWriteOffset
 					}
-					
+
 					// Merge consumer offsets - keep the highest offset for each consumer
 					for group, offset := range diskIndex.ConsumerOffsets {
 						if currentOffset, exists := indexCopy.ConsumerOffsets[group]; !exists || offset > currentOffset {
 							indexCopy.ConsumerOffsets[group] = offset
 						}
 					}
-					
+
 					// Merge file info - this is critical for multi-process coordination
 					// The disk version should have the most complete file information
 					if len(diskIndex.Files) > 0 {
 						// Always use the disk version as it represents the actual files
 						indexCopy.Files = diskIndex.Files
-						
+
 						// Update the current file info if we have one
 						if len(indexCopy.Files) > 0 && indexCopy.CurrentFile != "" {
 							lastFile := &indexCopy.Files[len(indexCopy.Files)-1]
@@ -779,14 +778,14 @@ func (c *Client) Sync(ctx context.Context) error {
 							}
 						}
 					}
-					
+
 					// Merge binary index nodes if needed
 					if diskIndex.BinaryIndex.Nodes != nil && len(diskIndex.BinaryIndex.Nodes) > len(indexCopy.BinaryIndex.Nodes) {
 						indexCopy.BinaryIndex = diskIndex.BinaryIndex
 					}
 				}
 			}
-			
+
 			err = shard.saveBinaryIndex(indexCopy)
 			shard.indexMu.Unlock()
 
@@ -987,8 +986,8 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		if config.Concurrency.EnableMultiProcessMode && s.mmapState != nil {
 			currentTimestamp := atomic.LoadInt64(&s.mmapState.LastUpdateNanos)
 			if currentTimestamp != s.lastMmapCheck {
-				// Index changed - reload it
-				if err := s.loadIndex(); err != nil {
+				// Index changed - reload it with retry for EOF errors
+				if err := s.loadIndexWithRetry(); err != nil {
 					panic(fmt.Errorf("failed to reload index after detecting mmap change: %w", err))
 				}
 				s.lastMmapCheck = currentTimestamp
@@ -1425,26 +1424,26 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 						if diskIndex.CurrentWriteOffset > indexCopy.CurrentWriteOffset {
 							indexCopy.CurrentWriteOffset = diskIndex.CurrentWriteOffset
 						}
-						
+
 						// Merge consumer offsets - keep the highest offset for each consumer
 						for group, offset := range diskIndex.ConsumerOffsets {
 							if currentOffset, exists := indexCopy.ConsumerOffsets[group]; !exists || offset > currentOffset {
 								indexCopy.ConsumerOffsets[group] = offset
 							}
 						}
-						
+
 						// Merge file info - use the disk version as base
 						if len(diskIndex.Files) > 0 {
 							indexCopy.Files = diskIndex.Files
 						}
-						
+
 						// Merge binary index nodes if needed
 						if diskIndex.BinaryIndex.Nodes != nil && len(diskIndex.BinaryIndex.Nodes) > len(indexCopy.BinaryIndex.Nodes) {
 							indexCopy.BinaryIndex = diskIndex.BinaryIndex
 						}
 					}
 				}
-				
+
 				// Now save the merged index
 				err = s.saveBinaryIndex(indexCopy)
 				s.indexMu.Unlock()
@@ -1483,6 +1482,25 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 	}
 }
 
+// loadIndexWithRetry loads the index with retry logic for EOF errors
+// This handles the race condition between file writes and mmap state updates
+func (s *Shard) loadIndexWithRetry() error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = s.loadIndex()
+		if err == nil {
+			return nil
+		}
+		// Retry on EOF to handle race condition
+		if strings.Contains(err.Error(), "unexpected EOF") && attempt < 2 {
+			time.Sleep(time.Duration(attempt+1) * time.Millisecond) // 1ms, 2ms
+			continue
+		}
+		break
+	}
+	return err
+}
+
 // lazyRebuildIndexIfNeeded checks if the index needs rebuilding based on file sizes
 // This is called on read path in multi-process mode to ensure consistency
 // Caller must hold the shard lock
@@ -1490,7 +1508,7 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 	if len(s.index.Files) == 0 {
 		return
 	}
-	
+
 	// Check if any file has grown beyond what the index knows
 	needsRebuild := false
 	for _, file := range s.index.Files {
@@ -1498,20 +1516,14 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 			actualSize := stat.Size()
 			if actualSize > file.EndOffset {
 				needsRebuild = true
-				log.Printf("[REBUILD] Shard %d: file %s has grown from %d to %d bytes, needs rebuild",
-					s.shardID, file.Path, file.EndOffset, actualSize)
 				break
 			}
 		}
 	}
 
 	if !needsRebuild {
-		log.Printf("[REBUILD] Shard %d: no rebuild needed, files match index", s.shardID)
 		return
 	}
-
-	log.Printf("[REBUILD] Shard %d: starting index rebuild, current index shows %d entries",
-		s.shardID, s.index.CurrentEntryNumber)
 
 	// Rebuild the index by scanning ALL files
 	// In multi-process mode, we can't trust entry counts from partial indexes
@@ -1521,14 +1533,14 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 
 	for i := range s.index.Files {
 		file := &s.index.Files[i]
-		
+
 		// Get actual file size
 		stat, err := os.Stat(file.Path)
 		if err != nil {
 			continue
 		}
 		actualSize := stat.Size()
-		
+
 		// In multi-process mode, read the shared coordination state to get actual data size
 		scanSize := actualSize
 		if config.Concurrency.EnableMultiProcessMode && i == len(s.index.Files)-1 {
@@ -1536,111 +1548,85 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 			coordPath := filepath.Join(shardDir, "coordination.state")
 			if coordFile, err := os.Open(coordPath); err == nil {
 				defer coordFile.Close()
-				
+
 				// Map the coordination state temporarily to read it
 				const stateSize = 256
 				if data, err := syscall.Mmap(int(coordFile.Fd()), 0, stateSize,
 					syscall.PROT_READ, syscall.MAP_SHARED); err == nil {
 					defer syscall.Munmap(data)
-					
+
 					// Read the write offset from the shared state
 					// In multi-process scenarios, retry a few times to handle timing issues
 					coordState := (*MmapCoordinationState)(unsafe.Pointer(&data[0]))
 					var writeOffset int64
 					maxRetries := 3
-					
-					log.Printf("[REBUILD] Shard %d: reading shared coordination state from %s", s.shardID, coordPath)
-					
+
 					for retry := 0; retry < maxRetries; retry++ {
 						writeOffset = coordState.WriteOffset.Load()
 						lastWrite := coordState.LastWriteNanos.Load()
-						fileSize := coordState.FileSize.Load()
 						totalWrites := coordState.TotalWrites.Load()
-						activeFileIndex := coordState.ActiveFileIndex.Load()
-						
-						log.Printf("[REBUILD] Shard %d: coordination state (retry %d): WriteOffset=%d, LastWrite=%d, FileSize=%d, TotalWrites=%d, ActiveFileIndex=%d",
-							s.shardID, retry, writeOffset, lastWrite, fileSize, totalWrites, activeFileIndex)
-						
+
 						// Check if we expect more writes than we see in the offset
 						// If TotalWrites is significantly higher than what the offset suggests, wait for coordination to stabilize
 						averageBytesPerWrite := int64(50) // Rough estimate
 						expectedMinOffset := totalWrites * averageBytesPerWrite
-						
+
 						if totalWrites > 100 && writeOffset < expectedMinOffset/2 {
-							log.Printf("[REBUILD] Shard %d: coordination state seems inconsistent (TotalWrites=%d but WriteOffset=%d), waiting for stabilization",
-								s.shardID, totalWrites, writeOffset)
 							time.Sleep(100 * time.Millisecond)
 							continue
 						}
-						
+
 						// If we see a recent write timestamp, the offset should be stable
 						if lastWrite > 0 && time.Since(time.Unix(0, lastWrite)) < 100*time.Millisecond {
-							log.Printf("[REBUILD] Shard %d: recent write detected (%.2fms ago), using current offset",
-								s.shardID, float64(time.Since(time.Unix(0, lastWrite)))/float64(time.Millisecond))
 							break
 						}
-						
+
 						// If this is our first try and offset seems small, wait a bit
 						if retry == 0 && writeOffset < 1000 { // Less than 1KB suggests incomplete writes
-							log.Printf("[REBUILD] Shard %d: small write offset detected (%d bytes), waiting 50ms before retry",
-								s.shardID, writeOffset)
 							time.Sleep(50 * time.Millisecond)
 							continue
 						}
-						
-						log.Printf("[REBUILD] Shard %d: using write offset %d from coordination state", s.shardID, writeOffset)
+
 						break
 					}
-					
+
 					// Get the latest coordination state values for stabilization check
 					latestTotalWrites := coordState.TotalWrites.Load()
-					
+
 					// Wait for coordination state to stabilize if we're in a high-contention scenario
 					if latestTotalWrites > 100 {
-						log.Printf("[REBUILD] Shard %d: high contention detected (%d writes), waiting for write coordination to stabilize", s.shardID, latestTotalWrites)
-						
+
 						// Wait for a brief period to let any pending writes complete
-						stableWaitStart := time.Now()
 						stableTotalWrites := latestTotalWrites
 						stableWriteOffset := writeOffset
-						
+
 						for attempts := 0; attempts < 10; attempts++ {
 							time.Sleep(50 * time.Millisecond)
 							currentWrites := coordState.TotalWrites.Load()
 							currentOffset := coordState.WriteOffset.Load()
-							
-							log.Printf("[REBUILD] Stabilization check %d: TotalWrites=%d->%d, WriteOffset=%d->%d", 
-								attempts, stableTotalWrites, currentWrites, stableWriteOffset, currentOffset)
-							
+
 							if currentWrites == stableTotalWrites && currentOffset == stableWriteOffset {
 								// Coordination state is stable
-								log.Printf("[REBUILD] Coordination state stabilized after %v", time.Since(stableWaitStart))
 								break
 							}
-							
+
 							stableTotalWrites = currentWrites
 							stableWriteOffset = currentOffset
 						}
-						
+
 						// Use the stabilized values
 						writeOffset = stableWriteOffset
 					}
-					
-					// In multi-process mode, if we have a large pre-allocated file (>100KB), 
+
+					// In multi-process mode, if we have a large pre-allocated file (>100KB),
 					// scan the entire file rather than trusting coordination state for scanning bounds
 					// This handles cases where coordination state updates are delayed
 					if actualSize > 100*1024 { // File is larger than 100KB - likely pre-allocated
 						scanSize = actualSize
-						log.Printf("[REBUILD] Shard %d: large file detected (%d bytes), scanning entire file instead of using coordination offset %d",
-							s.shardID, actualSize, writeOffset)
 					} else if writeOffset > 0 && writeOffset < actualSize {
 						scanSize = writeOffset
-						log.Printf("[REBUILD] Shard %d: using shared coordination write offset %d instead of file size %d (after %d retries)",
-							s.shardID, writeOffset, actualSize, maxRetries)
 					} else if writeOffset >= actualSize {
 						// Use file scan - this handles large pre-allocated files
-						log.Printf("[REBUILD] Shard %d: coordination offset %d >= file size %d, scanning full file",
-							s.shardID, writeOffset, actualSize)
 					}
 				}
 			} else if s.mmapWriter != nil {
@@ -1649,21 +1635,14 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 				writeOffset := coordState.WriteOffset.Load()
 				if writeOffset > 0 && writeOffset < actualSize {
 					scanSize = writeOffset
-					log.Printf("[REBUILD] Shard %d: using local mmap write offset %d instead of file size %d",
-						s.shardID, writeOffset, actualSize)
 				}
 			}
 		}
-		
-		log.Printf("[REBUILD] Shard %d: scanning file %s (size=%d, scan up to %d, old entries=%d)",
-			s.shardID, file.Path, actualSize, scanSize, file.Entries)
-		
+
 		// Always scan the entire file in multi-process mode
 		// Don't trust the entry count from the partial index
 		scanResult := s.scanFileForEntries(file.Path, scanSize, i, currentEntryNum)
-		log.Printf("[REBUILD] Shard %d: file scan found %d entries (was %d)",
-			s.shardID, scanResult.entryCount, file.Entries)
-		
+
 		if scanResult.entryCount > 0 {
 			file.Entries = scanResult.entryCount
 			file.EndOffset = actualSize
@@ -1688,7 +1667,7 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 		for _, node := range newBinaryNodes {
 			nodeMap[node.EntryNumber] = node
 		}
-		
+
 		// Convert back to sorted slice
 		s.index.BinaryIndex.Nodes = make([]EntryIndexNode, 0, len(nodeMap))
 		for _, node := range nodeMap {
@@ -1704,9 +1683,6 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 		lastFile := &s.index.Files[len(s.index.Files)-1]
 		s.index.CurrentWriteOffset = lastFile.EndOffset
 	}
-	
-	log.Printf("[REBUILD] Shard %d: rebuild complete. Total entries: %d (was %d), Binary nodes: %d",
-		s.shardID, s.index.CurrentEntryNumber, totalEntries, len(s.index.BinaryIndex.Nodes))
 }
 
 // scanFileResult holds the results of scanning a data file
@@ -1720,13 +1696,9 @@ type scanFileResult struct {
 func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex int, startEntryNum int64) scanFileResult {
 	f, err := os.Open(filePath)
 	if err != nil {
-		log.Printf("[SCAN] Failed to open file %s: %v", filePath, err)
 		return scanFileResult{}
 	}
 	defer f.Close()
-	
-	log.Printf("[SCAN] Starting scan of %s (size=%d, startEntry=%d)", filePath, fileSize, startEntryNum)
-	log.Printf("[SCAN] Will scan from offset 0 to %d, looking for entries starting at entry number %d", fileSize, startEntryNum)
 
 	result := scanFileResult{
 		indexNodes: make([]EntryIndexNode, 0),
@@ -1750,14 +1722,12 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 		// Parse header
 		length := binary.LittleEndian.Uint32(headerBuf[0:4])
 		timestamp := binary.LittleEndian.Uint64(headerBuf[4:12])
-		
+
 		// Check for uninitialized memory (zeros) - AGGRESSIVE GAP SKIPPING
 		if length == 0 && timestamp == 0 {
-			log.Printf("[SCAN] Hit gap at offset %d, scanning ahead for next valid entry...", offset)
-			
+
 			found := false
-			gapSkipped := int64(0)
-			
+
 			// NUCLEAR APPROACH: Search every 4 bytes until we find a valid header
 			// This ensures we NEVER miss entries due to gaps
 			for searchOffset := offset + 4; searchOffset <= fileSize-headerSize; searchOffset += 4 {
@@ -1765,44 +1735,34 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 				if n, err := f.ReadAt(searchBuf, searchOffset); err == nil && n == headerSize {
 					searchLength := binary.LittleEndian.Uint32(searchBuf[0:4])
 					searchTimestamp := binary.LittleEndian.Uint64(searchBuf[4:12])
-					
+
 					// More lenient validation for gap recovery
 					if searchLength > 0 && searchLength <= 10*1024*1024 && searchTimestamp > 0 {
 						// Found a valid entry!
-						gapSkipped = searchOffset - offset
-						log.Printf("[SCAN] RECOVERED: Found valid entry at %d after skipping %d byte gap", searchOffset, gapSkipped)
 						offset = searchOffset
 						found = true
 						break
 					}
 				}
 			}
-			
+
 			if !found {
-				log.Printf("[SCAN] End of scan: no more valid entries found after final gap at %d", offset)
 				break
 			}
-			
+
 			// Continue scanning from the recovered position
 			continue
 		}
-		
+
 		// Validate entry bounds
 		if length == 0 || length > 100*1024*1024 { // Sanity check: max 100MB per entry
-			log.Printf("[SCAN] Invalid entry at offset %d: length=%d, timestamp=%d", offset, length, timestamp)
 			break
 		}
 
 		// Check if full entry fits in file
 		nextOffset := offset + headerSize + int64(length)
 		if nextOffset > fileSize {
-			log.Printf("[SCAN] Entry at offset %d extends beyond file (next offset %d > file size %d)", offset, nextOffset, fileSize)
 			break
-		}
-
-		// Log every 50th entry to track progress
-		if result.entryCount%50 == 0 || result.entryCount < 10 {
-			log.Printf("[SCAN] Found entry %d at offset %d (length=%d, next offset=%d)", entryNum, offset, length, nextOffset)
 		}
 
 		// Add to binary index at intervals
@@ -1814,7 +1774,6 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 					ByteOffset: offset,
 				},
 			})
-			log.Printf("[SCAN] Added index node for entry %d at offset %d", entryNum, offset)
 		}
 
 		result.entryCount++
@@ -1822,156 +1781,7 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 		offset = nextOffset
 	}
 
-	log.Printf("[SCAN] Completed scan of %s: found %d entries, created %d index nodes",
-		filePath, result.entryCount, len(result.indexNodes))
-	
 	return result
-}
-
-// persistIndexSynchronously performs immediate, synchronized index persistence for multi-process mode
-// This ensures all processes see consistent state but may impact write latency
-func (s *Shard) persistIndexSynchronously(clientMetrics *ClientMetrics, config *CometConfig) {
-	// Clone index while holding the shard lock (caller already holds it)
-	indexCopy := s.cloneIndex()
-	s.writesSinceCheckpoint = 0
-	s.lastCheckpoint = time.Now()
-
-	var err error
-	if config.Concurrency.EnableMultiProcessMode && s.indexLockFile != nil {
-		// Acquire exclusive lock for index writes
-		if err := syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_EX); err != nil {
-			if clientMetrics != nil {
-				clientMetrics.IndexPersistErrors.Add(1)
-				clientMetrics.ErrorCount.Add(1)
-				clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
-			}
-			return
-		}
-		defer syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_UN)
-
-		// Reload index from disk to merge with other processes' changes
-		s.indexMu.Lock()
-		defer s.indexMu.Unlock()
-		
-		if _, statErr := os.Stat(s.indexPath); statErr == nil {
-			// Index exists, load it to get latest state
-			if diskIndex, loadErr := s.loadBinaryIndex(); loadErr == nil {
-				// Merge ALL entries from both indexes
-				// The key insight: we need to ensure we capture all written entries
-				
-				// Use the highest entry number
-				if diskIndex.CurrentEntryNumber > indexCopy.CurrentEntryNumber {
-					indexCopy.CurrentEntryNumber = diskIndex.CurrentEntryNumber
-				}
-				
-				// For write offset, we'll update it based on actual file size later
-				// For now, just take the maximum
-				if diskIndex.CurrentWriteOffset > indexCopy.CurrentWriteOffset {
-					indexCopy.CurrentWriteOffset = diskIndex.CurrentWriteOffset
-				}
-				
-				// Merge consumer offsets - keep the highest offset for each consumer
-				for group, offset := range diskIndex.ConsumerOffsets {
-					if currentOffset, exists := indexCopy.ConsumerOffsets[group]; !exists || offset > currentOffset {
-						indexCopy.ConsumerOffsets[group] = offset
-					}
-				}
-				
-				// Merge file info - ensure we have all files
-				// Create a map to deduplicate files by path
-				fileMap := make(map[string]FileInfo)
-				for _, f := range diskIndex.Files {
-					fileMap[f.Path] = f
-				}
-				for _, f := range indexCopy.Files {
-					if existing, ok := fileMap[f.Path]; ok {
-						// Use the file with more entries
-						if f.Entries > existing.Entries {
-							fileMap[f.Path] = f
-						}
-					} else {
-						fileMap[f.Path] = f
-					}
-				}
-				
-				// Convert back to slice, sorted by start offset
-				indexCopy.Files = make([]FileInfo, 0, len(fileMap))
-				for _, f := range fileMap {
-					indexCopy.Files = append(indexCopy.Files, f)
-				}
-				sort.Slice(indexCopy.Files, func(i, j int) bool {
-					return indexCopy.Files[i].StartOffset < indexCopy.Files[j].StartOffset
-				})
-				
-				// Update file EndOffsets based on actual file sizes
-				for i := range indexCopy.Files {
-					file := &indexCopy.Files[i]
-					if stat, err := os.Stat(file.Path); err == nil {
-						actualSize := stat.Size()
-						if actualSize > file.EndOffset {
-							file.EndOffset = actualSize
-						}
-					}
-				}
-				
-				// Update CurrentWriteOffset to match the last file's EndOffset
-				if len(indexCopy.Files) > 0 {
-					lastFile := &indexCopy.Files[len(indexCopy.Files)-1]
-					if lastFile.Path == indexCopy.CurrentFile {
-						indexCopy.CurrentWriteOffset = lastFile.EndOffset
-					}
-					
-					// Don't scan files here - too expensive for write path
-					// Just ensure file sizes are accurate
-					// The actual rebuilding will happen lazily on read
-				}
-				
-				// Merge binary index nodes - combine all nodes from both indexes
-				nodeMap := make(map[int64]EntryIndexNode)
-				for _, node := range diskIndex.BinaryIndex.Nodes {
-					nodeMap[node.EntryNumber] = node
-				}
-				for _, node := range indexCopy.BinaryIndex.Nodes {
-					nodeMap[node.EntryNumber] = node
-				}
-				
-				// Convert back to sorted slice
-				indexCopy.BinaryIndex.Nodes = make([]EntryIndexNode, 0, len(nodeMap))
-				for _, node := range nodeMap {
-					indexCopy.BinaryIndex.Nodes = append(indexCopy.BinaryIndex.Nodes, node)
-				}
-				sort.Slice(indexCopy.BinaryIndex.Nodes, func(i, j int) bool {
-					return indexCopy.BinaryIndex.Nodes[i].EntryNumber < indexCopy.BinaryIndex.Nodes[j].EntryNumber
-				})
-			}
-		}
-		
-		// Now save the fully merged index
-		err = s.saveBinaryIndex(indexCopy)
-		
-		// Update mmap state after successful save
-		if err == nil {
-			s.updateMmapState()
-		}
-	} else {
-		// No file locking - just use process-local mutex
-		s.indexMu.Lock()
-		err = s.saveBinaryIndex(indexCopy)
-		s.indexMu.Unlock()
-
-		if err == nil {
-			s.updateMmapState()
-		}
-	}
-
-	if err != nil {
-		// Track error in metrics
-		if clientMetrics != nil {
-			clientMetrics.IndexPersistErrors.Add(1)
-			clientMetrics.ErrorCount.Add(1)
-			clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
-		}
-	}
 }
 
 // scheduleAsyncCheckpoint schedules an asynchronous checkpoint for multi-process mode
