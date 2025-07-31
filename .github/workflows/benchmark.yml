@@ -55,15 +55,34 @@ jobs:
       - name: Run benchmarks (base)
         if: github.event_name == 'pull_request'
         run: |
-          mise run setup
-          echo "Running benchmarks on base branch..."
-          go test -bench="BenchmarkWrite_|BenchmarkConsumer_" -benchmem -benchtime=100ms -count=3 -run=^$ -timeout=5m > old.bench 2>&1
-          echo "Base branch benchmark results:"
-          cat old.bench
+          # Check if this is a new project (base branch might not have Go code yet)
+          if [ ! -f "go.mod" ]; then
+            echo "Base branch doesn't have Go code yet, creating dummy benchmark file"
+            echo "No benchmarks to compare" > old.bench
+          else
+            # If no .mise.toml exists, just use go directly
+            if [ -f ".mise.toml" ]; then
+              mise run setup
+            else
+              go mod download || true
+            fi
+            echo "Running benchmarks on base branch..."
+            go test -bench="BenchmarkWrite_|BenchmarkConsumer_" -benchmem -benchtime=100ms -count=3 -run=^$ -timeout=5m > old.bench 2>&1
+            echo "Base branch benchmark results:"
+            cat old.bench
+          fi
       - name: Compare benchmarks
         if: github.event_name == 'pull_request'
         run: |
-          benchstat old.bench new.bench > benchmark-diff.txt
+          # Check if we have valid benchmark files to compare
+          if grep -q "Benchmark" old.bench 2>/dev/null; then
+            benchstat old.bench new.bench > benchmark-diff.txt
+          else
+            echo "No base benchmarks to compare against (new project)" > benchmark-diff.txt
+            echo "Current benchmark results:" >> benchmark-diff.txt
+            echo "" >> benchmark-diff.txt
+            grep "Benchmark" new.bench >> benchmark-diff.txt || echo "No benchmarks found"
+          fi
 
           # Check for significant regressions
           if grep -E "\\+[0-9]+\\.[0-9]+%" benchmark-diff.txt | grep -v "~"; then
