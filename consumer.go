@@ -423,6 +423,11 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 
 // findEntryPosition finds the position of an entry using binary searchable index (O(log n))
 func (c *Consumer) findEntryPosition(shard *Shard, entryNum int64) (EntryPosition, error) {
+	// Check if the requested entry exists
+	if entryNum >= shard.index.CurrentEntryNumber {
+		return EntryPosition{}, fmt.Errorf("entry %d does not exist (current max: %d)", entryNum, shard.index.CurrentEntryNumber-1)
+	}
+
 	// Use the binary searchable index for O(log n) lookup
 	if len(shard.index.BinaryIndex.Nodes) > 0 {
 		// Get the best starting position for scanning
@@ -489,82 +494,67 @@ func (c *Consumer) scanForwardToEntry(shard *Shard, startPos EntryPosition, star
 	reader.mu.RLock()
 	defer reader.mu.RUnlock()
 
-	currentPos := startPos
-	currentEntry := startEntry
-	maxScanEntries := targetEntry - startEntry + 100 // Safety limit
-	scannedEntries := int64(0)
-
-	// Scan forward entry by entry until we reach the target
-	for currentEntry < targetEntry {
-		// Safety check to prevent infinite loops
-		scannedEntries++
-		if scannedEntries > maxScanEntries {
-			return EntryPosition{}, fmt.Errorf("scan limit exceeded: scanned %d entries looking for entry %d from %d", scannedEntries, targetEntry, startEntry)
+	// First, find which file contains the target entry
+	targetFileIndex := -1
+	for i := startPos.FileIndex; i < len(shard.index.Files); i++ {
+		fileInfo := shard.index.Files[i]
+		if fileInfo.StartEntry <= targetEntry && targetEntry < fileInfo.StartEntry + fileInfo.Entries {
+			targetFileIndex = i
+			break
 		}
+	}
 
-		// Validate file index under lock
-		if currentPos.FileIndex >= len(reader.files) {
-			return EntryPosition{}, fmt.Errorf("file index %d out of range (have %d files)", currentPos.FileIndex, len(reader.files))
-		}
+	if targetFileIndex == -1 {
+		return EntryPosition{}, fmt.Errorf("entry %d not found in any file", targetEntry)
+	}
 
-		file := reader.files[currentPos.FileIndex]
-		fileData := file.data.Load() // Get data atomically
-		if fileData == nil {
-			return EntryPosition{}, fmt.Errorf("file %d has no data", currentPos.FileIndex)
+	// Now scan within the target file to find the exact position
+	file := reader.files[targetFileIndex]
+	fileData := file.data.Load()
+	if fileData == nil || len(fileData) == 0 {
+		return EntryPosition{}, fmt.Errorf("file %d is empty but should contain entry %d", targetFileIndex, targetEntry)
+	}
+
+	fileInfo := shard.index.Files[targetFileIndex]
+	currentEntry := fileInfo.StartEntry
+	currentOffset := int64(0)
+
+	// Scan through the file entry by entry
+	for currentEntry <= targetEntry {
+		// Check if we've found the target
+		if currentEntry == targetEntry {
+			return EntryPosition{
+				FileIndex:  targetFileIndex,
+				ByteOffset: currentOffset,
+			}, nil
 		}
 
 		// Check if we have enough data for the header
-		if currentPos.ByteOffset+12 > int64(len(fileData)) {
-			// Move to next file if available
-			if currentPos.FileIndex+1 < len(reader.files) {
-				currentPos.FileIndex++
-				currentPos.ByteOffset = 0
-				continue
-			} else {
-				return EntryPosition{}, fmt.Errorf("entry header extends beyond final file (fileData len=%d, offset=%d)", len(fileData), currentPos.ByteOffset)
-			}
+		if currentOffset+12 > int64(len(fileData)) {
+			return EntryPosition{}, fmt.Errorf("entry %d header extends beyond file", currentEntry)
 		}
 
-		// Read length from header (safe under reader lock)
-		header := fileData[currentPos.ByteOffset : currentPos.ByteOffset+12]
+		// Read entry header
+		header := fileData[currentOffset : currentOffset+12]
 		length := binary.LittleEndian.Uint32(header[0:4])
 
-		// Validate entry length is reasonable
-		if length > 100*1024*1024 { // 100MB max entry size
-			return EntryPosition{}, fmt.Errorf("entry %d has invalid length %d at file %d offset %d", currentEntry, length, currentPos.FileIndex, currentPos.ByteOffset)
+		// Validate entry length
+		if length > 100*1024*1024 { // 100MB max
+			return EntryPosition{}, fmt.Errorf("entry %d has invalid length %d", currentEntry, length)
 		}
 
-		// Check if the full entry fits in current file
-		entryEnd := currentPos.ByteOffset + 12 + int64(length)
+		// Check if the full entry fits
+		entryEnd := currentOffset + 12 + int64(length)
 		if entryEnd > int64(len(fileData)) {
-			// Move to next file if available
-			if currentPos.FileIndex+1 < len(reader.files) {
-				currentPos.FileIndex++
-				currentPos.ByteOffset = 0
-				continue
-			} else {
-				return EntryPosition{}, fmt.Errorf("entry %d data extends beyond final file", currentEntry)
-			}
+			return EntryPosition{}, fmt.Errorf("entry %d extends beyond file", currentEntry)
 		}
 
 		// Move to next entry
 		currentEntry++
-		currentPos.ByteOffset = entryEnd
-
-		// Check if we've moved beyond the current file's data
-		if currentPos.ByteOffset >= int64(len(fileData)) {
-			// Move to next file if one exists
-			if currentPos.FileIndex+1 < len(reader.files) {
-				currentPos.FileIndex++
-				currentPos.ByteOffset = 0
-			} else {
-				// We've reached the actual end
-				break
-			}
-		}
+		currentOffset = entryEnd
 	}
 
-	return currentPos, nil
+	return EntryPosition{}, fmt.Errorf("entry %d not found in file %d", targetEntry, targetFileIndex)
 }
 
 // readFromShard reads entries from a single shard using entry-based positioning
@@ -713,7 +703,17 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		// Read the specific entry
 		data, err := reader.ReadEntryAtPosition(position)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
+			// If we get a "file not memory mapped" error, it might mean the file is empty
+			// or hasn't been flushed yet. Try to force a flush and retry once.
+			if strings.Contains(err.Error(), "file not memory mapped") {
+				// Force persist the index to ensure file metadata is up to date
+				shard.persistIndex()
+				// Retry the read
+				data, err = reader.ReadEntryAtPosition(position)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
+			}
 		}
 
 		message := StreamMessage{

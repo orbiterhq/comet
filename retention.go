@@ -56,7 +56,12 @@ func (c *Client) startRetentionManager() {
 		defer ticker.Stop()
 
 		// Run initial cleanup after short delay
-		initialTimer := time.NewTimer(10 * time.Second)
+		// Use cleanup interval as initial delay to avoid hardcoded 10s
+		initialDelay := c.config.Retention.CleanupInterval
+		if initialDelay > 10*time.Second {
+			initialDelay = 10 * time.Second
+		}
+		initialTimer := time.NewTimer(initialDelay)
 		select {
 		case <-initialTimer.C:
 			c.runRetentionCleanup()
@@ -126,6 +131,14 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 	// Analyze files for deletion
 	filesToDelete := []FileInfo{}
 	filesToKeep := []FileInfo{}
+	
+	// Count total non-current files first
+	totalNonCurrentFiles := 0
+	for _, file := range files {
+		if file.Path != currentFile {
+			totalNonCurrentFiles++
+		}
+	}
 
 	for i, file := range files {
 		fileSize := file.EndOffset - file.StartOffset
@@ -169,8 +182,9 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 			}
 		}
 
-		// Enforce minimum files
-		if shouldDelete && len(filesToKeep) < c.config.Retention.MinFilesToKeep {
+		// Enforce minimum files - check against total files, not just files already processed
+		remainingFiles := totalNonCurrentFiles - len(filesToDelete)
+		if shouldDelete && remainingFiles <= c.config.Retention.MinFilesToKeep {
 			shouldDelete = false
 		}
 
@@ -334,6 +348,16 @@ func (c *Client) enforceGlobalSizeLimit(shards []*Shard, currentTotal int64) {
 	for shard, files := range deletionMap {
 		c.deleteFiles(shard, files, &c.metrics)
 	}
+}
+
+// ForceRetentionCleanup forces an immediate retention cleanup pass
+// This is primarily useful for testing retention behavior
+func (c *Client) ForceRetentionCleanup() {
+	if c.config.Retention.CleanupInterval <= 0 {
+		// Retention is disabled
+		return
+	}
+	c.runRetentionCleanup()
 }
 
 // GetRetentionStats returns current retention statistics

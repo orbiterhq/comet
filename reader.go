@@ -113,6 +113,8 @@ func (r *Reader) mapFile(info FileInfo) (*MappedFile, error) {
 	}
 
 	if size == 0 {
+		// For empty files, store an empty byte slice
+		mappedFile.data.Store([]byte{})
 		return mappedFile, nil
 	}
 
@@ -217,6 +219,13 @@ func (r *Reader) ReadEntryAtPosition(pos EntryPosition) ([]byte, error) {
 	}
 
 	// Read from the current mapping (no locks needed!)
+	if currentData == nil {
+		// File was never mapped or is empty, try to remap
+		if err := r.remapFile(pos.FileIndex); err != nil {
+			return nil, fmt.Errorf("failed to map file: %w", err)
+		}
+		currentData = targetFile.data.Load()
+	}
 	data, err := r.readEntryFromFileData(currentData, pos.ByteOffset)
 	if err != nil && strings.Contains(err.Error(), "extends beyond file") {
 		// Handle the case where index was updated but data hasn't been flushed yet
@@ -235,155 +244,6 @@ func (r *Reader) ReadEntryAtPosition(pos EntryPosition) ([]byte, error) {
 		}
 	}
 	return data, err
-}
-
-// ReadEntry reads a single entry at the given byte offset (legacy method)
-func (r *Reader) ReadEntry(offset int64) ([]byte, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	// Find the file containing this offset
-	var targetFile *MappedFile
-	for i := range r.files {
-		file := r.files[i]
-		if offset >= file.StartOffset && offset < file.EndOffset {
-			targetFile = file
-			break
-		}
-	}
-
-	if targetFile == nil {
-		return nil, fmt.Errorf("offset %d not found in any file", offset)
-	}
-
-	// Calculate position within the file
-	fileOffset := offset - targetFile.StartOffset
-
-	// Get data atomically
-	data := targetFile.data.Load()
-	if fileOffset+headerSize > int64(len(data)) {
-		return nil, fmt.Errorf("invalid offset: header extends beyond file")
-	}
-
-	// Read header
-	header := data[fileOffset : fileOffset+headerSize]
-	length := binary.LittleEndian.Uint32(header[0:4])
-
-	// Check bounds
-	dataStart := fileOffset + headerSize
-	dataEnd := dataStart + int64(length)
-	if dataEnd > int64(len(data)) {
-		return nil, fmt.Errorf("invalid entry: data extends beyond file")
-	}
-
-	// Read compressed data
-	compressedData := data[dataStart:dataEnd]
-
-	// Get buffer from pool for decompression
-	buf := r.bufferPool.Get().([]byte)
-	defer func() {
-		// Reset buffer and return to pool
-		buf = buf[:0]
-		r.bufferPool.Put(buf) //lint:ignore SA6002 sync.Pool.Put expects interface{}, slice is correct
-	}()
-
-	// Check if data is compressed by looking for zstd magic number
-	if len(compressedData) >= 4 {
-		// Try to decompress - if it fails, assume data is uncompressed
-		decompressed, err := r.decompressor.DecodeAll(compressedData, buf)
-		if err == nil {
-			// Successfully decompressed
-			result := make([]byte, len(decompressed))
-			copy(result, decompressed)
-			return result, nil
-		}
-	}
-
-	// Data is not compressed - return as is
-	result := make([]byte, len(compressedData))
-	copy(result, compressedData)
-	return result, nil
-}
-
-// ReadRange reads entries in a byte range
-func (r *Reader) ReadRange(startOffset, endOffset int64, callback func(offset int64, data []byte) error) error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	offset := startOffset
-	for offset < endOffset {
-		// Find the file containing this offset
-		var targetFile *MappedFile
-		for i := range r.files {
-			file := r.files[i]
-			if offset >= file.StartOffset && (i == len(r.files)-1 || offset < r.files[i+1].StartOffset) {
-				targetFile = file
-				break
-			}
-		}
-
-		if targetFile == nil {
-			break // No more data
-		}
-
-		// Read entries from this file
-		fileOffset := offset - targetFile.StartOffset
-		targetData := targetFile.data.Load() // Get data atomically
-
-		for fileOffset < int64(len(targetData)) && offset < endOffset {
-			// Check if we have enough data for header
-			if fileOffset+headerSize > int64(len(targetData)) {
-				break
-			}
-
-			// Read header
-			header := targetData[fileOffset : fileOffset+headerSize]
-			length := binary.LittleEndian.Uint32(header[0:4])
-
-			// Check bounds
-			dataStart := fileOffset + headerSize
-			dataEnd := dataStart + int64(length)
-			if dataEnd > int64(len(targetData)) {
-				break
-			}
-
-			// Read and decompress data
-			compressedData := targetData[dataStart:dataEnd]
-
-			// Get buffer from pool for decompression
-			buf := r.bufferPool.Get().([]byte)
-
-			var dataToCallback []byte
-			if len(compressedData) >= 4 {
-				// Try to decompress - if it fails, assume data is uncompressed
-				decompressed, err := r.decompressor.DecodeAll(compressedData, buf)
-				if err == nil {
-					dataToCallback = decompressed
-				} else {
-					dataToCallback = compressedData
-				}
-			} else {
-				dataToCallback = compressedData
-			}
-
-			// Call callback
-			callbackErr := callback(offset, dataToCallback)
-
-			// Return buffer to pool
-			buf = buf[:0]
-			r.bufferPool.Put(buf) //lint:ignore SA6002 sync.Pool.Put expects interface{}, slice is correct
-
-			if callbackErr != nil {
-				return callbackErr
-			}
-
-			// Move to next entry
-			fileOffset = dataEnd
-			offset = targetFile.StartOffset + fileOffset
-		}
-	}
-
-	return nil
 }
 
 // Close unmaps all files and cleans up resources
@@ -417,7 +277,7 @@ func (r *Reader) Close() error {
 // readEntryFromFileData reads a single entry from memory-mapped data at a byte offset
 func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, error) {
 	if len(data) == 0 {
-		return nil, fmt.Errorf("file not memory mapped")
+		return nil, fmt.Errorf("file not memory mapped (data length: %d, offset: %d)", len(data), byteOffset)
 	}
 
 	if byteOffset+headerSize > int64(len(data)) {

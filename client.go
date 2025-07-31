@@ -1164,6 +1164,12 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				finalEntryNumber = entryNumbers[len(entryNumbers)-1] + 1
 			}
 			finalWriteOffset := writeOffset
+			
+			// DEBUG: Log entry number calculation
+			if false { // Enable for debugging
+				log.Printf("Shard %d: entryNumbers=%v, finalEntryNumber=%d, initialEntryNumber=%d",
+					s.shardID, entryNumbers, finalEntryNumber, initialEntryNumber)
+			}
 			writeReq.UpdateFunc = func() error {
 				s.mu.Lock()
 				defer s.mu.Unlock()
@@ -1357,7 +1363,11 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			// Fast path: Update coordination state immediately (~10ns total)
 			atomic.StoreInt64(&s.mmapState.LastUpdateNanos, time.Now().UnixNano())
 			if s.sequenceState != nil {
-				atomic.StoreInt64(&s.sequenceState.LastEntryNumber, s.index.CurrentEntryNumber)
+				// LastEntryNumber should be the last allocated entry, not the next one
+				// CurrentEntryNumber is the next entry to be written
+				if s.index.CurrentEntryNumber > 0 {
+					atomic.StoreInt64(&s.sequenceState.LastEntryNumber, s.index.CurrentEntryNumber-1)
+				}
 			}
 
 			// Note: Async checkpointing happens in UpdateFunc now
@@ -2082,13 +2092,13 @@ func (s *Shard) initSequenceState() error {
 	}
 
 	if stat.Size() == 0 {
-		// New file - initialize with current entry number from index
-		// This ensures multi-process coordination starts from the right point
-		initialSeq := s.index.CurrentEntryNumber
-		// In multi-process mode, we want entries to start from 1, not 0
-		// This matches the behavior of traditional file-based sequence numbering
-		if initialSeq == 0 && s.index.CurrentFile == "" {
-			initialSeq = 1
+		// New file - initialize with the last allocated entry number
+		// CurrentEntryNumber is the NEXT entry to be written
+		// So if CurrentEntryNumber is 0, no entries have been written yet
+		// and LastEntryNumber should be -1 (but we'll use 0 and adjust in allocation)
+		initialSeq := int64(0)
+		if s.index.CurrentEntryNumber > 0 {
+			initialSeq = s.index.CurrentEntryNumber - 1
 		}
 		if err := binary.Write(file, binary.LittleEndian, initialSeq); err != nil {
 			return fmt.Errorf("failed to initialize sequence state: %w", err)
@@ -2116,13 +2126,17 @@ func (s *Shard) initSequenceState() error {
 	return nil
 }
 
+// Global sequence counter for single-process mode
+var globalSequenceCounter int64
+
 // getNextSequence atomically increments and returns the next sequence number for file naming
 func (s *Shard) getNextSequence() int64 {
 	if s.sequenceCounter != nil {
+		// Multi-process mode: use mmap'd counter
 		return atomic.AddInt64(s.sequenceCounter, 1)
 	}
-	// Fallback to timestamp if sequence counter not available (single process mode)
-	return time.Now().Unix()
+	// Single-process mode: use global atomic counter
+	return atomic.AddInt64(&globalSequenceCounter, 1)
 }
 
 // updateMmapState atomically updates the shared timestamp to notify other processes of index changes

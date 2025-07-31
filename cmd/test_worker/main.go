@@ -13,6 +13,12 @@ import (
 )
 
 func main() {
+	// Check if first argument is a command
+	if len(os.Args) > 1 && os.Args[1] == "retention-test" {
+		runRetentionTest()
+		return
+	}
+
 	var (
 		mode     = flag.String("mode", "writer", "Mode: writer, reader, or benchmark")
 		dir      = flag.String("dir", "", "Data directory")
@@ -183,4 +189,69 @@ func runBenchmark(dir, id string, duration time.Duration) {
 	elapsed := time.Since(start)
 	rate := float64(count) / elapsed.Seconds()
 	log.Printf("Benchmark %s completed: wrote %d entries in %v (%.0f entries/sec)", id, count, elapsed, rate)
+}
+
+func runRetentionTest() {
+	// Parse retention test specific flags
+	retentionCmd := flag.NewFlagSet("retention-test", flag.ExitOnError)
+	dir := retentionCmd.String("dir", "", "Data directory")
+	workerID := retentionCmd.Int("worker-id", 0, "Worker ID")
+	streamName := retentionCmd.String("stream", "", "Stream name")
+	
+	// Skip the command name
+	retentionCmd.Parse(os.Args[2:])
+	
+	if *dir == "" || *streamName == "" {
+		log.Fatal("--dir and --stream are required")
+	}
+	
+	config := comet.MultiProcessConfig()
+	config.Retention.MaxAge = 200 * time.Millisecond
+	config.Retention.CleanupInterval = 100 * time.Millisecond
+	config.Retention.MinFilesToKeep = 2
+	
+	client, err := comet.NewClientWithConfig(*dir, config)
+	if err != nil {
+		log.Fatalf("Worker %d: failed to create client: %v", *workerID, err)
+	}
+	defer client.Close()
+	
+	ctx := context.Background()
+	
+	// Write some data
+	for i := 0; i < 10; i++ {
+		data := []byte(fmt.Sprintf(`{"id": %d, "worker": %d, "timestamp": %d}`, i, *workerID, time.Now().UnixNano()))
+		_, err := client.Append(ctx, *streamName, [][]byte{data})
+		if err != nil {
+			log.Printf("Worker %d: write error: %v", *workerID, err)
+		}
+	}
+	
+	// Worker 0 triggers retention
+	if *workerID == 0 {
+		log.Printf("Worker 0: triggering retention cleanup")
+		client.ForceRetentionCleanup()
+		time.Sleep(100 * time.Millisecond) // Give retention time to work
+	} else {
+		// Other workers just wait a bit
+		time.Sleep(200 * time.Millisecond)
+	}
+	
+	// All workers try to read to verify data integrity
+	consumer := comet.NewConsumer(client, comet.ConsumerOptions{
+		Group: fmt.Sprintf("worker-%d", *workerID),
+	})
+	defer consumer.Close()
+	
+	messages, err := consumer.Read(ctx, []uint32{1}, 5)
+	if err != nil {
+		log.Printf("Worker %d: read error after retention: %v", *workerID, err)
+	} else {
+		log.Printf("Worker %d: successfully read %d messages after retention", *workerID, len(messages))
+	}
+	
+	// Sync to ensure all writes are persisted
+	client.Sync(ctx)
+	
+	fmt.Printf("Worker %d completed successfully\n", *workerID)
 }
