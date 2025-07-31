@@ -35,4 +35,3 @@ jobs:
         run: mise run setup
       - name: Run tests
         run: mise run test
-

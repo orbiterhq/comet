@@ -13,13 +13,13 @@ This guide helps you achieve maximum performance with Comet for your specific us
 
 ### Compression Impact (for ~800 byte JSON logs)
 
-| Operation | Without Compression | With Compression | Slowdown | Storage Savings |
-| --------- | ------------------ | ---------------- | -------- | --------------- |
-| Single Write | 2.2μs | 7.1μs | 3.2x | ~37% |
-| 10-Entry Batch | 3.2μs/entry | 6.2μs/entry | 1.9x | ~37% |
-| 100-Entry Batch | 0.78μs/entry | 5.7μs/entry | 7.4x | ~37% |
+| Operation       | Without Compression | With Compression | Slowdown | Storage Savings |
+| --------------- | ------------------- | ---------------- | -------- | --------------- |
+| Single Write    | 2.2μs               | 7.1μs            | 3.2x     | ~37%            |
+| 10-Entry Batch  | 3.2μs/entry         | 6.2μs/entry      | 1.9x     | ~37%            |
+| 100-Entry Batch | 0.78μs/entry        | 5.7μs/entry      | 7.4x     | ~37%            |
 
-*Benchmarked on: macOS 15.3.2 (24D81), Apple M2 MacBook Air, Go 1.24.5*
+_Benchmarked on: macOS 15.3.2 (24D81), Apple M2 MacBook Air, Go 1.24.5_
 
 **Compression defaults to OFF for entries <4KB** to maintain low latency for typical logs.
 

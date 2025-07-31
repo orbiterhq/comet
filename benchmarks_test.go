@@ -208,11 +208,11 @@ func BenchmarkWrite_MegaBatch(b *testing.B) {
 // BenchmarkWrite_CompressibleEntries tests compression performance
 func BenchmarkWrite_CompressibleEntries(b *testing.B) {
 	dir := b.TempDir()
-	
+
 	// Use lower compression threshold to test realistic compression
 	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 256 // Compress logs larger than 256 bytes
-	
+
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
@@ -239,7 +239,7 @@ func BenchmarkWrite_CompressibleEntries(b *testing.B) {
 		traceID := fmt.Sprintf("%016x%016x", ts, i)
 		spanID := fmt.Sprintf("%016x", ts+int64(i))
 		requestID := fmt.Sprintf("req-%d-%d", ts, i)
-		
+
 		var entry string
 		switch i % len(logTemplates) {
 		case 0: // API Gateway log
@@ -283,7 +283,7 @@ func BenchmarkWrite_CompressibleEntries(b *testing.B) {
 func BenchmarkWrite_CompressionComparison(b *testing.B) {
 	// Create realistic JSON log that's large enough to compress
 	logTemplate := `{"timestamp":%d,"level":"INFO","service":"api-gateway","trace_id":"%s","span_id":"%s","method":"POST","path":"/api/v1/orders","status_code":201,"duration_ms":%.2f,"user_agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36","ip":"10.0.0.%d","request_body":{"order_id":"%s","customer_id":%d,"items":[{"product_id":"PROD-%d","quantity":%d,"price":%.2f},{"product_id":"PROD-%d","quantity":%d,"price":%.2f}],"shipping_address":{"street":"123 Main St","city":"San Francisco","state":"CA","zip":"94105","country":"US"},"payment":{"method":"credit_card","last4":"1234","processor":"stripe","amount":%.2f}},"response_size":%d,"request_id":"%s","session_id":"%s","correlation_id":"%s"}`
-	
+
 	makeEntry := func(i int) []byte {
 		ts := time.Now().UnixNano()
 		traceID := fmt.Sprintf("%032x", ts+int64(i))
@@ -292,7 +292,7 @@ func BenchmarkWrite_CompressionComparison(b *testing.B) {
 		sessionID := fmt.Sprintf("sess-%d", ts/1000000)
 		correlationID := fmt.Sprintf("corr-%d-%d", ts, i)
 		orderID := fmt.Sprintf("ORD-%010d", i)
-		
+
 		entry := fmt.Sprintf(logTemplate,
 			ts, traceID, spanID, 25.5+float64(i%100),
 			10+i%250, orderID, 1000+i,
@@ -302,57 +302,57 @@ func BenchmarkWrite_CompressionComparison(b *testing.B) {
 			requestID, sessionID, correlationID)
 		return []byte(entry)
 	}
-	
+
 	// Test different scenarios
 	scenarios := []struct {
 		name            string
 		compressionSize int
 		batchSize       int
 	}{
-		{"NoCompression_Single", 1 << 30, 1},    // Compression disabled
-		{"WithCompression_Single", 256, 1},      // Compression enabled
-		{"NoCompression_Batch10", 1 << 30, 10},  // Batch without compression
-		{"WithCompression_Batch10", 256, 10},    // Batch with compression
+		{"NoCompression_Single", 1 << 30, 1},   // Compression disabled
+		{"WithCompression_Single", 256, 1},     // Compression enabled
+		{"NoCompression_Batch10", 1 << 30, 10}, // Batch without compression
+		{"WithCompression_Batch10", 256, 10},   // Batch with compression
 		{"NoCompression_Batch100", 1 << 30, 100},
 		{"WithCompression_Batch100", 256, 100},
 	}
-	
+
 	for _, scenario := range scenarios {
 		b.Run(scenario.name, func(b *testing.B) {
 			dir := b.TempDir()
 			config := DefaultCometConfig()
 			config.Compression.MinCompressSize = scenario.compressionSize
-			
+
 			client, err := NewClientWithConfig(dir, config)
 			if err != nil {
 				b.Fatalf("failed to create client: %v", err)
 			}
 			defer client.Close()
-			
+
 			ctx := context.Background()
 			streamName := "events:v1:shard:0001"
-			
+
 			// Prepare batch
 			batch := make([][]byte, scenario.batchSize)
 			for i := 0; i < scenario.batchSize; i++ {
 				batch[i] = makeEntry(i)
 			}
-			
+
 			b.ResetTimer()
 			b.ReportAllocs()
-			
+
 			for i := 0; i < b.N; i++ {
 				_, err := client.Append(ctx, streamName, batch)
 				if err != nil {
 					b.Fatalf("failed to append: %v", err)
 				}
 			}
-			
+
 			// Report metrics
 			stats := client.GetStats()
 			b.ReportMetric(float64(stats.TotalEntries), "entries_written")
 			if stats.CompressedEntries > 0 {
-				b.ReportMetric(float64(stats.TotalBytes)/1e6, "MB_original") 
+				b.ReportMetric(float64(stats.TotalBytes)/1e6, "MB_original")
 				b.ReportMetric(float64(stats.TotalCompressed)/1e6, "MB_compressed")
 				ratio := float64(stats.TotalCompressed) / float64(stats.TotalBytes)
 				b.ReportMetric(ratio, "compression_ratio")
