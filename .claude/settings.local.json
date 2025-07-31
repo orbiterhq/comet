@@ -10,7 +10,9 @@
       "Bash(go vet:*)",
       "Bash(go test:*)",
       "Bash(go tool pprof:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(mise run test:*)",
+      "Bash(mise run lint:*)"
     ],
     "deny": []
   }

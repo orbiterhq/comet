@@ -457,17 +457,17 @@ func (c *Consumer) findEntryPosition(shard *Shard, entryNum int64) (EntryPositio
 		totalEntries += f.Entries
 	}
 	firstEntryNum := shard.index.CurrentEntryNumber - totalEntries
-	
+
 	// If looking for an entry before the first one, it doesn't exist
 	if entryNum < firstEntryNum {
 		return EntryPosition{}, fmt.Errorf("entry %d does not exist (first entry is %d)", entryNum, firstEntryNum)
 	}
-	
+
 	// If looking for the first entry, return the start position
 	if entryNum == firstEntryNum {
 		return startPos, nil
 	}
-	
+
 	// Otherwise scan forward from the first entry
 	return c.scanForwardToEntry(shard, startPos, firstEntryNum, entryNum)
 }

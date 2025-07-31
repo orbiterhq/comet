@@ -396,7 +396,7 @@ type Shard struct {
 	mmapState     *MmapSharedState // Memory-mapped coordination state
 	sequenceState *SequenceState   // Memory-mapped sequence state for entry numbers
 	sequenceFile  *os.File         // File handle for sequence counter
-	mmapWriter    *MmapWriter     // Memory-mapped writer for ultra-fast multi-process writes
+	mmapWriter    *MmapWriter      // Memory-mapped writer for ultra-fast multi-process writes
 
 	// Strings (24 bytes: ptr + len + cap)
 	indexPath         string // Path to index file
@@ -818,7 +818,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		if err := shard.initSequenceState(); err != nil {
 			return nil, fmt.Errorf("failed to initialize sequence state: %w", err)
 		}
-		
+
 		// Initialize memory-mapped writer for ultra-fast writes
 		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, &c.metrics)
 		if err != nil {
@@ -831,7 +831,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	if err := shard.loadIndex(); err != nil {
 		return nil, err
 	}
-	
+
 	// If we have an mmap writer, sync the index with the coordination state
 	if shard.mmapWriter != nil {
 		coordState := shard.mmapWriter.CoordinationState()
@@ -1135,7 +1135,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 
 	// Perform I/O OUTSIDE the lock
 	var writeErr error
-	
+
 	// Use memory-mapped writer for ultra-fast multi-process writes if available
 	if config.Concurrency.EnableMultiProcessMode && s.mmapWriter != nil {
 		// Extract entry numbers from IDs
@@ -1143,7 +1143,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		for i, id := range writeReq.IDs {
 			entryNumbers[i] = id.EntryNumber
 		}
-		
+
 		// Extract raw data from write buffers (skip headers, they will be recreated)
 		rawEntries := make([][]byte, len(writeReq.IDs))
 		for i := 0; i < len(writeReq.IDs); i++ {
@@ -1151,14 +1151,30 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			// Skip the header (index i*2) and get the data (index i*2+1)
 			rawEntries[i] = writeReq.WriteBuffers[i*2+1]
 		}
-		
+
 		// Memory-mapped write (handles its own coordination)
 		writeErr = s.mmapWriter.Write(rawEntries, entryNumbers)
-		
-		// Update index after successful mmap write
+
+		// Handle rotation needed error
+		if writeErr != nil && strings.Contains(writeErr.Error(), "rotation needed") {
+			// Must acquire mutex before rotating to avoid race conditions
+			s.mu.Lock()
+			rotErr := s.rotateFile(clientMetrics, config)
+			s.mu.Unlock()
+
+			if rotErr != nil {
+				return nil, fmt.Errorf("failed to rotate file: %w", rotErr)
+			}
+
+			// Retry the write after rotation
+			writeErr = s.mmapWriter.Write(rawEntries, entryNumbers)
+		}
+
+		// Update index after successful mmap write - must be protected by mutex
 		if writeErr == nil {
-			// Update write offset from mmap writer's coordination state
+			s.mu.Lock()
 			s.index.CurrentWriteOffset = s.mmapWriter.CoordinationState().WriteOffset.Load()
+			s.mu.Unlock()
 		}
 	} else {
 		// Regular write path with file locking
@@ -1264,7 +1280,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			if s.sequenceState != nil {
 				atomic.StoreInt64(&s.sequenceState.LastEntryNumber, s.index.CurrentEntryNumber)
 			}
-			
+
 			// Schedule async checkpoint if needed (don't block the write)
 			if s.writesSinceCheckpoint > 0 && time.Since(s.lastCheckpoint) > 100*time.Millisecond {
 				s.scheduleAsyncCheckpoint(clientMetrics, config)
@@ -1581,7 +1597,7 @@ func (s *Shard) loadIndex() error {
 		// The index already has the correct write offset from when it was saved
 		// For mmap files, the file size doesn't reflect the actual data written
 	}
-	
+
 	return nil
 }
 
@@ -1781,7 +1797,7 @@ func (s *Shard) recoverFromCrash() error {
 		if offset+headerSize+int64(length) > actualSize {
 			break // Incomplete entry
 		}
-		
+
 		// Skip zero-length entries (likely uninitialized file regions)
 		if length == 0 {
 			// Check if this is just zeros (uninitialized data)
@@ -1819,11 +1835,43 @@ func (s *Shard) recoverFromCrash() error {
 }
 
 // rotateFile closes current file and starts a new one
+// NOTE: This method assumes the caller holds s.mu (main shard mutex)
 func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) error {
-	// Acquire write lock to ensure no writes are in progress
+	// Handle mmap writer rotation
+	if s.mmapWriter != nil {
+		// Let mmap writer handle its own file rotation
+		if err := s.mmapWriter.rotateFile(); err != nil {
+			return fmt.Errorf("failed to rotate mmap file: %w", err)
+		}
+
+		// Update index to reflect new file from mmap writer
+		// The mmap writer will have updated its internal path
+		shardDir := filepath.Dir(s.index.CurrentFile)
+		seqNum := s.getNextSequence()
+		newPath := filepath.Join(shardDir, fmt.Sprintf("log-%016d.comet", seqNum))
+		s.index.CurrentFile = newPath
+
+		// Add new file to index
+		s.index.Files = append(s.index.Files, FileInfo{
+			Path:        newPath,
+			StartOffset: 0, // Mmap files always start at 0
+			StartEntry:  s.index.CurrentEntryNumber,
+			StartTime:   time.Now(),
+			Entries:     0,
+		})
+
+		// Track file rotation
+		clientMetrics.FileRotations.Add(1)
+		clientMetrics.TotalFiles.Add(1)
+
+		return nil
+	}
+
+	// Regular file writer rotation - acquire write lock to ensure no writes are in progress
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
+	// Regular file writer rotation
 	// Close direct writer
 	if s.writer != nil {
 		s.writer.Flush()
@@ -1954,15 +2002,20 @@ func (c *Client) Close() error {
 		if shard.dataFile != nil {
 			shard.dataFile.Close()
 		}
-		
+
 		// Close memory-mapped writer
 		if shard.mmapWriter != nil {
 			shard.mmapWriter.Close()
 		}
 
 		shard.writeMu.Unlock()
+		shard.mu.Unlock()
 
-		// Close lock files
+		// Wait for background operations to complete BEFORE closing files
+		shard.wg.Wait()
+
+		// Now safe to close lock files (no more background goroutines using them)
+		shard.mu.Lock()
 		if shard.lockFile != nil {
 			shard.lockFile.Close()
 		}
@@ -1972,11 +2025,7 @@ func (c *Client) Close() error {
 		if shard.sequenceFile != nil {
 			shard.sequenceFile.Close()
 		}
-
 		shard.mu.Unlock()
-
-		// Wait for background operations to complete BEFORE unmapping
-		shard.wg.Wait()
 
 		// Now safe to unmap shared state
 		if shard.indexStateData != nil {

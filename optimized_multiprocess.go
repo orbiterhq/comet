@@ -14,11 +14,11 @@ import (
 // OptimizedShardState represents shared state for ultra-fast multi-process coordination
 type OptimizedShardState struct {
 	// Atomic counters for lock-free coordination
-	NextSequence    atomic.Int64  // Next entry sequence number
-	WriteOffset     atomic.Int64  // Current write offset in active file
-	ActiveFileIndex atomic.Int64  // Index of current file (for rotation detection)
-	FlushGeneration atomic.Int64  // Incremented on each background flush
-	_padding        [32]byte      // Avoid false sharing between fields
+	NextSequence    atomic.Int64 // Next entry sequence number
+	WriteOffset     atomic.Int64 // Current write offset in active file
+	ActiveFileIndex atomic.Int64 // Index of current file (for rotation detection)
+	FlushGeneration atomic.Int64 // Incremented on each background flush
+	_padding        [32]byte     // Avoid false sharing between fields
 }
 
 // ProcessLocalBuffer holds entries before they're flushed to shared storage
@@ -47,10 +47,10 @@ type OptimizedShard struct {
 	dataMapSize     int64                // Size of mapped region
 
 	// Process-local state
-	localBuffer  *ProcessLocalBuffer
-	shardID      uint32
-	maxFileSize  int64
-	lastFlushGen int64
+	localBuffer *ProcessLocalBuffer
+	shardID     uint32
+	maxFileSize int64
+	_           int64 // unused for now
 
 	// Paths
 	shardDir  string

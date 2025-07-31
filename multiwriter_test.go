@@ -257,7 +257,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 			t.Logf("  Initial File[0]: entries=%d", initialShard.index.Files[0].Entries)
 		}
 		initialShard.mu.RUnlock()
-		
+
 		// Write some initial data
 		testData := [][]byte{
 			[]byte(`{"id": 1, "message": "from writer"}`),
@@ -279,7 +279,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to sync: %v", err)
 		}
-		
+
 		// Force index persistence for multi-process visibility
 		shard1, _ := client1.getOrCreateShard(1)
 		shard1.mu.Lock()
@@ -288,14 +288,14 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		for i, f := range shard1.index.Files {
 			t.Logf("  File[%d]: %s (entries=%d, startEntry=%d)", i, f.Path, f.Entries, f.StartEntry)
 		}
-		
+
 		// DEBUG: Check what the actual data in the file is
 		if shard1.mmapWriter != nil {
 			coordState := shard1.mmapWriter.CoordinationState()
-			t.Logf("MmapWriter state: WriteOffset=%d, FileSize=%d", 
+			t.Logf("MmapWriter state: WriteOffset=%d, FileSize=%d",
 				coordState.WriteOffset.Load(), coordState.FileSize.Load())
 		}
-		
+
 		shard1.persistIndex()
 		shard1.mu.Unlock()
 
@@ -318,7 +318,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		for i, f := range shard2.index.Files {
 			t.Logf("  File[%d]: %s (entries=%d, startEntry=%d)", i, f.Path, f.Entries, f.StartEntry)
 		}
-		
+
 		// Check mmap writer state
 		if shard2.mmapWriter != nil {
 			t.Logf("Reader mmap state: WriteOffset=%d", shard2.mmapWriter.CoordinationState().WriteOffset.Load())

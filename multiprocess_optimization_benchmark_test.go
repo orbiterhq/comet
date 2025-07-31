@@ -41,7 +41,7 @@ func BenchmarkMultiProcessMode_AsyncCheckpoint(b *testing.B) {
 // BenchmarkOptimizedMultiProcess benchmarks the memory-mapped data file approach
 func BenchmarkOptimizedMultiProcess(b *testing.B) {
 	dir := b.TempDir()
-	
+
 	shard, err := NewOptimizedShard(1, dir)
 	if err != nil {
 		b.Fatal(err)

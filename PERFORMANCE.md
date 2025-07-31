@@ -108,13 +108,14 @@ consumer.Process(ctx, handler,
 
 **Multi-Process Performance Evolution**:
 
-| Implementation | Write Latency | vs Single-Process | Key Technology |
-|----------------|---------------|-------------------|----------------|
-| Original (sync checkpoint) | 7.6ms | 4,575x slower | File locks + sync I/O |
-| Async checkpointing | 3.2ms | 1,940x slower | Deferred index persistence |
-| Memory-mapped I/O | 32μs | 20x slower | Lock-free atomics + mmap |
+| Implementation             | Write Latency | vs Single-Process | Key Technology             |
+| -------------------------- | ------------- | ----------------- | -------------------------- |
+| Original (sync checkpoint) | 7.6ms         | 4,575x slower     | File locks + sync I/O      |
+| Async checkpointing        | 3.2ms         | 1,940x slower     | Deferred index persistence |
+| Memory-mapped I/O          | 32μs          | 20x slower        | Lock-free atomics + mmap   |
 
 The latest multi-process mode achieves **32μs write latency** through:
+
 - **Lock-free coordination**: Atomic operations for sequence allocation
 - **Memory-mapped data files**: Direct memory writes bypass syscalls
 - **Async index updates**: Index persistence happens in background
