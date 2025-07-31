@@ -3,6 +3,7 @@ package comet
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -249,6 +250,8 @@ func (w *MmapWriter) Write(entries [][]byte, entryNumbers []int64) error {
 
 	// Atomically allocate write space
 	writeOffset := w.coordinationState.WriteOffset.Add(totalSize) - totalSize
+	log.Printf("[MMAP] Process allocated %d bytes at offset %d (total size now %d)", 
+		totalSize, writeOffset, w.coordinationState.WriteOffset.Load())
 
 	// Check if we need rotation - return special error to let shard handle it
 	if writeOffset+totalSize > w.maxFileSize {
@@ -331,7 +334,9 @@ func (w *MmapWriter) Write(entries [][]byte, entryNumbers []int64) error {
 
 	// Update coordination state
 	w.coordinationState.LastWriteNanos.Store(now)
-	w.coordinationState.TotalWrites.Add(int64(len(entries)))
+	totalWrites := w.coordinationState.TotalWrites.Add(int64(len(entries)))
+	log.Printf("[MMAP] Process completed write of %d entries at offset %d (total writes now %d)", 
+		len(entries), writeOffset, totalWrites)
 
 	// Update client metrics if available
 	if w.metrics != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -589,7 +590,8 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 				// In multi-process mode, check if we need to rebuild index from files
 				// We can tell we're in multi-process mode if mmapState exists
 				if shard.mmapState != nil {
-					shard.lazyRebuildIndexIfNeeded()
+					shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
+					shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
 				}
 
 				// Also invalidate any cached readers since the index changed

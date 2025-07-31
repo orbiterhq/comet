@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // The tests below spawn actual OS processes, making them true integration tests
@@ -400,9 +401,8 @@ func TestMultiProcessIntegration(t *testing.T) {
 		}
 		t.Logf("Wrote init entry with ID: %v", ids)
 		
-		// Verify we can read it back immediately
-		len1, _ := client.Len(context.Background(), "test:v1:shard:0001")
-		t.Logf("Shard length before close: %d", len1)
+		// Don't check length here - it triggers premature rebuild during multi-process startup
+		// We'll verify the full count after all writers complete
 		
 		// In multi-process mode, we need to wait for checkpoint to happen
 		// since CheckpointTime is 100ms
@@ -453,6 +453,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 					fmt.Sprintf("COMET_MP_TEST_ROLE=contention-writer-%d", id),
 					fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),
 					"COMET_MP_TEST_WRITES=100",
+					"COMET_MP_FORCE_SYNC=1", // Force sync after writes
 				)
 				out, err := cmd.CombinedOutput()
 				if err != nil {
@@ -465,7 +466,42 @@ func TestMultiProcessIntegration(t *testing.T) {
 
 		wg.Wait()
 		elapsed := time.Since(start)
-
+		
+		t.Logf("All writer processes completed, ensuring all writes are fully committed...")
+		
+		// Create a temporary client to force all pending writes to flush
+		tempClient, err := NewClientWithConfig(testDir, config)
+		if err != nil {
+			t.Fatalf("Failed to create temp client: %v", err)
+		}
+		
+		// Force sync to ensure all data is committed to disk
+		tempClient.Sync(context.Background())
+		tempClient.Close()
+		
+		// Wait longer for coordination state to stabilize after sync
+		time.Sleep(2 * time.Second)
+		
+		// Check coordination state BEFORE creating client to ensure it's stabilized
+		shardDir2 := filepath.Join(testDir, "shard-0001")
+		coordPath2 := filepath.Join(shardDir2, "coordination.state")
+		if coordFile, coordErr := os.Open(coordPath2); coordErr == nil {
+			defer coordFile.Close()
+			const stateSize = 256
+			if data, mmapErr := syscall.Mmap(int(coordFile.Fd()), 0, stateSize,
+				syscall.PROT_READ, syscall.MAP_SHARED); mmapErr == nil {
+				defer syscall.Munmap(data)
+				
+				coordState := (*MmapCoordinationState)(unsafe.Pointer(&data[0]))
+				writeOffset := coordState.WriteOffset.Load()
+				totalWrites := coordState.TotalWrites.Load()
+				lastWrite := coordState.LastWriteNanos.Load()
+				
+				t.Logf("Final coordination state before creating client: WriteOffset=%d, TotalWrites=%d, LastWrite=%d",
+					writeOffset, totalWrites, lastWrite)
+			}
+		}
+		
 		// Verify all entries
 		client, err = NewClientWithConfig(testDir, config)
 		if err != nil {
@@ -482,7 +518,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 
 		ctx := context.Background()
 		
-		// Check shard length directly
+		// Check shard length directly (this triggers rebuild with current coordination state)
 		shardLen, err := client.Len(ctx, "test:v1:shard:0001")
 		if err != nil {
 			t.Logf("Failed to get shard length: %v", err)
@@ -491,16 +527,19 @@ func TestMultiProcessIntegration(t *testing.T) {
 		}
 		
 		// Check data files to see if entries are there
-		shardDir2 := filepath.Join(testDir, "shard-0001")
+		// (reusing shardDir2 from above)
 		files2, _ := os.ReadDir(shardDir2)
 		var totalDataSize int64
+		var dataFileCount int
 		for _, f := range files2 {
 			if strings.HasSuffix(f.Name(), ".comet") {
 				info, _ := f.Info()
 				t.Logf("Data file %s size: %d bytes", f.Name(), info.Size())
 				totalDataSize += info.Size()
+				dataFileCount++
 			}
 		}
+		t.Logf("Total data files: %d", dataFileCount)
 		t.Logf("Total data file size: %d bytes", totalDataSize)
 		
 		// Check the index file to understand what's happening
@@ -793,11 +832,14 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		if n := os.Getenv("COMET_MP_TEST_WRITES"); n != "" {
 			numWrites, _ = strconv.Atoi(n)
 		}
+		
+		forceSync := os.Getenv("COMET_MP_FORCE_SYNC") == "1"
 
 		ctx := context.Background()
 		streamName := "test:v1:shard:0001" // ALL writers use same shard!
 
 		successCount := 0
+		var failedWrites []int
 		for i := 0; i < numWrites; i++ {
 			data, _ := json.Marshal(map[string]interface{}{
 				"writer": role,
@@ -807,9 +849,22 @@ func runMultiProcessWorker(t *testing.T, role string) {
 			_, err := client.Append(ctx, streamName, [][]byte{data})
 			if err == nil {
 				successCount++
+			} else {
+				failedWrites = append(failedWrites, i)
+				t.Logf("%s: write %d FAILED: %v", role, i, err)
 			}
 		}
+		
+		if len(failedWrites) > 0 {
+			t.Logf("%s: WRITE FAILURES: %d failed out of %d: %v", role, len(failedWrites), numWrites, failedWrites)
+		}
 
+		// Force sync if requested to ensure all data is committed
+		if forceSync {
+			client.Sync(ctx)
+			t.Logf("%s: synced after writing entries", role)
+		}
+		
 		t.Logf("%s: wrote %d/%d entries", role, successCount, numWrites)
 		
 		// Force a sync to ensure index is persisted

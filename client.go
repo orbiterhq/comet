@@ -649,17 +649,6 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 	}
 
 	shard.mu.RLock()
-	
-	// In multi-process mode, check if we need to rebuild index
-	if shard.mmapState != nil {
-		// Need write lock for rebuild
-		shard.mu.RUnlock()
-		shard.mu.Lock()
-		shard.lazyRebuildIndexIfNeeded()
-		shard.mu.Unlock()
-		shard.mu.RLock()
-	}
-	
 	defer shard.mu.RUnlock()
 
 	// If file locking is enabled, reload index to get latest state from other processes
@@ -680,6 +669,17 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 				}
 			}
 		}
+	}
+	
+	// In multi-process mode, check if we need to rebuild index AFTER reloading
+	if shard.mmapState != nil {
+		log.Printf("[LEN] Shard %d: checking if rebuild needed after index reload", shard.shardID)
+		// Need write lock for rebuild
+		shard.mu.RUnlock()
+		shard.mu.Lock()
+		shard.lazyRebuildIndexIfNeeded(c.config, filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shard.shardID)))
+		shard.mu.Unlock()
+		shard.mu.RLock()
 	}
 
 	var total int64
@@ -1486,7 +1486,7 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 // lazyRebuildIndexIfNeeded checks if the index needs rebuilding based on file sizes
 // This is called on read path in multi-process mode to ensure consistency
 // Caller must hold the shard lock
-func (s *Shard) lazyRebuildIndexIfNeeded() {
+func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 	if len(s.index.Files) == 0 {
 		return
 	}
@@ -1498,18 +1498,26 @@ func (s *Shard) lazyRebuildIndexIfNeeded() {
 			actualSize := stat.Size()
 			if actualSize > file.EndOffset {
 				needsRebuild = true
+				log.Printf("[REBUILD] Shard %d: file %s has grown from %d to %d bytes, needs rebuild",
+					s.shardID, file.Path, file.EndOffset, actualSize)
 				break
 			}
 		}
 	}
 
 	if !needsRebuild {
+		log.Printf("[REBUILD] Shard %d: no rebuild needed, files match index", s.shardID)
 		return
 	}
 
-	// Rebuild the index by scanning files
+	log.Printf("[REBUILD] Shard %d: starting index rebuild, current index shows %d entries",
+		s.shardID, s.index.CurrentEntryNumber)
+
+	// Rebuild the index by scanning ALL files
+	// In multi-process mode, we can't trust entry counts from partial indexes
 	totalEntries := int64(0)
 	newBinaryNodes := make([]EntryIndexNode, 0)
+	currentEntryNum := int64(0)
 
 	for i := range s.index.Files {
 		file := &s.index.Files[i]
@@ -1521,24 +1529,147 @@ func (s *Shard) lazyRebuildIndexIfNeeded() {
 		}
 		actualSize := stat.Size()
 		
-		// If file has grown, scan it
-		if actualSize > file.EndOffset {
-			// Calculate starting entry number for this file
-			startEntryNum := int64(0)
-			for j := 0; j < i; j++ {
-				startEntryNum += s.index.Files[j].Entries
+		// In multi-process mode, read the shared coordination state to get actual data size
+		scanSize := actualSize
+		if config.Concurrency.EnableMultiProcessMode && i == len(s.index.Files)-1 {
+			// For the current file, check the coordination state
+			coordPath := filepath.Join(shardDir, "coordination.state")
+			if coordFile, err := os.Open(coordPath); err == nil {
+				defer coordFile.Close()
+				
+				// Map the coordination state temporarily to read it
+				const stateSize = 256
+				if data, err := syscall.Mmap(int(coordFile.Fd()), 0, stateSize,
+					syscall.PROT_READ, syscall.MAP_SHARED); err == nil {
+					defer syscall.Munmap(data)
+					
+					// Read the write offset from the shared state
+					// In multi-process scenarios, retry a few times to handle timing issues
+					coordState := (*MmapCoordinationState)(unsafe.Pointer(&data[0]))
+					var writeOffset int64
+					maxRetries := 3
+					
+					log.Printf("[REBUILD] Shard %d: reading shared coordination state from %s", s.shardID, coordPath)
+					
+					for retry := 0; retry < maxRetries; retry++ {
+						writeOffset = coordState.WriteOffset.Load()
+						lastWrite := coordState.LastWriteNanos.Load()
+						fileSize := coordState.FileSize.Load()
+						totalWrites := coordState.TotalWrites.Load()
+						activeFileIndex := coordState.ActiveFileIndex.Load()
+						
+						log.Printf("[REBUILD] Shard %d: coordination state (retry %d): WriteOffset=%d, LastWrite=%d, FileSize=%d, TotalWrites=%d, ActiveFileIndex=%d",
+							s.shardID, retry, writeOffset, lastWrite, fileSize, totalWrites, activeFileIndex)
+						
+						// Check if we expect more writes than we see in the offset
+						// If TotalWrites is significantly higher than what the offset suggests, wait for coordination to stabilize
+						averageBytesPerWrite := int64(50) // Rough estimate
+						expectedMinOffset := totalWrites * averageBytesPerWrite
+						
+						if totalWrites > 100 && writeOffset < expectedMinOffset/2 {
+							log.Printf("[REBUILD] Shard %d: coordination state seems inconsistent (TotalWrites=%d but WriteOffset=%d), waiting for stabilization",
+								s.shardID, totalWrites, writeOffset)
+							time.Sleep(100 * time.Millisecond)
+							continue
+						}
+						
+						// If we see a recent write timestamp, the offset should be stable
+						if lastWrite > 0 && time.Since(time.Unix(0, lastWrite)) < 100*time.Millisecond {
+							log.Printf("[REBUILD] Shard %d: recent write detected (%.2fms ago), using current offset",
+								s.shardID, float64(time.Since(time.Unix(0, lastWrite)))/float64(time.Millisecond))
+							break
+						}
+						
+						// If this is our first try and offset seems small, wait a bit
+						if retry == 0 && writeOffset < 1000 { // Less than 1KB suggests incomplete writes
+							log.Printf("[REBUILD] Shard %d: small write offset detected (%d bytes), waiting 50ms before retry",
+								s.shardID, writeOffset)
+							time.Sleep(50 * time.Millisecond)
+							continue
+						}
+						
+						log.Printf("[REBUILD] Shard %d: using write offset %d from coordination state", s.shardID, writeOffset)
+						break
+					}
+					
+					// Get the latest coordination state values for stabilization check
+					latestTotalWrites := coordState.TotalWrites.Load()
+					
+					// Wait for coordination state to stabilize if we're in a high-contention scenario
+					if latestTotalWrites > 100 {
+						log.Printf("[REBUILD] Shard %d: high contention detected (%d writes), waiting for write coordination to stabilize", s.shardID, latestTotalWrites)
+						
+						// Wait for a brief period to let any pending writes complete
+						stableWaitStart := time.Now()
+						stableTotalWrites := latestTotalWrites
+						stableWriteOffset := writeOffset
+						
+						for attempts := 0; attempts < 10; attempts++ {
+							time.Sleep(50 * time.Millisecond)
+							currentWrites := coordState.TotalWrites.Load()
+							currentOffset := coordState.WriteOffset.Load()
+							
+							log.Printf("[REBUILD] Stabilization check %d: TotalWrites=%d->%d, WriteOffset=%d->%d", 
+								attempts, stableTotalWrites, currentWrites, stableWriteOffset, currentOffset)
+							
+							if currentWrites == stableTotalWrites && currentOffset == stableWriteOffset {
+								// Coordination state is stable
+								log.Printf("[REBUILD] Coordination state stabilized after %v", time.Since(stableWaitStart))
+								break
+							}
+							
+							stableTotalWrites = currentWrites
+							stableWriteOffset = currentOffset
+						}
+						
+						// Use the stabilized values
+						writeOffset = stableWriteOffset
+					}
+					
+					// In multi-process mode, if we have a large pre-allocated file (>100KB), 
+					// scan the entire file rather than trusting coordination state for scanning bounds
+					// This handles cases where coordination state updates are delayed
+					if actualSize > 100*1024 { // File is larger than 100KB - likely pre-allocated
+						scanSize = actualSize
+						log.Printf("[REBUILD] Shard %d: large file detected (%d bytes), scanning entire file instead of using coordination offset %d",
+							s.shardID, actualSize, writeOffset)
+					} else if writeOffset > 0 && writeOffset < actualSize {
+						scanSize = writeOffset
+						log.Printf("[REBUILD] Shard %d: using shared coordination write offset %d instead of file size %d (after %d retries)",
+							s.shardID, writeOffset, actualSize, maxRetries)
+					} else if writeOffset >= actualSize {
+						// Use file scan - this handles large pre-allocated files
+						log.Printf("[REBUILD] Shard %d: coordination offset %d >= file size %d, scanning full file",
+							s.shardID, writeOffset, actualSize)
+					}
+				}
+			} else if s.mmapWriter != nil {
+				// Fallback to local mmapWriter if available
+				coordState := s.mmapWriter.CoordinationState()
+				writeOffset := coordState.WriteOffset.Load()
+				if writeOffset > 0 && writeOffset < actualSize {
+					scanSize = writeOffset
+					log.Printf("[REBUILD] Shard %d: using local mmap write offset %d instead of file size %d",
+						s.shardID, writeOffset, actualSize)
+				}
 			}
-			
-			// Scan the file
-			scanResult := s.scanFileForEntries(file.Path, actualSize, i, startEntryNum)
-			if scanResult.entryCount > 0 {
-				file.Entries = scanResult.entryCount
-				file.EndOffset = actualSize
-				newBinaryNodes = append(newBinaryNodes, scanResult.indexNodes...)
-				totalEntries += scanResult.entryCount
-			}
-		} else {
-			totalEntries += file.Entries
+		}
+		
+		log.Printf("[REBUILD] Shard %d: scanning file %s (size=%d, scan up to %d, old entries=%d)",
+			s.shardID, file.Path, actualSize, scanSize, file.Entries)
+		
+		// Always scan the entire file in multi-process mode
+		// Don't trust the entry count from the partial index
+		scanResult := s.scanFileForEntries(file.Path, scanSize, i, currentEntryNum)
+		log.Printf("[REBUILD] Shard %d: file scan found %d entries (was %d)",
+			s.shardID, scanResult.entryCount, file.Entries)
+		
+		if scanResult.entryCount > 0 {
+			file.Entries = scanResult.entryCount
+			file.EndOffset = actualSize
+			newBinaryNodes = append(newBinaryNodes, scanResult.indexNodes...)
+			totalEntries += scanResult.entryCount
+			currentEntryNum += scanResult.entryCount
 		}
 	}
 
@@ -1573,6 +1704,9 @@ func (s *Shard) lazyRebuildIndexIfNeeded() {
 		lastFile := &s.index.Files[len(s.index.Files)-1]
 		s.index.CurrentWriteOffset = lastFile.EndOffset
 	}
+	
+	log.Printf("[REBUILD] Shard %d: rebuild complete. Total entries: %d (was %d), Binary nodes: %d",
+		s.shardID, s.index.CurrentEntryNumber, totalEntries, len(s.index.BinaryIndex.Nodes))
 }
 
 // scanFileResult holds the results of scanning a data file
@@ -1586,9 +1720,13 @@ type scanFileResult struct {
 func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex int, startEntryNum int64) scanFileResult {
 	f, err := os.Open(filePath)
 	if err != nil {
+		log.Printf("[SCAN] Failed to open file %s: %v", filePath, err)
 		return scanFileResult{}
 	}
 	defer f.Close()
+	
+	log.Printf("[SCAN] Starting scan of %s (size=%d, startEntry=%d)", filePath, fileSize, startEntryNum)
+	log.Printf("[SCAN] Will scan from offset 0 to %d, looking for entries starting at entry number %d", fileSize, startEntryNum)
 
 	result := scanFileResult{
 		indexNodes: make([]EntryIndexNode, 0),
@@ -1611,14 +1749,57 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 
 		// Parse header
 		length := binary.LittleEndian.Uint32(headerBuf[0:4])
+		timestamp := binary.LittleEndian.Uint64(headerBuf[4:12])
+		
+		// Check for uninitialized memory (zeros)
+		if length == 0 && timestamp == 0 {
+			// In multi-process mode, we might hit gaps where entries are allocated but not yet written
+			// Skip ahead in larger increments to find the next valid entry
+			log.Printf("[SCAN] Found uninitialized memory at offset %d, searching for next valid entry...", offset)
+			
+			found := false
+			// Search in 64-byte increments to handle allocation gaps
+			for searchOffset := offset + 64; searchOffset < fileSize-headerSize; searchOffset += 64 {
+				searchBuf := make([]byte, headerSize)
+				if n, err := f.ReadAt(searchBuf, searchOffset); err == nil && n == headerSize {
+					searchLength := binary.LittleEndian.Uint32(searchBuf[0:4])
+					searchTimestamp := binary.LittleEndian.Uint64(searchBuf[4:12])
+					
+					if searchLength > 0 && searchLength < 100*1024*1024 && searchTimestamp > 0 {
+						// Found a valid entry!
+						log.Printf("[SCAN] Found valid entry after gap: skipping from %d to %d", offset, searchOffset)
+						offset = searchOffset
+						found = true
+						break
+					}
+				}
+			}
+			
+			if !found {
+				log.Printf("[SCAN] No more valid entries found after gap at %d, stopping scan", offset)
+				break
+			}
+			
+			// Continue with the found entry (don't break here)
+			continue
+		}
+		
+		// Validate entry bounds
 		if length == 0 || length > 100*1024*1024 { // Sanity check: max 100MB per entry
+			log.Printf("[SCAN] Invalid entry at offset %d: length=%d, timestamp=%d", offset, length, timestamp)
 			break
 		}
 
 		// Check if full entry fits in file
 		nextOffset := offset + headerSize + int64(length)
 		if nextOffset > fileSize {
+			log.Printf("[SCAN] Entry at offset %d extends beyond file (next offset %d > file size %d)", offset, nextOffset, fileSize)
 			break
+		}
+
+		// Log every 50th entry to track progress
+		if result.entryCount%50 == 0 || result.entryCount < 10 {
+			log.Printf("[SCAN] Found entry %d at offset %d (length=%d, next offset=%d)", entryNum, offset, length, nextOffset)
 		}
 
 		// Add to binary index at intervals
@@ -1630,6 +1811,7 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 					ByteOffset: offset,
 				},
 			})
+			log.Printf("[SCAN] Added index node for entry %d at offset %d", entryNum, offset)
 		}
 
 		result.entryCount++
@@ -1637,6 +1819,9 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 		offset = nextOffset
 	}
 
+	log.Printf("[SCAN] Completed scan of %s: found %d entries, created %d index nodes",
+		filePath, result.entryCount, len(result.indexNodes))
+	
 	return result
 }
 
