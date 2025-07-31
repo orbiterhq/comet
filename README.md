@@ -4,36 +4,50 @@ High-performance embedded segmented log for edge observability. Built for single
 
 [**Architecture Guide**](ARCHITECTURE.md) | [**Performance Guide**](PERFORMANCE.md) | [**Troubleshooting**](TROUBLESHOOTING.md) | [**Security**](SECURITY.md) | [**API Reference**](https://pkg.go.dev/github.com/orbiterhq/comet)
 
-## Why Comet?
-
-**The Problem**: Edge deployments need local buffering for observability data, but existing solutions either require external services (Kafka), unbounded resources (SQLite), or lack essential features like compression and sharding (ring buffers).
-
-**The Solution**: Comet brings Kafka's proven segmented log architecture to embedded deployments with:
-
-- **Zero dependencies** - Just import and use
-- **Bounded resources** - Automatic cleanup keeps disk/memory usage predictable
-- **Microsecond latency** - 600K+ writes/second on a single core
-- **Production ready** - Compression, sharding, crash recovery built-in
-
 ## What is Comet?
 
 Comet is a segmented append-only log optimized for observability data (metrics, logs, traces) at edge locations. It implements the same pattern as Kafka's storage engine - append-only segments with time/size-based retention - but embedded directly in your service with aggressive deletion policies for resource-constrained environments.
 
 Each shard maintains a series of immutable segment files that are rotated at size boundaries and deleted based on retention policies, ensuring predictable resource usage without the complexity of circular buffers or in-place overwrites.
 
+### The Edge Storage Problem
+
+Edge deployments need local observability buffering, but:
+
+- **Kafka**: Requires clusters, complex ops, ~1-5ms latency
+- **SQLite**: Unbounded growth, no sharding, ~100μs+ latency
+- **Ring buffers**: No persistence, no compression, data loss on overflow
+- **Files + rotation**: No indexing, no consumers, manual everything
+
+**The gap**: No embedded solution with Kafka's reliability at ring buffer speeds.
+
 ## Features
 
-- **Ultra-low latency** writes (1.66μs single-process, 2.42μs multi-process)
-- **Optional compression** with zstd (saves ~37% storage, disabled by default for speed)
+_How did we do it?_ Lock-free reads, compression outside critical sections, and 8-byte mmap coordination between processes.
+
+- **Ultra-low latency** writes (1.66μs single-process mode, 2.42μs multi-process mode)
+- **Multi-process coordination** option with file locking and mmap coordination
+- **Zero allocations** in the hot path
 - **O(log n) entry lookup** with binary searchable index
 - **Lock-free reads** with atomic memory-mapped segments
 - **Crash resilient** with automatic recovery and durable consumer offsets
-- **Multi-process safe** option with file locking and mmap coordination
 - **Resource bounded** with configurable retention policies
 - **Built-in metrics** for monitoring and observability
 - **Memory-efficient** with binary index format (8.8x smaller than JSON)
 - **Smart sharding** with consistent hashing for load distribution
 - **Batch optimizations** for high-throughput scenarios
+- **Optional compression** with zstd (saves ~37% storage, disabled by default for speed)
+
+## Multi-Process Coordination Breakthrough
+
+Unlike other embedded solutions, Comet enables **true multi-process coordination**:
+
+- **8-byte mmap state** - Instant change detection between processes
+- **2ns coordination overhead** - No locks, no syscalls
+- **File-level locking** - Prevents corruption across processes
+- **Real process testing** - Spawns actual OS processes, not just goroutines
+
+Perfect for prefork web servers, distributed workers, and containerized deployments.
 
 ## Key Benefits
 
@@ -44,6 +58,20 @@ Each shard maintains a series of immutable segment files that are rotated at siz
 **3. Edge-optimized** - Designed for resource-constrained environments where every byte and microsecond matters.
 
 **4. Battle-tested patterns** - Implements Kafka's proven segmented log design, adapted for embedded use cases.
+
+## How Does Comet Compare?
+
+| Feature              | Comet                 | Kafka               | Redis Streams      | SQLite             | Proof                                    |
+| -------------------- | --------------------- | ------------------- | ------------------ | ------------------ | ---------------------------------------- |
+| **Write Latency**    | 1.66μs                | 1-5ms               | 50-100μs           | 100μs+             | [Code](benchmarks_test.go#L22)           |
+| **Multi-Process**    | ✅ Real OS processes  | ✅ Distributed      | ❌ Single process  | ❌ File locks only | [Test](multiprocess_simple_test.go#L101) |
+| **Resource Bounds**  | ✅ Time & size limits | ⚠️ JVM heap          | ⚠️ Memory only      | ❌ Unbounded       | [Retention](retention.go#L144-L196)      |
+| **Compression**      | ✅ Optional zstd      | ✅ Multiple codecs  | ❌ None            | ❌ None            | [Code](benchmarks_test.go#L283)          |
+| **Crash Recovery**   | ✅ Automatic          | ✅ Replicas         | ⚠️ AOF/RDB          | ✅ WAL             | [Test](multiprocess_lock_test.go#L154)   |
+| **Zero Copy Reads**  | ✅ mmap               | ❌ Network          | ❌ Serialization   | ❌ SQL parsing     | [Code](reader.go#L89)                    |
+| **Storage Overhead** | ~12 bytes/entry       | ~50 bytes/entry     | ~20 bytes/entry    | ~100 bytes/row     | [Format](ARCHITECTURE.md#wire-format)    |
+| **Embedded**         | ✅ Native             | ❌ Requires cluster | ❌ Requires server | ✅ Native          | -                                        |
+| **Sharding**         | ✅ Built-in           | ✅ Partitions       | ❌ Manual          | ❌ Manual          | [Code](client.go#L776)                   |
 
 ```go
 // This is all you need for production-ready event streaming:
@@ -287,12 +315,24 @@ For prefork/multi-process deployments with file locking and mmap coordination:
 - **100-entry batch**: 0.25μs per entry (4M entries/sec)
 - **1000-entry batch**: 0.10μs per entry (10M entries/sec)
 
+### Compression Impact
+
+Compression trades latency for storage savings (benchmarked with ~800 byte JSON logs):
+
+| Operation       | Without Compression | With Compression | Slowdown | Storage Savings |
+| --------------- | ------------------- | ---------------- | -------- | --------------- |
+| Single Write    | 2.2μs               | 7.1μs            | 3.2x     | ~37%            |
+| 10-Entry Batch  | 3.2μs/entry         | 6.2μs/entry      | 1.9x     | ~37%            |
+| 100-Entry Batch | 0.78μs/entry        | 5.7μs/entry      | 7.4x     | ~37%            |
+
+_Compression is OFF by default (threshold: 4KB) to maintain ultra-low latency._
+
 ### Other Performance Metrics
 
-- **Compression**: Automatic zstd compression reduces JSON logs by ~30%
 - **ACK performance**: 29ns per ACK (34M ACKs/sec) with batch optimization
 - **Memory efficiency**: Zero allocations for ACKs, 5 allocations per write batch
 - **Multi-process coordination**: 8-byte mmap overhead for instant change detection
+- **Storage overhead**: 12 bytes per entry (4-byte length + 8-byte timestamp)
 
 ## Use Cases
 
