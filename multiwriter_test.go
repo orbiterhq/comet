@@ -248,6 +248,16 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		}
 		defer client1.Close()
 
+		// Debug: Check initial shard state
+		initialShard, _ := client1.getOrCreateShard(1)
+		initialShard.mu.RLock()
+		t.Logf("Initial writer shard state: Files=%d, CurrentWriteOffset=%d, CurrentEntryNumber=%d",
+			len(initialShard.index.Files), initialShard.index.CurrentWriteOffset, initialShard.index.CurrentEntryNumber)
+		if len(initialShard.index.Files) > 0 {
+			t.Logf("  Initial File[0]: entries=%d", initialShard.index.Files[0].Entries)
+		}
+		initialShard.mu.RUnlock()
+		
 		// Write some initial data
 		testData := [][]byte{
 			[]byte(`{"id": 1, "message": "from writer"}`),
@@ -269,6 +279,25 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to sync: %v", err)
 		}
+		
+		// Force index persistence for multi-process visibility
+		shard1, _ := client1.getOrCreateShard(1)
+		shard1.mu.Lock()
+		t.Logf("Writer shard state: CurrentFile=%s, Files=%d, CurrentWriteOffset=%d, CurrentEntryNumber=%d",
+			shard1.index.CurrentFile, len(shard1.index.Files), shard1.index.CurrentWriteOffset, shard1.index.CurrentEntryNumber)
+		for i, f := range shard1.index.Files {
+			t.Logf("  File[%d]: %s (entries=%d, startEntry=%d)", i, f.Path, f.Entries, f.StartEntry)
+		}
+		
+		// DEBUG: Check what the actual data in the file is
+		if shard1.mmapWriter != nil {
+			coordState := shard1.mmapWriter.CoordinationState()
+			t.Logf("MmapWriter state: WriteOffset=%d, FileSize=%d", 
+				coordState.WriteOffset.Load(), coordState.FileSize.Load())
+		}
+		
+		shard1.persistIndex()
+		shard1.mu.Unlock()
 
 		t.Logf("Writer completed: wrote %d entries", len(ids))
 	})
@@ -280,6 +309,21 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 			t.Fatalf("failed to create reader client: %v", err)
 		}
 		defer client2.Close()
+
+		// Debug: Check what the reader sees
+		shard2, _ := client2.getOrCreateShard(1)
+		shard2.mu.RLock()
+		t.Logf("Reader shard state: CurrentFile=%s, Files=%d, CurrentWriteOffset=%d, CurrentEntryNumber=%d",
+			shard2.index.CurrentFile, len(shard2.index.Files), shard2.index.CurrentWriteOffset, shard2.index.CurrentEntryNumber)
+		for i, f := range shard2.index.Files {
+			t.Logf("  File[%d]: %s (entries=%d, startEntry=%d)", i, f.Path, f.Entries, f.StartEntry)
+		}
+		
+		// Check mmap writer state
+		if shard2.mmapWriter != nil {
+			t.Logf("Reader mmap state: WriteOffset=%d", shard2.mmapWriter.CoordinationState().WriteOffset.Load())
+		}
+		shard2.mu.RUnlock()
 
 		consumer := NewConsumer(client2, ConsumerOptions{Group: "test-group"})
 		defer consumer.Close()

@@ -14,11 +14,11 @@ import (
 // OptimizedShardState represents shared state for ultra-fast multi-process coordination
 type OptimizedShardState struct {
 	// Atomic counters for lock-free coordination
-	NextSequence    int64  // Next entry sequence number
-	WriteOffset     int64  // Current write offset in active file
-	ActiveFileIndex int64  // Index of current file (for rotation detection)
-	FlushGeneration int64  // Incremented on each background flush
-	_padding        [32]byte // Avoid false sharing between fields
+	NextSequence    atomic.Int64  // Next entry sequence number
+	WriteOffset     atomic.Int64  // Current write offset in active file
+	ActiveFileIndex atomic.Int64  // Index of current file (for rotation detection)
+	FlushGeneration atomic.Int64  // Incremented on each background flush
+	_padding        [32]byte      // Avoid false sharing between fields
 }
 
 // ProcessLocalBuffer holds entries before they're flushed to shared storage
@@ -45,16 +45,16 @@ type OptimizedShard struct {
 	dataFile        *os.File             // Current data file
 	dataMap         []byte               // Memory-mapped data region
 	dataMapSize     int64                // Size of mapped region
-	
+
 	// Process-local state
-	localBuffer     *ProcessLocalBuffer
-	shardID         uint32
-	maxFileSize     int64
-	lastFlushGen    int64
-	
+	localBuffer  *ProcessLocalBuffer
+	shardID      uint32
+	maxFileSize  int64
+	lastFlushGen int64
+
 	// Paths
-	shardDir        string
-	statePath       string
+	shardDir  string
+	statePath string
 }
 
 // NewOptimizedShard creates a new optimized shard for multi-process writes
@@ -65,27 +65,27 @@ func NewOptimizedShard(shardID uint32, shardDir string) (*OptimizedShard, error)
 		statePath:   shardDir + "/optimized.state",
 		maxFileSize: 1 << 30, // 1GB default
 	}
-	
+
 	// Initialize shared state
 	if err := s.initSharedState(); err != nil {
 		return nil, fmt.Errorf("failed to init shared state: %w", err)
 	}
-	
+
 	// Open current data file
 	if err := s.openCurrentFile(); err != nil {
 		return nil, fmt.Errorf("failed to open data file: %w", err)
 	}
-	
+
 	// Initialize process-local buffer
 	s.localBuffer = &ProcessLocalBuffer{
 		maxEntries:  1000, // Flush every 1000 entries or 10ms
 		shard:       s,
 		flushTicker: time.NewTicker(10 * time.Millisecond),
 	}
-	
+
 	// Start background flusher
 	go s.localBuffer.backgroundFlush()
-	
+
 	return s, nil
 }
 
@@ -97,31 +97,31 @@ func (s *OptimizedShard) initSharedState() error {
 		return err
 	}
 	defer file.Close()
-	
+
 	// Ensure file is correct size
 	const stateSize = 256 // Plenty of room for future fields
 	stat, err := file.Stat()
 	if err != nil {
 		return err
 	}
-	
+
 	if stat.Size() == 0 {
 		// New file - initialize
 		if err := file.Truncate(stateSize); err != nil {
 			return err
 		}
 	}
-	
+
 	// Memory map the state
-	data, err := syscall.Mmap(int(file.Fd()), 0, stateSize, 
+	data, err := syscall.Mmap(int(file.Fd()), 0, stateSize,
 		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
 		return err
 	}
-	
+
 	s.sharedStateData = data
 	s.sharedState = (*OptimizedShardState)(unsafe.Pointer(&data[0]))
-	
+
 	return nil
 }
 
@@ -129,21 +129,21 @@ func (s *OptimizedShard) initSharedState() error {
 func (s *OptimizedShard) openCurrentFile() error {
 	// For simplicity, using a single file for now
 	// Real implementation would handle rotation
-	dataPath := fmt.Sprintf("%s/data-%016d.comet", s.shardDir, 
-		atomic.LoadInt64(&s.sharedState.ActiveFileIndex))
-	
+	dataPath := fmt.Sprintf("%s/log-%016d.comet", s.shardDir,
+		s.sharedState.ActiveFileIndex.Load())
+
 	// Open or create file
 	file, err := os.OpenFile(dataPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		return err
 	}
-	
+
 	// Pre-allocate space (1GB)
 	if err := file.Truncate(s.maxFileSize); err != nil {
 		file.Close()
 		return err
 	}
-	
+
 	// Memory map the entire file
 	data, err := syscall.Mmap(int(file.Fd()), 0, int(s.maxFileSize),
 		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
@@ -151,39 +151,39 @@ func (s *OptimizedShard) openCurrentFile() error {
 		file.Close()
 		return err
 	}
-	
+
 	s.dataFile = file
 	s.dataMap = data
 	s.dataMapSize = s.maxFileSize
-	
+
 	return nil
 }
 
 // Append adds entries with ultra-low latency
 func (s *OptimizedShard) Append(entries [][]byte) ([]MessageID, error) {
 	ids := make([]MessageID, len(entries))
-	
+
 	// Step 1: Allocate sequence numbers atomically (~50ns per entry)
 	sequences := make([]int64, len(entries))
 	for i := range entries {
-		sequences[i] = atomic.AddInt64(&s.sharedState.NextSequence, 1) - 1
+		sequences[i] = s.sharedState.NextSequence.Add(1) - 1
 		ids[i] = MessageID{EntryNumber: sequences[i], ShardID: s.shardID}
 	}
-	
+
 	// Step 2: Pre-allocate space in the mmap region (~100ns)
 	totalSize := int64(0)
 	for _, entry := range entries {
 		totalSize += 12 + int64(len(entry)) // header + data
 	}
-	
+
 	// Atomic allocation of write space
-	offset := atomic.AddInt64(&s.sharedState.WriteOffset, totalSize) - totalSize
-	
+	offset := s.sharedState.WriteOffset.Add(totalSize) - totalSize
+
 	// Check if we need rotation (simplified - real impl would be more robust)
 	if offset+totalSize > s.dataMapSize {
 		return nil, fmt.Errorf("file full - rotation needed")
 	}
-	
+
 	// Step 3: Write directly to mmap (~100ns per entry)
 	currentOffset := offset
 	for _, entry := range entries {
@@ -192,16 +192,16 @@ func (s *OptimizedShard) Append(entries [][]byte) ([]MessageID, error) {
 		binary.LittleEndian.PutUint32(header[0:4], uint32(len(entry)))
 		binary.LittleEndian.PutUint64(header[4:12], uint64(time.Now().UnixNano()))
 		currentOffset += 12
-		
+
 		// Write data
 		copy(s.dataMap[currentOffset:currentOffset+int64(len(entry))], entry)
 		currentOffset += int64(len(entry))
 	}
-	
+
 	// Step 4: Optional - add to local buffer for index updates
 	// This is done asynchronously and doesn't block the write
 	s.localBuffer.addEntries(sequences, entries, offset)
-	
+
 	return ids, nil
 }
 
@@ -209,7 +209,7 @@ func (s *OptimizedShard) Append(entries [][]byte) ([]MessageID, error) {
 func (b *ProcessLocalBuffer) addEntries(sequences []int64, entries [][]byte, baseOffset int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	
+
 	offset := baseOffset
 	for i, entry := range entries {
 		b.entries = append(b.entries, BufferedEntry{
@@ -219,7 +219,7 @@ func (b *ProcessLocalBuffer) addEntries(sequences []int64, entries [][]byte, bas
 		})
 		offset += 12 + int64(len(entry))
 	}
-	
+
 	// Flush if buffer is full
 	if len(b.entries) >= b.maxEntries {
 		b.flushLocked()
@@ -243,12 +243,12 @@ func (b *ProcessLocalBuffer) flushLocked() {
 	// 1. Update the index with entry positions
 	// 2. Notify readers via shared state update
 	// 3. Handle any necessary cleanup
-	
+
 	// For now, just clear the buffer
 	b.entries = b.entries[:0]
-	
+
 	// Update flush generation to notify readers
-	atomic.AddInt64(&b.shard.sharedState.FlushGeneration, 1)
+	b.shard.sharedState.FlushGeneration.Add(1)
 }
 
 // Close cleans up resources
@@ -256,7 +256,7 @@ func (s *OptimizedShard) Close() error {
 	// Stop background flusher
 	if s.localBuffer != nil {
 		s.localBuffer.flushTicker.Stop()
-		
+
 		// Final flush
 		s.localBuffer.mu.Lock()
 		if len(s.localBuffer.entries) > 0 {
@@ -264,7 +264,7 @@ func (s *OptimizedShard) Close() error {
 		}
 		s.localBuffer.mu.Unlock()
 	}
-	
+
 	// Unmap regions
 	if s.dataMap != nil {
 		syscall.Munmap(s.dataMap)
@@ -272,12 +272,12 @@ func (s *OptimizedShard) Close() error {
 	if s.sharedStateData != nil {
 		syscall.Munmap(s.sharedStateData)
 	}
-	
+
 	// Close files
 	if s.dataFile != nil {
 		s.dataFile.Close()
 	}
-	
+
 	return nil
 }
 

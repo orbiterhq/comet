@@ -5,8 +5,9 @@
       "Bash(head:*)",
       "Bash(find:*)",
       "Bash(mv:*)",
-      "Bash(go vet:*)",
+      "Bash(printf:*)",
       "Bash(grep:*)",
+      "Bash(go vet:*)",
       "Bash(go test:*)",
       "Bash(go tool pprof:*)",
       "Bash(git stash:*)"

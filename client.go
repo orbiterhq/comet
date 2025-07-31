@@ -396,6 +396,7 @@ type Shard struct {
 	mmapState     *MmapSharedState // Memory-mapped coordination state
 	sequenceState *SequenceState   // Memory-mapped sequence state for entry numbers
 	sequenceFile  *os.File         // File handle for sequence counter
+	mmapWriter    *MmapWriter     // Memory-mapped writer for ultra-fast multi-process writes
 
 	// Strings (24 bytes: ptr + len + cap)
 	indexPath         string // Path to index file
@@ -817,11 +818,27 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		if err := shard.initSequenceState(); err != nil {
 			return nil, fmt.Errorf("failed to initialize sequence state: %w", err)
 		}
+		
+		// Initialize memory-mapped writer for ultra-fast writes
+		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, &c.metrics)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize mmap writer: %w", err)
+		}
+		shard.mmapWriter = mmapWriter
 	}
 
 	// Load existing index if present
 	if err := shard.loadIndex(); err != nil {
 		return nil, err
+	}
+	
+	// If we have an mmap writer, sync the index with the coordination state
+	if shard.mmapWriter != nil {
+		coordState := shard.mmapWriter.CoordinationState()
+		writeOffset := coordState.WriteOffset.Load()
+		if writeOffset > shard.index.CurrentWriteOffset {
+			shard.index.CurrentWriteOffset = writeOffset
+		}
 	}
 
 	// Open or create current data file
@@ -1087,6 +1104,12 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				s.index.CurrentWriteOffset = finalWriteOffset
 				s.writesSinceCheckpoint = initialWritesSinceCheckpoint + len(entries)
 
+				// Update the current file's entry count and end offset
+				if len(s.index.Files) > 0 {
+					s.index.Files[len(s.index.Files)-1].Entries += int64(len(entries))
+					s.index.Files[len(s.index.Files)-1].EndOffset = finalWriteOffset
+				}
+
 				// Update mmap state to notify readers
 				if s.mmapState != nil {
 					s.updateMmapState()
@@ -1110,32 +1133,59 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		}
 	}() // End of critical section
 
-	// Perform I/O OUTSIDE the lock but protect writer from concurrent writes
-	// For multi-process safety, acquire file lock during actual writes
-	if config.Concurrency.EnableMultiProcessMode && s.lockFile != nil {
-		if err := syscall.Flock(int(s.lockFile.Fd()), syscall.LOCK_EX); err != nil {
-			return nil, fmt.Errorf("failed to acquire shard lock for write: %w", err)
-		}
-		defer syscall.Flock(int(s.lockFile.Fd()), syscall.LOCK_UN)
-	}
-
-	s.writeMu.Lock()
+	// Perform I/O OUTSIDE the lock
 	var writeErr error
-	// Write all buffers
-	for _, buf := range writeReq.WriteBuffers {
-		if _, err := s.writer.Write(buf); err != nil {
-			writeErr = err
-			break
+	
+	// Use memory-mapped writer for ultra-fast multi-process writes if available
+	if config.Concurrency.EnableMultiProcessMode && s.mmapWriter != nil {
+		// Extract entry numbers from IDs
+		entryNumbers := make([]int64, len(writeReq.IDs))
+		for i, id := range writeReq.IDs {
+			entryNumbers[i] = id.EntryNumber
 		}
-	}
-	if writeErr == nil {
-		writeErr = s.writer.Flush()
-		// In multi-process mode, sync to ensure data hits disk before releasing lock
-		if writeErr == nil && config.Concurrency.EnableMultiProcessMode && s.dataFile != nil {
-			writeErr = s.dataFile.Sync()
+		
+		// Extract raw data from write buffers (skip headers, they will be recreated)
+		rawEntries := make([][]byte, len(writeReq.IDs))
+		for i := 0; i < len(writeReq.IDs); i++ {
+			// WriteBuffers contains [header, data, header, data, ...]
+			// Skip the header (index i*2) and get the data (index i*2+1)
+			rawEntries[i] = writeReq.WriteBuffers[i*2+1]
 		}
+		
+		// Memory-mapped write (handles its own coordination)
+		writeErr = s.mmapWriter.Write(rawEntries, entryNumbers)
+		
+		// Update index after successful mmap write
+		if writeErr == nil {
+			// Update write offset from mmap writer's coordination state
+			s.index.CurrentWriteOffset = s.mmapWriter.CoordinationState().WriteOffset.Load()
+		}
+	} else {
+		// Regular write path with file locking
+		if config.Concurrency.EnableMultiProcessMode && s.lockFile != nil {
+			if err := syscall.Flock(int(s.lockFile.Fd()), syscall.LOCK_EX); err != nil {
+				return nil, fmt.Errorf("failed to acquire shard lock for write: %w", err)
+			}
+			defer syscall.Flock(int(s.lockFile.Fd()), syscall.LOCK_UN)
+		}
+
+		s.writeMu.Lock()
+		// Write all buffers
+		for _, buf := range writeReq.WriteBuffers {
+			if _, err := s.writer.Write(buf); err != nil {
+				writeErr = err
+				break
+			}
+		}
+		if writeErr == nil {
+			writeErr = s.writer.Flush()
+			// In multi-process mode, sync to ensure data hits disk before releasing lock
+			if writeErr == nil && config.Concurrency.EnableMultiProcessMode && s.dataFile != nil {
+				writeErr = s.dataFile.Sync()
+			}
+		}
+		s.writeMu.Unlock()
 	}
-	s.writeMu.Unlock()
 
 	// Handle write error
 	if writeErr != nil {
@@ -1200,8 +1250,9 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		// Update file entry count after successful write
-		if len(s.index.Files) > 0 {
+		// In single-process mode, update file entry count after successful write
+		// (Multi-process mode updates this in the UpdateFunc)
+		if !config.Concurrency.EnableMultiProcessMode && len(s.index.Files) > 0 {
 			currentFile := &s.index.Files[len(s.index.Files)-1]
 			currentFile.Entries += int64(len(entries))
 		}
@@ -1526,17 +1577,11 @@ func (s *Shard) loadIndex() error {
 			}
 		}
 
-		// Update current write offset to match actual file size
-		if s.index.CurrentFile != "" {
-			if info, err := os.Stat(s.index.CurrentFile); err == nil {
-				actualSize := info.Size()
-				if actualSize > s.index.CurrentWriteOffset {
-					s.index.CurrentWriteOffset = actualSize
-				}
-			}
-		}
+		// Don't update current write offset based on file size
+		// The index already has the correct write offset from when it was saved
+		// For mmap files, the file size doesn't reflect the actual data written
 	}
-
+	
 	return nil
 }
 
@@ -1599,6 +1644,11 @@ func (s *Shard) initSequenceState() error {
 		// New file - initialize with current entry number from index
 		// This ensures multi-process coordination starts from the right point
 		initialSeq := s.index.CurrentEntryNumber
+		// In multi-process mode, we want entries to start from 1, not 0
+		// This matches the behavior of traditional file-based sequence numbering
+		if initialSeq == 0 && s.index.CurrentFile == "" {
+			initialSeq = 1
+		}
 		if err := binary.Write(file, binary.LittleEndian, initialSeq); err != nil {
 			return fmt.Errorf("failed to initialize sequence state: %w", err)
 		}
@@ -1730,6 +1780,16 @@ func (s *Shard) recoverFromCrash() error {
 		length := binary.LittleEndian.Uint32(header[0:4])
 		if offset+headerSize+int64(length) > actualSize {
 			break // Incomplete entry
+		}
+		
+		// Skip zero-length entries (likely uninitialized file regions)
+		if length == 0 {
+			// Check if this is just zeros (uninitialized data)
+			timestamp := binary.LittleEndian.Uint64(header[4:12])
+			if timestamp == 0 {
+				// This is uninitialized data, not a real entry
+				break
+			}
 		}
 
 		// Entry looks valid
@@ -1893,6 +1953,11 @@ func (c *Client) Close() error {
 		// Close file (safe now that we hold writeMu)
 		if shard.dataFile != nil {
 			shard.dataFile.Close()
+		}
+		
+		// Close memory-mapped writer
+		if shard.mmapWriter != nil {
+			shard.mmapWriter.Close()
 		}
 
 		shard.writeMu.Unlock()

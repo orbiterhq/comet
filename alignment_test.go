@@ -29,6 +29,8 @@ func TestStructAlignment(t *testing.T) {
 		// Frequently allocated structs
 		{"AtomicSlice", AtomicSlice{}},
 		{"MmapSharedState", MmapSharedState{}},
+		{"MmapCoordinationState", MmapCoordinationState{}},
+		{"MmapWriter", MmapWriter{}},
 		{"EntryIndexNode", EntryIndexNode{}},
 		{"BinarySearchableIndex", BinarySearchableIndex{}},
 		// Hot path structs
