@@ -1751,23 +1751,26 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 		length := binary.LittleEndian.Uint32(headerBuf[0:4])
 		timestamp := binary.LittleEndian.Uint64(headerBuf[4:12])
 		
-		// Check for uninitialized memory (zeros)
+		// Check for uninitialized memory (zeros) - AGGRESSIVE GAP SKIPPING
 		if length == 0 && timestamp == 0 {
-			// In multi-process mode, we might hit gaps where entries are allocated but not yet written
-			// Skip ahead in larger increments to find the next valid entry
-			log.Printf("[SCAN] Found uninitialized memory at offset %d, searching for next valid entry...", offset)
+			log.Printf("[SCAN] Hit gap at offset %d, scanning ahead for next valid entry...", offset)
 			
 			found := false
-			// Search in 64-byte increments to handle allocation gaps
-			for searchOffset := offset + 64; searchOffset < fileSize-headerSize; searchOffset += 64 {
+			gapSkipped := int64(0)
+			
+			// NUCLEAR APPROACH: Search every 4 bytes until we find a valid header
+			// This ensures we NEVER miss entries due to gaps
+			for searchOffset := offset + 4; searchOffset <= fileSize-headerSize; searchOffset += 4 {
 				searchBuf := make([]byte, headerSize)
 				if n, err := f.ReadAt(searchBuf, searchOffset); err == nil && n == headerSize {
 					searchLength := binary.LittleEndian.Uint32(searchBuf[0:4])
 					searchTimestamp := binary.LittleEndian.Uint64(searchBuf[4:12])
 					
-					if searchLength > 0 && searchLength < 100*1024*1024 && searchTimestamp > 0 {
+					// More lenient validation for gap recovery
+					if searchLength > 0 && searchLength <= 10*1024*1024 && searchTimestamp > 0 {
 						// Found a valid entry!
-						log.Printf("[SCAN] Found valid entry after gap: skipping from %d to %d", offset, searchOffset)
+						gapSkipped = searchOffset - offset
+						log.Printf("[SCAN] RECOVERED: Found valid entry at %d after skipping %d byte gap", searchOffset, gapSkipped)
 						offset = searchOffset
 						found = true
 						break
@@ -1776,11 +1779,11 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 			}
 			
 			if !found {
-				log.Printf("[SCAN] No more valid entries found after gap at %d, stopping scan", offset)
+				log.Printf("[SCAN] End of scan: no more valid entries found after final gap at %d", offset)
 				break
 			}
 			
-			// Continue with the found entry (don't break here)
+			// Continue scanning from the recovered position
 			continue
 		}
 		

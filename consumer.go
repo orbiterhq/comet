@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -576,7 +577,9 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	// Check mmap state for instant change detection
 	if shard.mmapState != nil {
 		currentTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+		log.Printf("[CONSUMER] Shard %d: mmap timestamp check: current=%d, last=%d", shard.shardID, currentTimestamp, shard.lastMmapCheck)
 		if currentTimestamp != shard.lastMmapCheck {
+			log.Printf("[CONSUMER] Shard %d: MMAP CHANGE DETECTED - triggering rebuild", shard.shardID)
 			// Index changed - reload it under write lock
 			shard.mu.Lock()
 			// Double-check after acquiring lock
@@ -619,6 +622,45 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	endEntryNum := shard.index.CurrentEntryNumber
 	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()
+	
+	// In multi-process mode, check if index might be stale by comparing with coordination state
+	if shard.mmapState != nil && shard.mmapWriter != nil {
+		totalWrites := shard.mmapWriter.CoordinationState().TotalWrites.Load()
+		if totalWrites > endEntryNum {
+			log.Printf("[CONSUMER] Shard %d: Index shows %d entries but coordination state shows %d writes - forcing full rebuild", 
+				shard.shardID, endEntryNum, totalWrites)
+			// Need write lock for rebuild
+			shard.mu.Lock()
+			shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
+			// Force a full rebuild by manually updating the rebuild trigger
+			// Temporarily modify the file end offset to trigger a rebuild
+			oldEndOffset := int64(0)
+			if len(shard.index.Files) > 0 {
+				oldEndOffset = shard.index.Files[len(shard.index.Files)-1].EndOffset
+				// Set end offset to 0 to force rebuild detection
+				shard.index.Files[len(shard.index.Files)-1].EndOffset = 0
+			}
+			
+			shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
+			
+			// Restore if rebuild didn't happen (shouldn't occur)
+			if len(shard.index.Files) > 0 && shard.index.Files[len(shard.index.Files)-1].EndOffset == 0 {
+				shard.index.Files[len(shard.index.Files)-1].EndOffset = oldEndOffset
+			}
+			log.Printf("[CONSUMER] Rebuild complete: index now shows %d entries", shard.index.CurrentEntryNumber)
+			// Reload the updated values
+			startEntryNum, exists = shard.index.ConsumerOffsets[c.group]
+			if !exists {
+				startEntryNum = 0
+			}
+			endEntryNum = shard.index.CurrentEntryNumber
+			fileCount = len(shard.index.Files)
+			shard.mu.Unlock()
+		}
+	}
+	
+	log.Printf("[CONSUMER] Shard %d: Reading entries %d to %d (total available: %d)", 
+		shard.shardID, startEntryNum, endEntryNum, endEntryNum)
 
 	if startEntryNum >= endEntryNum {
 		return nil, nil // No new data
@@ -650,12 +692,26 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		shard.mu.RUnlock()
 
 		if err != nil {
-			// In multi-process mode, some entries might not exist due to gaps in the sequence
-			// Skip these entries instead of failing the entire read
-			if strings.Contains(err.Error(), "does not exist") {
-				continue
+			// In multi-process mode, if index-based lookup fails, try direct file scanning
+			// This handles the case where the index is incomplete but the data exists in files
+			if shard.mmapState != nil && !strings.Contains(err.Error(), "no files in shard") {
+				log.Printf("[CONSUMER] Index lookup failed for entry %d, falling back to direct file scan", entryNum)
+				position, err = c.scanDataFilesForEntry(shard, entryNum)
+				if err == nil {
+					log.Printf("[CONSUMER] Direct file scan found entry %d at file %d offset %d", entryNum, position.FileIndex, position.ByteOffset)
+				} else {
+					log.Printf("[CONSUMER] Direct file scan also failed for entry %d: %v", entryNum, err)
+				}
 			}
-			return nil, fmt.Errorf("failed to find entry %d position in shard %d: %w", entryNum, shard.shardID, err)
+			
+			if err != nil {
+				// In multi-process mode, some entries might not exist due to gaps in the sequence
+				// Skip these entries instead of failing the entire read
+				if strings.Contains(err.Error(), "does not exist") {
+					continue
+				}
+				return nil, fmt.Errorf("failed to find entry %d position in shard %d: %w", entryNum, shard.shardID, err)
+			}
 		}
 
 		// Safety check for invalid position
@@ -685,6 +741,88 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	}
 
 	return messages, nil
+}
+
+// scanDataFilesForEntry directly scans data files to find an entry when index is incomplete
+func (c *Consumer) scanDataFilesForEntry(shard *Shard, targetEntry int64) (EntryPosition, error) {
+	// This is the fallback when index-based lookup fails in multi-process mode
+	// We scan the actual append-only data files directly
+	
+	shard.mu.RLock()
+	files := make([]FileInfo, len(shard.index.Files))
+	copy(files, shard.index.Files)
+	shard.mu.RUnlock()
+	
+	if len(files) == 0 {
+		return EntryPosition{}, fmt.Errorf("no files to scan")
+	}
+	
+	// Get reader for file access
+	reader, err := c.getOrCreateReader(shard)
+	if err != nil {
+		return EntryPosition{}, fmt.Errorf("failed to get reader: %w", err)
+	}
+	
+	reader.mu.RLock()
+	defer reader.mu.RUnlock()
+	
+	currentEntry := int64(0)
+	
+	// Scan each file sequentially
+	for fileIdx := range files {
+		if fileIdx >= len(reader.files) {
+			break // Reader doesn't have this file yet
+		}
+		
+		file := reader.files[fileIdx]
+		fileData := file.data.Load()
+		if fileData == nil {
+			continue
+		}
+		
+		offset := int64(0)
+		fileSize := int64(len(fileData))
+		
+		// Scan entries in this file
+		for offset < fileSize {
+			// Check if we have enough data for header
+			if offset+12 > fileSize {
+				break
+			}
+			
+			// Read entry header
+			header := fileData[offset : offset+12]
+			length := binary.LittleEndian.Uint32(header[0:4])
+			timestamp := binary.LittleEndian.Uint64(header[4:12])
+			
+			// Validate entry
+			if length == 0 || length > 100*1024*1024 || timestamp == 0 {
+				// Invalid entry - try to find next valid entry
+				offset += 4
+				continue
+			}
+			
+			// Check if full entry is available
+			entryEnd := offset + 12 + int64(length)
+			if entryEnd > fileSize {
+				break // Entry extends beyond file
+			}
+			
+			// Found a valid entry - check if it's the target
+			if currentEntry == targetEntry {
+				return EntryPosition{
+					FileIndex:  fileIdx,
+					ByteOffset: offset,
+				}, nil
+			}
+			
+			// Move to next entry
+			currentEntry++
+			offset = entryEnd
+		}
+	}
+	
+	return EntryPosition{}, fmt.Errorf("entry %d not found in data files (scanned %d entries)", targetEntry, currentEntry)
 }
 
 // Ack acknowledges one or more processed messages and updates consumer offset
