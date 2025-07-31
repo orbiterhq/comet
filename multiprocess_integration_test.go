@@ -472,6 +472,10 @@ func TestMultiProcessIntegration(t *testing.T) {
 			t.Fatalf("Failed to create verification client: %v", err)
 		}
 		defer client.Close()
+		
+		// Force reload of shards to get latest index state
+		time.Sleep(200 * time.Millisecond) // Wait for any pending checkpoints
+		client.Sync(context.Background())
 
 		consumer := NewConsumer(client, ConsumerOptions{Group: "verifier"})
 		defer consumer.Close()
@@ -807,6 +811,11 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		}
 
 		t.Logf("%s: wrote %d/%d entries", role, successCount, numWrites)
+		
+		// Force a sync to ensure index is persisted
+		if err := client.Sync(ctx); err != nil {
+			t.Logf("%s: sync error: %v", role, err)
+		}
 		
 		// Wait for checkpoint before closing
 		time.Sleep(150 * time.Millisecond)

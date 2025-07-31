@@ -649,6 +649,17 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 	}
 
 	shard.mu.RLock()
+	
+	// In multi-process mode, check if we need to rebuild index
+	if shard.mmapState != nil {
+		// Need write lock for rebuild
+		shard.mu.RUnlock()
+		shard.mu.Lock()
+		shard.lazyRebuildIndexIfNeeded()
+		shard.mu.Unlock()
+		shard.mu.RLock()
+	}
+	
 	defer shard.mu.RUnlock()
 
 	// If file locking is enabled, reload index to get latest state from other processes
@@ -1169,6 +1180,11 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 					s.updateMmapState()
 				}
 
+				// Schedule async checkpoint instead of synchronous
+				if s.writesSinceCheckpoint > 0 && time.Since(s.lastCheckpoint) > 10*time.Millisecond {
+					s.scheduleAsyncCheckpoint(clientMetrics, config)
+				}
+
 				return nil
 			}
 		}
@@ -1316,7 +1332,6 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	}
 
 	// Post-write operations
-	var needsSyncPersist bool
 	func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -1336,8 +1351,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				atomic.StoreInt64(&s.sequenceState.LastEntryNumber, s.index.CurrentEntryNumber)
 			}
 
-			// Mark that we need synchronous persistence
-			needsSyncPersist = true
+			// Note: Async checkpointing happens in UpdateFunc now
 		} else {
 			// Single-process mode: use regular checkpointing
 			s.maybeCheckpoint(clientMetrics, config)
@@ -1350,11 +1364,6 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			}
 		}
 	}()
-
-	// Do synchronous persistence OUTSIDE the shard lock to avoid deadlocks
-	if needsSyncPersist {
-		s.persistIndexSynchronously(clientMetrics, config)
-	}
 
 	return writeReq.IDs, nil
 }
@@ -1471,6 +1480,98 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 			clientMetrics.CheckpointCount.Add(1)
 			clientMetrics.LastCheckpoint.Store(uint64(time.Now().UnixNano()))
 		}
+	}
+}
+
+// lazyRebuildIndexIfNeeded checks if the index needs rebuilding based on file sizes
+// This is called on read path in multi-process mode to ensure consistency
+// Caller must hold the shard lock
+func (s *Shard) lazyRebuildIndexIfNeeded() {
+	if len(s.index.Files) == 0 {
+		return
+	}
+	
+	// Check if any file has grown beyond what the index knows
+	needsRebuild := false
+	for _, file := range s.index.Files {
+		if stat, err := os.Stat(file.Path); err == nil {
+			actualSize := stat.Size()
+			if actualSize > file.EndOffset {
+				needsRebuild = true
+				break
+			}
+		}
+	}
+
+	if !needsRebuild {
+		return
+	}
+
+	// Rebuild the index by scanning files
+	totalEntries := int64(0)
+	newBinaryNodes := make([]EntryIndexNode, 0)
+
+	for i := range s.index.Files {
+		file := &s.index.Files[i]
+		
+		// Get actual file size
+		stat, err := os.Stat(file.Path)
+		if err != nil {
+			continue
+		}
+		actualSize := stat.Size()
+		
+		// If file has grown, scan it
+		if actualSize > file.EndOffset {
+			// Calculate starting entry number for this file
+			startEntryNum := int64(0)
+			for j := 0; j < i; j++ {
+				startEntryNum += s.index.Files[j].Entries
+			}
+			
+			// Scan the file
+			scanResult := s.scanFileForEntries(file.Path, actualSize, i, startEntryNum)
+			if scanResult.entryCount > 0 {
+				file.Entries = scanResult.entryCount
+				file.EndOffset = actualSize
+				newBinaryNodes = append(newBinaryNodes, scanResult.indexNodes...)
+				totalEntries += scanResult.entryCount
+			}
+		} else {
+			totalEntries += file.Entries
+		}
+	}
+
+	// Update index state
+	if totalEntries > s.index.CurrentEntryNumber {
+		s.index.CurrentEntryNumber = totalEntries
+	}
+
+	// Update binary index if we found new nodes
+	if len(newBinaryNodes) > 0 {
+		// Merge with existing nodes
+		nodeMap := make(map[int64]EntryIndexNode)
+		for _, node := range s.index.BinaryIndex.Nodes {
+			nodeMap[node.EntryNumber] = node
+		}
+		for _, node := range newBinaryNodes {
+			nodeMap[node.EntryNumber] = node
+		}
+		
+		// Convert back to sorted slice
+		s.index.BinaryIndex.Nodes = make([]EntryIndexNode, 0, len(nodeMap))
+		for _, node := range nodeMap {
+			s.index.BinaryIndex.Nodes = append(s.index.BinaryIndex.Nodes, node)
+		}
+		sort.Slice(s.index.BinaryIndex.Nodes, func(i, j int) bool {
+			return s.index.BinaryIndex.Nodes[i].EntryNumber < s.index.BinaryIndex.Nodes[j].EntryNumber
+		})
+	}
+
+	// Update write offset to match last file
+	if len(s.index.Files) > 0 {
+		lastFile := &s.index.Files[len(s.index.Files)-1]
+		s.index.CurrentWriteOffset = lastFile.EndOffset
 	}
 }
 
@@ -1632,36 +1733,9 @@ func (s *Shard) persistIndexSynchronously(clientMetrics *ClientMetrics, config *
 						indexCopy.CurrentWriteOffset = lastFile.EndOffset
 					}
 					
-					// CRITICAL: Scan all files to rebuild complete index
-					// This ensures we capture ALL entries written by all processes
-					newBinaryNodes := make([]EntryIndexNode, 0)
-					totalEntries := int64(0)
-					
-					for i := range indexCopy.Files {
-						file := &indexCopy.Files[i]
-						
-						// Calculate starting entry number for this file
-						startEntryNum := int64(0)
-						for j := 0; j < i; j++ {
-							startEntryNum += indexCopy.Files[j].Entries
-						}
-						
-						// Scan the file
-						scanResult := s.scanFileForEntries(file.Path, file.EndOffset, i, startEntryNum)
-						if scanResult.entryCount > 0 {
-							file.Entries = scanResult.entryCount
-							newBinaryNodes = append(newBinaryNodes, scanResult.indexNodes...)
-							totalEntries += scanResult.entryCount
-						}
-					}
-					
-					// Update CurrentEntryNumber to reflect all scanned entries
-					if totalEntries > indexCopy.CurrentEntryNumber {
-						indexCopy.CurrentEntryNumber = totalEntries
-					}
-					
-					// Replace binary index with the rebuilt one
-					indexCopy.BinaryIndex.Nodes = newBinaryNodes
+					// Don't scan files here - too expensive for write path
+					// Just ensure file sizes are accurate
+					// The actual rebuilding will happen lazily on read
 				}
 				
 				// Merge binary index nodes - combine all nodes from both indexes

@@ -586,6 +586,12 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 				}
 				shard.lastMmapCheck = currentTimestamp
 
+				// In multi-process mode, check if we need to rebuild index from files
+				// We can tell we're in multi-process mode if mmapState exists
+				if shard.mmapState != nil {
+					shard.lazyRebuildIndexIfNeeded()
+				}
+
 				// Also invalidate any cached readers since the index changed
 				c.readers.Range(func(key, value any) bool {
 					if key.(uint32) == shard.shardID {
