@@ -68,7 +68,7 @@ Shard Directory Structure:
 ├── log-0000000000000003.comet   # Current write file
 ├── index.bin                    # Binary index file
 ├── index.state                  # 8-byte index change notification (multi-process mode)
-├── sequence.state               # 8-byte sequence counter (multi-process mode)  
+├── sequence.state               # 8-byte sequence counter (multi-process mode)
 ├── coordination.state           # 256-byte mmap coordination state (multi-process mode)
 ├── index.lock                   # Index write lock (multi-process mode)
 └── shard.lock                   # Data write lock (multi-process mode)
@@ -579,7 +579,7 @@ BenchmarkBatch1000-8         10,200,000 ops/s    0.098μs/op   130900 B/op 5 all
 ```
 BenchmarkMmapWriter-8            31,250 ops/s    32μs/op      6664 B/op   49 allocs/op
 BenchmarkMmapBatch10-8          312,500 ops/s    3.2μs/op     66640 B/op  49 allocs/op
-BenchmarkMmapBatch100-8       3,125,000 ops/s    0.32μs/op    666400 B/op 49 allocs/op  
+BenchmarkMmapBatch100-8       3,125,000 ops/s    0.32μs/op    666400 B/op 49 allocs/op
 BenchmarkMmapBatch1000-8     31,250,000 ops/s    0.032μs/op   6664000 B/op 49 allocs/op
 ```
 

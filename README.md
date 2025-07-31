@@ -12,30 +12,27 @@ Each shard maintains a series of immutable segment files that are rotated at siz
 
 ### The Edge Storage Problem
 
-Edge deployments need local observability buffering, but:
+Edge deployments need local observability buffering, but other solutions fall short:
 
 - **Kafka**: Requires clusters, complex ops, ~1-5ms latency
-- **RocksDB**: Single-threaded writes, 10-50μs best case, 100ms during stalls
-- **SQLite**: Unbounded growth, no sharding, ~100μs+ latency
+- **RocksDB**: Single-threaded writes, 50-200μs writes, 100ms+ during compaction stalls
+- **Redis**: Requires separate server, memory-only without persistence config
 - **Ring buffers**: No persistence, no compression, data loss on overflow
-- **Files + rotation**: No indexing, no consumers, manual everything
+- **Files + rotation**: No indexing, no consumer tracking, manual everything
 
-**The gap**: No embedded solution with Kafka's reliability at ring buffer speeds.
+**The gap**: No embedded solution with Kafka's reliability at microsecond latencies.
 
 ## Features
 
-- **Ultra-low latency** writes (1.7μs single-process mode, 32μs multi-process mode)
-- **Multi-process coordination** with lock-free mmap-based coordination and atomic operations
-- **Zero allocations** in the hot path
-- **O(log n) entry lookup** with binary searchable index
-- **Lock-free reads** with atomic memory-mapped segments
-- **Crash resilient** with automatic recovery and durable consumer offsets
-- **Resource bounded** with configurable retention policies
-- **Built-in metrics** for monitoring and observability
-- **Memory-efficient** with binary index format (8.8x smaller than JSON)
-- **Smart sharding** with consistent hashing for load distribution
-- **Batch optimizations** for high-throughput scenarios
-- **Optional compression** with zstd (saves ~37% storage, disabled by default for speed)
+- **Ultra-low latency**: 1.7μs single-process, 31μs multi-process writes
+- **Predictable performance**: No compaction stalls or write amplification like LSM-trees
+- **True multi-process support**: Memory-mapped coordination, atomic operations, real OS processes
+- **O(log n) lookups**: Binary searchable index with bounded memory usage
+- **Lock-free reads**: Atomic pointers, zero-copy via mmap
+- **Automatic retention**: Time and size-based cleanup, protects unconsumed data
+- **Production ready**: Crash recovery, built-in metrics, extensive testing
+- **Smart sharding**: Consistent hashing, automatic discovery, batch optimizations
+- **Optional zstd compression**: ~37% storage savings when needed
 
 ## Multi-Process Coordination
 
@@ -44,7 +41,6 @@ Perfect for prefork web servers like Go Fiber.
 
 - **Memory-mapped coordination** - Lock-free atomic operations for sequence allocation
 - **Zero-copy writes** - Direct memory writes to mapped files bypass syscalls
-- **32μs write latency** - 237x faster than original multi-process implementation
 - **Real process testing** - Spawns actual OS processes, not just goroutines
 
 ## Key Benefits
@@ -59,17 +55,17 @@ Perfect for prefork web servers like Go Fiber.
 
 ## How Does Comet Compare?
 
-| Feature              | Comet                      | Kafka               | Redis Streams      | SQLite             | Proof                                         |
+| Feature              | Comet                      | Kafka               | Redis Streams      | RocksDB            | Proof                                         |
 | -------------------- | -------------------------- | ------------------- | ------------------ | ------------------ | --------------------------------------------- |
-| **Write Latency**    | 1.7μs (32μs multi-process) | 1-5ms               | 50-100μs           | 100μs+             | [Code](benchmarks_test.go#L22)                |
-| **Multi-Process**    | ✅ Real OS processes       | ✅ Distributed      | ❌ Single process  | ❌ File locks only | [Test](multiprocess_simple_test.go#L101)      |
-| **Resource Bounds**  | ✅ Time & size limits      | ⚠️ JVM heap          | ⚠️ Memory only      | ❌ Unbounded       | [Retention](retention.go#L144-L196)           |
+| **Write Latency**    | 1.7μs (31μs multi-process) | 1-5ms               | 50-100μs           | 50-200μs           | [Code](benchmarks_test.go#L22)                |
+| **Multi-Process**    | ✅ Real OS processes       | ✅ Distributed      | ❌ Single process  | ⚠️ Mutex locks      | [Test](multiprocess_simple_test.go#L101)      |
+| **Resource Bounds**  | ✅ Time & size limits      | ⚠️ JVM heap          | ⚠️ Memory only      | ⚠️ Manual compact   | [Retention](retention.go#L144-L196)           |
 | **Crash Recovery**   | ✅ Automatic               | ✅ Replicas         | ⚠️ AOF/RDB          | ✅ WAL             | [Test](multiprocess_integration_test.go#L154) |
-| **Zero Copy Reads**  | ✅ mmap                    | ❌ Network          | ❌ Serialization   | ❌ SQL parsing     | [Code](reader.go#L89)                         |
-| **Storage Overhead** | ~12 bytes/entry            | ~50 bytes/entry     | ~20 bytes/entry    | ~100 bytes/row     | [Format](ARCHITECTURE.md#wire-format)         |
-| **Embedded**         | ✅ Native                  | ❌ Requires cluster | ❌ Requires server | ✅ Native          | -                                             |
+| **Zero Copy Reads**  | ✅ mmap                    | ❌ Network          | ❌ Serialization   | ❌ Deserialization | [Code](reader.go#L89)                         |
+| **Storage Overhead** | ~12 bytes/entry            | ~50 bytes/entry     | ~20 bytes/entry    | ~30 bytes/entry    | [Format](ARCHITECTURE.md#wire-format)         |
 | **Sharding**         | ✅ Built-in                | ✅ Partitions       | ❌ Manual          | ❌ Manual          | [Code](client.go#L776)                        |
-| **Compression**      | ✅ Optional zstd           | ✅ Multiple codecs  | ❌ None            | ❌ None            | [Code](benchmarks_test.go#L283)               |
+| **Compression**      | ✅ Optional zstd           | ✅ Multiple codecs  | ❌ None            | ✅ Multiple        | [Code](benchmarks_test.go#L283)               |
+| **Embedded**         | ✅ Native                  | ❌ Requires cluster | ❌ Requires server | ✅ Native          | -                                             |
 
 ## Quick Start
 
@@ -256,62 +252,9 @@ for _, msg := range messages {
 consumer.Ack(ctx, messageIDs...)
 ```
 
-## Delightful Features
-
-Beyond the core functionality, Comet includes thoughtful features that make it a joy to use:
-
-- **Auto-discovery** - Consumers automatically find all shards matching a pattern
-- **Smart batching** - Automatically groups operations by shard for efficiency
-- **Graceful degradation** - Continues operating even when some shards are unavailable
-- **Zero-allocation hot paths** - Critical paths optimized to avoid garbage collection
-- **Instant startup** - Memory-mapped files enable sub-millisecond startup times
-- **Transparent compression** - Automatically compresses large entries with zstd
-- **Progress visibility** - Built-in lag tracking shows exactly how far behind consumers are
-
-## Performance
-
-Benchmarked on Apple M2 with SSD (see [Performance Guide](PERFORMANCE.md) for detailed analysis):
-
-### Single-Process Mode (default)
-
-Optimized for single-process deployments with best performance:
-
-- **Single entry**: 1.7μs latency (588k entries/sec)
-- **10-entry batch**: 0.50μs per entry (2M entries/sec)
-- **100-entry batch**: 0.24μs per entry (4.1M entries/sec)
-- **1000-entry batch**: 0.098μs per entry (10.2M entries/sec)
-
-#### Compression Impact
-
-Compression trades latency for storage savings (benchmarked with ~800 byte JSON logs):
-
-| Operation       | Without Compression | With Compression | Slowdown | Storage Savings |
-| --------------- | ------------------- | ---------------- | -------- | --------------- |
-| Single Write    | 2.2μs               | 7.1μs            | 3.2x     | ~37%            |
-| 10-Entry Batch  | 3.2μs/entry         | 6.2μs/entry      | 1.9x     | ~37%            |
-| 100-Entry Batch | 0.78μs/entry        | 5.7μs/entry      | 7.4x     | ~37%            |
-
-_Compression is OFF by default (threshold: 4KB) to maintain ultra-low latency._
-
-### Multi-Process Mode
-
-For prefork/multi-process deployments with memory-mapped coordination:
-
-- **Single entry**: 32μs latency (31k entries/sec) - ultra-fast for multi-process!
-- **10-entry batch**: 3.2μs per entry (312k entries/sec)
-- **100-entry batch**: 0.32μs per entry (3.1M entries/sec)
-- **1000-entry batch**: 0.032μs per entry (31M entries/sec)
-
-### Other Performance Metrics
-
-- **ACK performance**: 29ns per ACK (34M ACKs/sec) with batch optimization
-- **Memory efficiency**: Zero allocations for ACKs, 5 allocations per write batch
-- **Multi-process coordination**: Memory-mapped atomic operations for lock-free sequence allocation
-- **Storage overhead**: 12 bytes per entry (4-byte length + 8-byte timestamp)
-
 ## Use Cases
 
-✅ **Right fit for:**
+✅ **Right tool for:**
 
 - Edge deployments with limited storage
 - High-frequency observability data (metrics, logs, traces)
@@ -326,11 +269,49 @@ For prefork/multi-process deployments with memory-mapped coordination:
 - Random access patterns
 - Complex queries or aggregations
 
+## Performance
+
+Benchmarked on Apple M2 with SSD (see [Performance Guide](PERFORMANCE.md) for detailed analysis):
+
+### Single-Process Mode (default)
+
+Optimized for single-process deployments with best performance:
+
+- **Single entry**: 1.7μs latency (588k entries/sec)
+- **10-entry batch**: 0.26μs per entry (3.9M entries/sec)
+- **100-entry batch**: 0.29μs per entry (3.4M entries/sec)
+- **1000-entry batch**: 0.11μs per entry (9.1M entries/sec)
+
+### Multi-Process Mode
+
+For prefork/multi-process deployments with memory-mapped coordination:
+
+- **Single entry**: 31μs latency (32k entries/sec) - ultra-fast for multi-process!
+- **10-entry batch**: 3.5μs per entry (288k entries/sec)
+- **100-entry batch**: 0.64μs per entry (1.6M entries/sec)
+- **1000-entry batch**: 0.19μs per entry (5.7M entries/sec)
+
+**Note on Multi-Process Latency**: While single-entry writes are ~18x slower in multi-process mode (31μs vs 1.7μs), this difference is often irrelevant in production:
+
+- **With async batching**: If you're buffering writes (like most ingest services), the latency is hidden from your request path
+- **With large batches**: At 1000-entry batches, the difference shrinks to just 0.19μs vs 0.11μs per entry
+- **With prefork benefits**: You gain linear CPU scaling, process isolation, and crash resilience
+
+**When the 31μs matters**: Direct, synchronous writes where every microsecond counts
+**When it doesn't**: HTTP APIs, batched ingestion, async workers, or any pattern that decouples the write from the request
+
+### Other Performance Metrics
+
+- **ACK performance**: 30ns per ACK (33M ACKs/sec) with batch optimization
+- **Memory efficiency**: Zero allocations for ACKs, 5 allocations per write batch
+- **Multi-process coordination**: Memory-mapped atomic operations for lock-free sequence allocation
+- **Storage overhead**: 12 bytes per entry (4-byte length + 8-byte timestamp)
+
 ## Configuration
 
 ### Single-Process vs Multi-Process Mode
 
-Comet defaults to single-process mode for optimal performance. Enable multi-process mode when needed:
+Comet defaults to single-process mode for optimal single-entry performance. Enable multi-process mode when needed:
 
 ```go
 // Single-process mode (default) - fastest performance
@@ -344,17 +325,8 @@ client, err := comet.NewClientWithConfig("/data/streams", config)
 
 **When to use multi-process mode:**
 
+- Async/batched writes where the 31μs latency is hidden from clients
 - Fiber prefork mode or similar multi-process web servers
-- Multiple processes writing to the same stream files
-- Distributed workers on the same machine
-- When you need cross-process coordination
-
-**When to use single-process mode (default):**
-
-- Single application instance
-- Microservices with dedicated storage
-- Maximum performance requirements
-- Containerized deployments with process isolation
 
 ## License
 

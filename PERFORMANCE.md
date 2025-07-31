@@ -6,10 +6,10 @@ This guide helps you achieve maximum performance with Comet for your specific us
 
 | Operation        | Single-Process | Multi-Process | Entries/Second |
 | ---------------- | -------------- | ------------- | -------------- |
-| Single Write     | 1.7μs          | 32μs          | 588K / 31K     |
-| 10-Entry Batch   | 0.50μs/entry   | 3.2μs/entry   | 2M / 312K      |
-| 100-Entry Batch  | 0.25μs/entry   | 0.32μs/entry  | 4M / 3.1M      |
-| 1000-Entry Batch | 0.10μs/entry   | 0.032μs/entry | 10M / 31M      |
+| Single Write     | 1.7μs          | 31μs          | 588K / 32K     |
+| 10-Entry Batch   | 0.26μs/entry   | 3.5μs/entry   | 3.9M / 288K    |
+| 100-Entry Batch  | 0.29μs/entry   | 0.64μs/entry  | 3.4M / 1.6M    |
+| 1000-Entry Batch | 0.11μs/entry   | 0.19μs/entry  | 9.1M / 5.7M    |
 
 ### Compression Impact (for ~800 byte JSON logs)
 
@@ -19,11 +19,11 @@ This guide helps you achieve maximum performance with Comet for your specific us
 | 10-Entry Batch  | 3.2μs/entry         | 6.2μs/entry      | 1.9x     | ~37%            |
 | 100-Entry Batch | 0.78μs/entry        | 5.7μs/entry      | 7.4x     | ~37%            |
 
-_Benchmarked on: macOS 15.3.2 (24D81), Apple M2 MacBook Air, Go 1.24.5_
+_Benchmarked on: Apple M2, Go 1.22+_
 
 **Compression defaults to OFF for entries <4KB** to maintain low latency for typical logs.
 
-**Key Insight**: Batching is critical. Going from single writes to 1000-entry batches provides a 17x improvement.
+**Key Insight**: Batching is critical. Going from single writes to 1000-entry batches provides a 15x improvement in single-process mode.
 
 ## Performance Profiles
 
@@ -106,22 +106,47 @@ consumer.Process(ctx, handler,
 )
 ```
 
+**💡 When Multi-Process Latency Doesn't Matter**
+
+While single-entry writes are ~18x slower in multi-process mode (31μs vs 1.7μs), this difference becomes **irrelevant** with async batching patterns:
+
+```go
+// Example: HTTP ingestion with async batching
+batcher.Add(ctx, sourceID, data, headers)  // Returns immediately (~1μs)
+// Actual Comet writes happen in background workers
+```
+
+**Multi-process mode is ideal when:**
+
+- You're using async batching (like most ingest services)
+- HTTP/gRPC handling dominates latency (usually 10-100μs+)
+- You need process isolation for reliability
+- You're using prefork for CPU parallelism
+
+**Multi-process mode is NOT ideal when:**
+
+- You need synchronous, direct writes with <5μs latency
+- You're already using goroutines for parallelism
+- You have a single-writer pattern
+
+With proper batching, multi-process mode can achieve **>5M entries/sec** across 8 processes while maintaining process isolation and crash resilience.
+
 **Multi-Process Performance Evolution**:
 
 | Implementation             | Write Latency | vs Single-Process | Key Technology             |
 | -------------------------- | ------------- | ----------------- | -------------------------- |
-| Original (sync checkpoint) | 7.6ms         | 4,575x slower     | File locks + sync I/O      |
-| Async checkpointing        | 3.2ms         | 1,940x slower     | Deferred index persistence |
-| Memory-mapped I/O          | 32μs          | 20x slower        | Lock-free atomics + mmap   |
+| Original (sync checkpoint) | 7.6ms         | 4,470x slower     | File locks + sync I/O      |
+| Async checkpointing        | 2.7ms         | 1,590x slower     | Deferred index persistence |
+| Memory-mapped I/O          | 31μs          | 18x slower        | Lock-free atomics + mmap   |
 
-The latest multi-process mode achieves **32μs write latency** through:
+The latest multi-process mode achieves **31μs write latency** through:
 
 - **Lock-free coordination**: Atomic operations for sequence allocation
 - **Memory-mapped data files**: Direct memory writes bypass syscalls
 - **Async index updates**: Index persistence happens in background
 - **Zero-copy writes**: Data goes directly to mapped memory
 
-This is a **237x improvement** over the original multi-process implementation!
+This is a **240x improvement** over the original multi-process implementation!
 
 ## Benchmarking Your Workload
 
@@ -185,48 +210,44 @@ This is **exactly** what you want in a storage engine.
 
 ### Comet is Syscall-Bound (By Design)
 
-CPU profiling reveals that Comet's performance profile varies by workload:
+CPU profiling shows that Comet spends most of its time in syscalls rather than CPU work.
+This is exactly what we want in a storage engine - it means we're efficiently moving data
+to disk without wasted CPU cycles.
 
-```
-Single writes:     97.96% syscalls, 2% CPU work
-Batch writes:      56.86% syscalls, 29% GC, 14% encoding
-Compression:       92.00% syscalls, 7% compression, 1% runtime
-Sequential reads:  95.28% syscalls (mostly file stat operations)
-```
+Typical profile breakdown by workload:
 
-This workload-dependent profile is exactly what we want! Here's why:
+**Single Writes**: Mostly syscalls with minimal CPU overhead
 
-**Single Writes** (Ultra-low latency):
+- Syscall time dominates (>90%)
+- Minimal CPU work for essential operations
 
-- **~98%** syscalls - Minimal overhead, maximum efficiency
-- **~2%** CPU work - Just essential operations
+**Batch Writes**: More balanced profile
 
-**Batch Writes** (High throughput):
+- Syscalls still significant but reduced percentage
+- Some GC overhead from batch allocations
+- Binary encoding work scales with batch size
 
-- **~57%** syscalls - Still I/O bound
-- **~29%** GC overhead - From larger allocations during batching
-- **~14%** encoding work - Binary index operations scale with batch size
+**With Compression**: CPU usage increases
 
-**Compression** (Storage efficiency):
+- Syscalls remain dominant
+- Compression adds CPU overhead (zstd)
+- Still I/O bound overall
 
-- **~92%** syscalls - I/O still dominates
-- **~7%** compression - zstd is highly optimized
-- **~1%** runtime - Minimal Go overhead
+**Read Operations**: Efficient memory-mapped I/O
 
-**Reads** (Consumer workloads):
-
-- **~95%** syscalls - Mostly file stat calls to check growth
-- **~5%** runtime - Memory-mapped reads are nearly free
+- File stat syscalls to detect new data
+- Memory-mapped reads have minimal overhead
+- Near-zero CPU usage for data access
 
 ### Memory Profile
 
-Memory allocations are dominated by:
+Memory allocations in Comet are minimal:
 
-- **Compression buffers** (52%) - Reused via pools
-- **Test infrastructure** (38%) - Not present in production
-- **Actual operations** (<10%) - Excellent efficiency
+- **Compression buffers** - Reused via buffer pools when compression is enabled
+- **Batch allocations** - Scale with batch size (5-6 allocations per batch)
+- **Zero allocations for ACKs** - Consumer acknowledgments are allocation-free
 
-In production, Comet achieves **zero allocations** for most operations.
+The benchmarks show excellent allocation efficiency with only 5-6 allocations per write batch regardless of size.
 
 ## Performance Tuning Checklist
 
@@ -255,9 +276,9 @@ In production, Comet achieves **zero allocations** for most operations.
 ```go
 // Add metrics to identify bottlenecks
 stats := client.GetStats()
-fmt.Printf("Compression ratio: %.2f\n", stats.CompressionRatio)
-fmt.Printf("Write latency avg: %v\n", stats.AvgWriteLatency)
-fmt.Printf("Entries/sec: %.0f\n", stats.EntriesPerSecond)
+fmt.Printf("Compression ratio: %.2fx\n", float64(stats.CompressionRatio)/100)
+fmt.Printf("Write latency avg: %v\n", time.Duration(stats.WriteLatencyNano))
+fmt.Printf("Entries/sec: %.0f\n", float64(stats.TotalEntries)/time.Since(startTime).Seconds())
 ```
 
 ### 3. Apply Targeted Optimizations
@@ -333,12 +354,12 @@ config.Indexing.MaxIndexEntries = 100000    // Larger index OK
 ### 1. Single-Entry Writes
 
 ```go
-// SLOW - 1.66μs per entry
+// SLOW - 1.7μs per entry
 for _, entry := range entries {
     client.Append(ctx, stream, [][]byte{entry})
 }
 
-// FAST - 0.098μs per entry
+// FAST - 0.11μs per entry (with 1000-entry batch)
 client.Append(ctx, stream, entries)
 ```
 
@@ -401,12 +422,12 @@ numShards := uint32(16)   // Good for most workloads
 stats := client.GetStats()
 
 // Write performance
-writeLatency := stats.AvgWriteLatency
-writeThroughput := stats.TotalEntries / time.Since(startTime).Seconds()
+writeLatency := time.Duration(stats.WriteLatencyNano)
+writeThroughput := float64(stats.TotalEntries) / time.Since(startTime).Seconds()
 
 // Compression efficiency
-compressionRatio := stats.CompressionRatio
-savedBytes := stats.TotalBytes - stats.TotalCompressed
+compressionRatio := float64(stats.CompressionRatio) / 100 // Convert from x100 fixed point
+savedBytes := stats.TotalBytes - stats.TotalCompressedBytes
 
 // Consumer health
 lag, _ := consumer.GetLag(ctx, shardID)
@@ -414,7 +435,7 @@ consumerThroughput := processedCount / time.Since(startTime).Seconds()
 
 // System health
 fileRotations := stats.FileRotations
-errorRate := stats.ErrorCount / stats.TotalEntries
+errorRate := float64(stats.ErrorCount) / float64(stats.TotalEntries)
 ```
 
 ### Performance SLOs
@@ -444,7 +465,6 @@ Since Comet is syscall-bound, traditional CPU optimizations won't help much. Ins
 
 - **Faster storage** - NVMe > SSD > HDD
 - **Batching** - Amortize syscall overhead
-- **io_uring** - Reduce syscall overhead (future)
 - **Larger writes** - Fewer syscalls per byte
 - **File system tuning** - noatime, nodiratime
 
@@ -453,22 +473,18 @@ Since Comet is syscall-bound, traditional CPU optimizations won't help much. Ins
 **Linux**:
 
 - Lower syscall overhead than macOS
-- io_uring potential (future)
 - Better file locking performance
 
 **macOS** (current profiling platform):
 
 - Higher syscall overhead
-- No io_uring equivalent
 - Still achieves 1.66μs latency
-
-**Real-world Linux performance** is typically 20-30% better than macOS numbers shown.
 
 ### Performance vs. Alternatives
 
 | System    | Write Latency | Explanation                                   |
 | --------- | ------------- | --------------------------------------------- |
-| Comet     | 1.66μs        | Lock-free reads, batched writes, binary index |
+| Comet     | 1.7μs         | Lock-free reads, batched writes, binary index |
 | Kafka     | 1-5ms         | Network + consensus + replication overhead    |
 | SQLite    | 100μs+        | B-tree updates, transaction overhead, WAL     |
 | Raw Files | 50μs+         | No indexing, manual coordination              |

@@ -1,6 +1,24 @@
 # Comet Security Considerations
 
-This document outlines security considerations when deploying Comet in production environments.
+**Important**: Comet is a high-performance storage engine with **no built-in security features**. This document provides guidance on securing Comet deployments at the infrastructure and application layers.
+
+## Do You Need This Document?
+
+**For most users: NO**. If you're using Comet for:
+
+- Local development
+- Non-sensitive observability data (logs, metrics)
+- Data that's already public or non-confidential
+- Temporary buffering before shipping to secure storage
+
+Then the standard deployment is fine. Comet's lack of security features is by design - it optimizes purely for performance.
+
+**You SHOULD read this if:**
+
+- Storing sensitive data (PII, credentials, financial data)
+- Deploying in shared/multi-tenant environments
+- Subject to compliance requirements (GDPR, HIPAA, etc.)
+- Running in production with untrusted access
 
 ## File System Security
 
@@ -17,13 +35,11 @@ chmod 750 /var/lib/comet
 
 ### File Permissions
 
-By default, Comet creates files with 0644 permissions. For sensitive data:
+Comet creates all files with hardcoded 0644 permissions. This cannot be configured. For sensitive data, you must:
 
-```go
-config := comet.DefaultCometConfig()
-config.Storage.FilePermissions = 0600  // Read/write for owner only
-client, err := comet.NewClientWithConfig("/secure/data", config)
-```
+1. Set restrictive permissions on the parent directory
+2. Use filesystem-level encryption
+3. Run Comet with a dedicated user account
 
 ### Multi-Process Isolation
 
@@ -71,8 +87,8 @@ Protect against memory exhaustion:
 
 ```go
 config := comet.DefaultCometConfig()
-config.Indexing.MaxIndexEntries = 10_000  // Limit index size
-config.Storage.MaxFileSize = 100_000_000  // 100MB segments
+config.Indexing.MaxIndexEntries = 10000   // Limit index size
+config.Storage.MaxFileSize = 100 << 20    // 100MB segments
 ```
 
 ### Disk Exhaustion
@@ -81,8 +97,8 @@ Prevent disk filling:
 
 ```go
 config.Retention.MaxAge = 4 * time.Hour
-config.Retention.MaxShardSize = 1_000_000_000  // 1GB per shard
-config.Retention.MaxTotalSize = 10_000_000_000 // 10GB total
+config.Retention.MaxShardSize = 1 << 30        // 1GB per shard
+config.Retention.MaxTotalSize = 10 << 30       // 10GB total
 ```
 
 ### File Descriptor Limits
@@ -101,15 +117,16 @@ LimitNOFILE=65535
 
 ### Stream Names
 
-Validate stream names to prevent path traversal:
+**Note**: Comet does not validate stream names for path traversal. However, this is not a security risk because Comet only extracts the numeric shard ID from the stream name and constructs file paths using that ID. The stream name itself is never used in file paths.
+
+For consistency, you may want to validate stream names in your application:
 
 ```go
+// Example validation (not enforced by Comet)
 func validateStreamName(name string) error {
-    if strings.Contains(name, "..") || strings.Contains(name, "/") {
-        return errors.New("invalid stream name")
-    }
-    if len(name) > 255 {
-        return errors.New("stream name too long")
+    // Ensure it matches expected format
+    if !strings.HasPrefix(name, "namespace:version:shard:") {
+        return errors.New("invalid stream format")
     }
     return nil
 }
@@ -138,10 +155,16 @@ Monitor for suspicious activity:
 
 ```go
 stats := client.GetStats()
-if stats.ErrorRate > 0.01 {  // >1% errors
+
+// Calculate rates manually
+errorRate := float64(stats.ErrorCount) / float64(stats.TotalEntries)
+if errorRate > 0.01 {  // >1% errors
     alert("High error rate detected")
 }
-if stats.WritesPerSecond > expectedMax {
+
+// Track writes over time
+writesPerSecond := float64(stats.TotalEntries) / time.Since(startTime).Seconds()
+if writesPerSecond > expectedMax {
     alert("Unusual write volume")
 }
 ```
@@ -165,6 +188,14 @@ When backing up Comet data:
 2. Limit backup retention to comply with data policies
 3. Test restore procedures regularly
 4. Audit backup access
+
+## Data at Rest
+
+**Comet provides no encryption at rest**. All data is stored in plaintext. For sensitive data:
+
+1. **Use encrypted filesystems** (LUKS on Linux, FileVault on macOS)
+2. **Encrypt before writing** - Implement encryption in your application
+3. **Use cloud provider encryption** (EBS encryption on AWS)
 
 ## Compliance Considerations
 
@@ -206,24 +237,45 @@ type AccessLog struct {
 
 ## Security Checklist
 
-- [ ] Set appropriate file permissions on data directory
-- [ ] Configure retention policies to limit data exposure
+**Infrastructure Level:**
+
+- [ ] Restrict data directory permissions (750 or more restrictive)
+- [ ] Use dedicated user account for Comet process
+- [ ] Enable filesystem encryption for sensitive data
+- [ ] Configure file descriptor limits (`ulimit -n`)
+- [ ] Set up disk space monitoring and alerts
+
+**Application Level:**
+
 - [ ] Implement authentication/authorization in your service
-- [ ] Validate all input data and stream names
-- [ ] Monitor resource usage and error rates
-- [ ] Encrypt sensitive data before storage
-- [ ] Regular backups with encryption
-- [ ] Audit logging for compliance
-- [ ] File descriptor limits configured
-- [ ] Disk space monitoring in place
+- [ ] Encrypt sensitive data before calling `Append()`
+- [ ] Validate entry sizes to prevent resource exhaustion
+- [ ] Configure appropriate retention policies
+- [ ] Implement audit logging for compliance
+
+**Operational:**
+
+- [ ] Regular encrypted backups
+- [ ] Monitor error rates and unusual patterns
+- [ ] Document data classification and retention policies
+- [ ] Test recovery procedures
+
+## Limitations and Honest Disclosure
+
+Comet is designed for performance, not security. It lacks:
+
+- **No encryption** - All data stored in plaintext
+- **No authentication** - Any process with file access can read/write
+- **No authorization** - No access control mechanisms
+- **No audit logging** - Must be implemented at application layer
+- **Fixed file permissions** - Always 0644, not configurable
+- **No network security** - Comet is embedded, not networked
 
 ## Reporting Security Issues
 
-If you discover a security vulnerability in Comet, please report it responsibly by emailing security@yourcompany.com with:
+If you discover a security vulnerability in Comet, please open an issue on GitHub. Since Comet has no network interface and requires filesystem access, most security issues would be in the deployment configuration rather than Comet itself.
 
 1. Description of the vulnerability
 2. Steps to reproduce
 3. Potential impact
 4. Suggested fix (if any)
-
-We aim to respond within 48 hours and provide fixes for confirmed vulnerabilities promptly.

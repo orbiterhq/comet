@@ -31,7 +31,15 @@ run = [
 
 [tasks.test]
 description = "Run tests with race detection"
-run = ["go test ./... -race -shuffle=on -count=2"]
+run = ["go test -v ./... -race -shuffle=on -count=2"]
+
+[tasks."test:all"]
+description = "Run all tests including integration tests"
+run = ["go test -v -tags=integration ./... -race -timeout 30s"]
+
+[tasks."test:integration"]
+description = "Run only integration tests"
+run = ["go test -v -tags=integration ./... -race -timeout 30s -run=Integration"]
 
 [tasks.bench]
 description = "Run benchmarks"
