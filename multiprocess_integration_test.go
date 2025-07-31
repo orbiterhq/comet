@@ -339,16 +339,31 @@ func TestMultiProcessIntegration(t *testing.T) {
 			fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),
 		)
 
-		// Run them
-		writerOut, _ := writerCmd.CombinedOutput()
-		time.Sleep(100 * time.Millisecond) // Give writer time to start
-		readerOut, _ := readerCmd.CombinedOutput()
+		// Run them concurrently so reader can see writer's changes
+		var wg sync.WaitGroup
+		var writerOut, readerOut []byte
+		
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			writerOut, _ = writerCmd.CombinedOutput()
+		}()
+		
+		// Give writer a small head start
+		time.Sleep(100 * time.Millisecond)
+		
+		go func() {
+			defer wg.Done()
+			readerOut, _ = readerCmd.CombinedOutput()
+		}()
+		
+		wg.Wait()
 
 		t.Log("Writer output:", string(writerOut))
 		t.Log("Reader output:", string(readerOut))
 
 		// Verify mmap coordination worked
-		if !containsString(string(readerOut), "mmap change detected") {
+		if !containsString(string(readerOut), "Mmap reader: mmap change detected!") {
 			t.Error("Reader did not detect mmap timestamp change")
 		}
 		if !containsString(string(readerOut), "saw writer entries") {
@@ -373,9 +388,57 @@ func TestMultiProcessIntegration(t *testing.T) {
 
 		// Initialize shard
 		config := MultiProcessConfig()
-		client, _ := NewClientWithConfig(testDir, config)
-		client.Append(context.Background(), "test:v1:shard:0001", [][]byte{[]byte(`{"init":true}`)})
+		
+		// Use multi-process config as intended
+		client, err := NewClientWithConfig(testDir, config)
+		if err != nil {
+			t.Fatalf("Failed to create client: %v", err)
+		}
+		ids, err := client.Append(context.Background(), "test:v1:shard:0001", [][]byte{[]byte(`{"init":true}`)})
+		if err != nil {
+			t.Fatalf("Failed to write init entry: %v", err)
+		}
+		t.Logf("Wrote init entry with ID: %v", ids)
+		
+		// Verify we can read it back immediately
+		len1, _ := client.Len(context.Background(), "test:v1:shard:0001")
+		t.Logf("Shard length before close: %d", len1)
+		
+		// In multi-process mode, we need to wait for checkpoint to happen
+		// since CheckpointTime is 100ms
+		time.Sleep(150 * time.Millisecond)
+		
 		client.Close()
+		
+		// Sleep a bit to ensure files are synced
+		time.Sleep(100 * time.Millisecond)
+		
+		// Check what files exist
+		shardDir := filepath.Join(testDir, "shard-0001")
+		if files, err := os.ReadDir(shardDir); err == nil {
+			t.Logf("Files in shard directory after init:")
+			for _, f := range files {
+				info, _ := f.Info()
+				t.Logf("  %s (size: %d)", f.Name(), info.Size())
+			}
+		} else {
+			t.Logf("Failed to read shard directory: %v", err)
+		}
+		
+		// Specifically check for index.bin
+		indexPath := filepath.Join(shardDir, "index.bin")
+		if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+			t.Logf("WARNING: index.bin does not exist!")
+		}
+		
+		// Check coordination.state size
+		coordPath := filepath.Join(shardDir, "coordination.state")
+		if stat, err := os.Stat(coordPath); err == nil {
+			t.Logf("coordination.state exists with size: %d", stat.Size())
+			if stat.Size() > 256 {
+				t.Logf("coordination.state appears to contain data beyond header")
+			}
+		}
 
 		// Start 5 writers all targeting the SAME shard
 		var wg sync.WaitGroup
@@ -391,7 +454,12 @@ func TestMultiProcessIntegration(t *testing.T) {
 					fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),
 					"COMET_MP_TEST_WRITES=100",
 				)
-				cmd.Run()
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Logf("contention-writer-%d failed: %v\nOutput: %s", id, err, out)
+				} else {
+					t.Logf("contention-writer-%d output: %s", id, out)
+				}
 			}(i)
 		}
 
@@ -399,19 +467,69 @@ func TestMultiProcessIntegration(t *testing.T) {
 		elapsed := time.Since(start)
 
 		// Verify all entries
-		client, _ = NewClientWithConfig(testDir, config)
+		client, err = NewClientWithConfig(testDir, config)
+		if err != nil {
+			t.Fatalf("Failed to create verification client: %v", err)
+		}
 		defer client.Close()
 
 		consumer := NewConsumer(client, ConsumerOptions{Group: "verifier"})
 		defer consumer.Close()
 
-		totalEntries := 0
 		ctx := context.Background()
+		
+		// Check shard length directly
+		shardLen, err := client.Len(ctx, "test:v1:shard:0001")
+		if err != nil {
+			t.Logf("Failed to get shard length: %v", err)
+		} else {
+			t.Logf("Shard length: %d", shardLen)
+		}
+		
+		// Check data files to see if entries are there
+		shardDir2 := filepath.Join(testDir, "shard-0001")
+		files2, _ := os.ReadDir(shardDir2)
+		var totalDataSize int64
+		for _, f := range files2 {
+			if strings.HasSuffix(f.Name(), ".comet") {
+				info, _ := f.Info()
+				t.Logf("Data file %s size: %d bytes", f.Name(), info.Size())
+				totalDataSize += info.Size()
+			}
+		}
+		t.Logf("Total data file size: %d bytes", totalDataSize)
+		
+		// Check the index file to understand what's happening
+		indexPath3 := filepath.Join(shardDir2, "index.bin") 
+		if indexStat, err := os.Stat(indexPath3); err == nil {
+			t.Logf("Index file size: %d bytes", indexStat.Size())
+		}
+		
+		// Get detailed shard stats
+		client.mu.RLock()
+		shard, exists := client.shards[uint32(1)]
+		client.mu.RUnlock()
+		if exists {
+			shard.mu.RLock()
+			t.Logf("Shard in-memory state: CurrentEntryNumber=%d, CurrentWriteOffset=%d", 
+				shard.index.CurrentEntryNumber, shard.index.CurrentWriteOffset)
+			t.Logf("Number of files in index: %d", len(shard.index.Files))
+			t.Logf("Number of index nodes: %d", len(shard.index.BinaryIndex.Nodes))
+			shard.mu.RUnlock()
+		}
+
+		totalEntries := 0
+		readCount := 0
 		for {
-			messages, _ := consumer.Read(ctx, []uint32{1}, 1000)
+			messages, err := consumer.Read(ctx, []uint32{1}, 1000)
+			if err != nil {
+				t.Logf("Read error: %v", err)
+			}
 			if len(messages) == 0 {
 				break
 			}
+			readCount++
+			t.Logf("Read batch %d: %d messages", readCount, len(messages))
 			totalEntries += len(messages)
 			for _, msg := range messages {
 				consumer.Ack(ctx, msg.ID)
@@ -420,8 +538,13 @@ func TestMultiProcessIntegration(t *testing.T) {
 
 		expectedTotal := 5*100 + 1 // 5 writers * 100 entries + 1 init
 		t.Logf("Same-shard contention: %d entries in %v", totalEntries, elapsed)
+		
+		// The index should properly coordinate between processes
+		// Each process should see and build upon previous writes
 		if totalEntries < expectedTotal {
 			t.Errorf("Missing entries: got %d, expected %d", totalEntries, expectedTotal)
+			t.Logf("This indicates the multi-process index coordination is not working correctly")
+			t.Logf("Data file size %d suggests all data was written but index is incomplete", totalDataSize)
 		}
 	})
 
@@ -684,6 +807,10 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		}
 
 		t.Logf("%s: wrote %d/%d entries", role, successCount, numWrites)
+		
+		// Wait for checkpoint before closing
+		time.Sleep(150 * time.Millisecond)
+		client.Close()
 
 	case role == "crasher":
 		// Crash test - acquire lock then exit abruptly
