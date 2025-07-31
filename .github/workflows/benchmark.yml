@@ -1,0 +1,106 @@
+name: Benchmarks
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.mise.toml'
+      - '.github/workflows/benchmark.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.mise.toml'
+      - '.github/workflows/benchmark.yml'
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+jobs:
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+      - name: Setup mise
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Install dependencies
+        run: mise run setup
+      - name: Run benchmarks (PR)
+        run: |
+          go test -bench=. -benchmem -benchtime=10s -count=6 | tee new.bench
+      - name: Checkout base branch
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          git checkout origin/${{ github.base_ref }}
+      - name: Setup mise (base)
+        if: github.event_name == 'pull_request'
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Run benchmarks (base)
+        if: github.event_name == 'pull_request'
+        run: |
+          mise run setup
+          go test -bench=. -benchmem -benchtime=10s -count=6 | tee old.bench
+      - name: Compare benchmarks
+        if: github.event_name == 'pull_request'
+        run: |
+          benchstat old.bench new.bench > benchmark-diff.txt
+
+          # Check for significant regressions
+          if grep -E "\\+[0-9]+\\.[0-9]+%" benchmark-diff.txt | grep -v "~"; then
+            echo "::warning::Potential performance regression detected"
+            echo "REGRESSION_DETECTED=true" >> $GITHUB_ENV
+          else
+            echo "REGRESSION_DETECTED=false" >> $GITHUB_ENV
+          fi
+      - name: Comment PR with benchmark results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const diff = fs.readFileSync('benchmark-diff.txt', 'utf8');
+            const hasRegression = process.env.REGRESSION_DETECTED === 'true';
+
+            const comment = `## Comet Benchmark Results
+
+            ${hasRegression ? '⚠️ **Potential performance regression detected**' : '✅ **No significant performance regression**'}
+
+            <details>
+            <summary>Benchmark comparison</summary>
+
+            \`\`\`
+            ${diff}
+            \`\`\`
+            </details>
+
+            *Benchmarks run on Ubuntu latest with Go ${process.env.MISE_GO_VERSION || '1.24.5'}*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+      - name: Upload benchmark results
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: new.bench
+          retention-days: 30
+      - name: Fail if regression detected
+        if: github.event_name == 'pull_request' && env.REGRESSION_DETECTED == 'true'
+        run: |
+          echo "Performance regression detected. Please review the benchmark results."
+          exit 1

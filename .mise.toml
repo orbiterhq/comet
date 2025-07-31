@@ -1,0 +1,42 @@
+[tools]
+go = "1.24.5"
+yamlfmt = "latest"
+staticcheck = "2025.1"
+dprint = "latest"
+"go:golang.org/x/perf/cmd/benchstat" = "latest"
+"go:golang.org/x/tools/cmd/deadcode" = "latest"
+
+[tasks.setup]
+run = ["mise install", "go mod tidy"]
+
+[tasks.format]
+run = ["dprint fmt"]
+
+[tasks.lint]
+description = "Run all linting checks"
+depends = ["lint:*"]
+
+[tasks."lint:format"]
+run = ["dprint check"]
+
+[tasks."lint:api"]
+description = "Run staticcheck and go vet"
+run = ["staticcheck ./...", "go vet ./..."]
+
+[tasks."lint:deadcode"]
+description = "Check for dead code (ignoring exported functions)"
+run = [
+  "deadcode -test ./... | grep -v -E 'unreachable func: (High|Multi|Parse|With)' || true",
+]
+
+[tasks.test]
+description = "Run tests with race detection"
+run = ["go test ./... -race -shuffle=on -count=2"]
+
+[tasks.bench]
+description = "Run benchmarks"
+run = ["go test ./... -bench=. -benchmem -run=^$"]
+
+[settings]
+experimental = true
+activate_aggressive = true

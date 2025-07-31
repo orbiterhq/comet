@@ -1,0 +1,38 @@
+name: Test
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".mise.toml"
+      - ".github/workflows/test.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".mise.toml"
+      - ".github/workflows/test.yml"
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false # Run all matrix combinations even if one fails
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup mise
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Install dependencies
+        run: mise run setup
+      - name: Run tests
+        run: mise run test
+
