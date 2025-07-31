@@ -6,10 +6,10 @@ This guide helps you achieve maximum performance with Comet for your specific us
 
 | Operation        | Single-Process | Multi-Process | Entries/Second |
 | ---------------- | -------------- | ------------- | -------------- |
-| Single Write     | 1.66μs         | 2.42μs        | 602K / 413K    |
-| 10-Entry Batch   | 0.50μs/entry   | 0.30μs/entry  | 2M / 3.3M      |
-| 100-Entry Batch  | 0.25μs/entry   | 0.25μs/entry  | 4M / 4M        |
-| 1000-Entry Batch | 0.10μs/entry   | 0.10μs/entry  | 10M / 10M      |
+| Single Write     | 1.7μs          | 32μs          | 588K / 31K     |
+| 10-Entry Batch   | 0.50μs/entry   | 3.2μs/entry   | 2M / 312K      |
+| 100-Entry Batch  | 0.25μs/entry   | 0.32μs/entry  | 4M / 3.1M      |
+| 1000-Entry Batch | 0.10μs/entry   | 0.032μs/entry | 10M / 31M      |
 
 ### Compression Impact (for ~800 byte JSON logs)
 

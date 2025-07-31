@@ -1849,3 +1849,295 @@ func BenchmarkMultiWriter_NoLocking(b *testing.B) {
 		}
 	}
 }
+
+// ============================================================================
+// Multi-Process Benchmarks
+// ============================================================================
+
+// BenchmarkMultiProcessMode_MmapWriter benchmarks the memory-mapped writer performance
+func BenchmarkMultiProcessMode_MmapWriter(b *testing.B) {
+	dir := b.TempDir()
+	config := MultiProcessConfig()
+
+	// Create client which will use mmap writer in multi-process mode
+	client, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	streamName := "test:v1:shard:0001"
+	data := []byte(`{"id":123,"message":"benchmark test entry"}`)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, err := client.Append(ctx, streamName, [][]byte{data})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkMultiProcessMode_Comparison shows the performance progression
+func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
+	data := []byte(`{"id":123,"message":"benchmark test entry"}`)
+	ctx := context.Background()
+	streamName := "test:v1:shard:0001"
+
+	b.Run("SingleProcess", func(b *testing.B) {
+		dir := b.TempDir()
+		config := DefaultCometConfig()
+
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer client.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, [][]byte{data})
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("MultiProcess_AsyncCheckpoint", func(b *testing.B) {
+		dir := b.TempDir()
+		config := MultiProcessConfig()
+
+		// Temporarily disable mmap writer to test async checkpoint only
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		// Force disable mmap writer for this test
+		shard, _ := client.getOrCreateShard(1)
+		if shard.mmapWriter != nil {
+			shard.mmapWriter.Close()
+			shard.mmapWriter = nil
+		}
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, [][]byte{data})
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		client.Close()
+	})
+
+	b.Run("MultiProcess_MmapWriter", func(b *testing.B) {
+		dir := b.TempDir()
+		config := MultiProcessConfig()
+
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer client.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, [][]byte{data})
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// BenchmarkMultiProcessThroughput shows how batching dramatically improves multi-process throughput
+func BenchmarkMultiProcessThroughput(b *testing.B) {
+	ctx := context.Background()
+	streamName := "test:v1:shard:0001"
+	entry := []byte(`{"level":"INFO","msg":"test entry","id":123}`)
+
+	b.Run("SingleEntry", func(b *testing.B) {
+		dir := b.TempDir()
+		config := MultiProcessConfig()
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer client.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, [][]byte{entry})
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		// Calculate entries/sec
+		entriesPerSec := float64(b.N) / b.Elapsed().Seconds()
+		b.ReportMetric(entriesPerSec/1000, "K_entries_per_sec")
+	})
+
+	b.Run("Batch10", func(b *testing.B) {
+		dir := b.TempDir()
+		config := MultiProcessConfig()
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer client.Close()
+
+		batch := make([][]byte, 10)
+		for i := 0; i < 10; i++ {
+			batch[i] = entry
+		}
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, batch)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		// Calculate entries/sec (each operation writes 10 entries)
+		totalEntries := float64(b.N * 10)
+		entriesPerSec := totalEntries / b.Elapsed().Seconds()
+		b.ReportMetric(entriesPerSec/1000, "K_entries_per_sec")
+	})
+
+	b.Run("Batch100", func(b *testing.B) {
+		dir := b.TempDir()
+		config := MultiProcessConfig()
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer client.Close()
+
+		batch := make([][]byte, 100)
+		for i := 0; i < 100; i++ {
+			batch[i] = entry
+		}
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, batch)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		// Calculate entries/sec (each operation writes 100 entries)
+		totalEntries := float64(b.N * 100)
+		entriesPerSec := totalEntries / b.Elapsed().Seconds()
+		b.ReportMetric(entriesPerSec/1000, "K_entries_per_sec")
+	})
+
+	b.Run("Batch1000", func(b *testing.B) {
+		dir := b.TempDir()
+		config := MultiProcessConfig()
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer client.Close()
+
+		batch := make([][]byte, 1000)
+		for i := 0; i < 1000; i++ {
+			batch[i] = entry
+		}
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, batch)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		// Calculate entries/sec (each operation writes 1000 entries)
+		totalEntries := float64(b.N * 1000)
+		entriesPerSec := totalEntries / b.Elapsed().Seconds()
+		b.ReportMetric(entriesPerSec/1000, "K_entries_per_sec")
+	})
+}
+
+// BenchmarkThroughputComparison directly compares single vs multi-process throughput
+func BenchmarkThroughputComparison(b *testing.B) {
+	ctx := context.Background()
+	streamName := "test:v1:shard:0001" 
+	entry := []byte(`{"level":"INFO","msg":"test entry","id":123}`)
+	
+	// Test with 1000-entry batches to show where multi-process wins
+	batch := make([][]byte, 1000)
+	for i := 0; i < 1000; i++ {
+		batch[i] = entry
+	}
+
+	b.Run("SingleProcess_Batch1000", func(b *testing.B) {
+		dir := b.TempDir()
+		config := DefaultCometConfig()
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer client.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, batch)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		totalEntries := float64(b.N * 1000)
+		entriesPerSec := totalEntries / b.Elapsed().Seconds()
+		b.ReportMetric(entriesPerSec/1000000, "M_entries_per_sec")
+	})
+
+	b.Run("MultiProcess_Batch1000", func(b *testing.B) {
+		dir := b.TempDir()
+		config := MultiProcessConfig()
+		client, err := NewClientWithConfig(dir, config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer client.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			_, err := client.Append(ctx, streamName, batch)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+
+		totalEntries := float64(b.N * 1000)
+		entriesPerSec := totalEntries / b.Elapsed().Seconds()
+		b.ReportMetric(entriesPerSec/1000000, "M_entries_per_sec")
+	})
+}
