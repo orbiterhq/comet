@@ -40,7 +40,7 @@ func TestRetention_Basic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get shard: %v", err)
 	}
-	
+
 	// Debug: Check sequence counter before rotation
 	shard.mu.Lock()
 	if shard.sequenceCounter != nil {
@@ -137,7 +137,7 @@ func TestRetention_DeleteFiles(t *testing.T) {
 	config.Retention.CleanupInterval = 25 * time.Millisecond
 	config.Retention.MinFilesToKeep = 1
 	config.Retention.ProtectUnconsumed = false // Don't protect unconsumed data
-	config.Storage.MaxFileSize = 512 // Small files
+	config.Storage.MaxFileSize = 512           // Small files
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -213,7 +213,7 @@ func TestRetention_GlobalSizeLimit(t *testing.T) {
 	config.Retention.CleanupInterval = 50 * time.Millisecond
 	config.Retention.MinFilesToKeep = 1
 	config.Retention.MaxTotalSize = 1024 // 1KB total limit
-	config.Storage.MaxFileSize = 512 // Small files
+	config.Storage.MaxFileSize = 512     // Small files
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -244,7 +244,7 @@ func TestRetention_GlobalSizeLimit(t *testing.T) {
 
 	// Total size should be under the limit
 	if stats.TotalSizeBytes > config.Retention.MaxTotalSize {
-		t.Errorf("expected total size <= %d bytes, got %d bytes", 
+		t.Errorf("expected total size <= %d bytes, got %d bytes",
 			config.Retention.MaxTotalSize, stats.TotalSizeBytes)
 	}
 

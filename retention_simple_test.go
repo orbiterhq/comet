@@ -24,7 +24,7 @@ func TestRetentionSimple(t *testing.T) {
 	// Write some data
 	ctx := context.Background()
 	streamName := "test:v1:shard:0001"
-	
+
 	_, err = client.Append(ctx, streamName, [][]byte{
 		[]byte(`{"test": "retention"}`),
 	})
@@ -40,7 +40,7 @@ func TestRetentionSimple(t *testing.T) {
 
 	// Force a cleanup to exercise the code path
 	client.ForceRetentionCleanup()
-	
+
 	// Get stats again
 	stats2 := client.GetRetentionStats()
 	t.Logf("Retention is active: MaxAge=%v, CleanupInterval=%v, TotalFiles=%d",
@@ -49,4 +49,3 @@ func TestRetentionSimple(t *testing.T) {
 	// The important thing is that retention runs without crashing
 	t.Log("Retention cleanup executed successfully")
 }
-

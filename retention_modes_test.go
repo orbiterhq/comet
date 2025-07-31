@@ -65,7 +65,7 @@ func TestRetentionSingleProcess(t *testing.T) {
 	shard.mu.RUnlock()
 
 	if finalFiles >= initialFiles {
-		t.Errorf("Single-process mode: expected files to be deleted, had %d initially, now have %d", 
+		t.Errorf("Single-process mode: expected files to be deleted, had %d initially, now have %d",
 			initialFiles, finalFiles)
 	}
 
@@ -133,7 +133,7 @@ func TestRetentionMultiProcess(t *testing.T) {
 	shard.mu.RUnlock()
 
 	if finalFiles >= initialFiles {
-		t.Errorf("Multi-process mode: expected files to be deleted, had %d initially, now have %d", 
+		t.Errorf("Multi-process mode: expected files to be deleted, had %d initially, now have %d",
 			initialFiles, finalFiles)
 	}
 
@@ -201,7 +201,7 @@ func TestRetentionWithActiveReaders(t *testing.T) {
 	if finalFiles == initialFiles {
 		t.Log("No files deleted with active reader - this is acceptable for safety")
 	} else if finalFiles < initialFiles {
-		t.Logf("Deleted %d files even with active reader (kept boundary files)", initialFiles - finalFiles)
+		t.Logf("Deleted %d files even with active reader (kept boundary files)", initialFiles-finalFiles)
 	}
 }
 
@@ -252,7 +252,7 @@ func TestRetentionConsumerProtection(t *testing.T) {
 		}
 	}
 	initialFiles := len(shard.index.Files)
-	
+
 	// Find which files contain unconsumed data
 	protectedFiles := 0
 	consumerOffset := shard.index.ConsumerOffsets["test-group"]
@@ -279,7 +279,7 @@ func TestRetentionConsumerProtection(t *testing.T) {
 	}
 
 	if finalFiles < minExpectedFiles {
-		t.Errorf("Consumer protection failed: have %d files, expected at least %d", 
+		t.Errorf("Consumer protection failed: have %d files, expected at least %d",
 			finalFiles, minExpectedFiles)
 	}
 

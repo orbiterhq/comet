@@ -498,7 +498,7 @@ func (c *Consumer) scanForwardToEntry(shard *Shard, startPos EntryPosition, star
 	targetFileIndex := -1
 	for i := startPos.FileIndex; i < len(shard.index.Files); i++ {
 		fileInfo := shard.index.Files[i]
-		if fileInfo.StartEntry <= targetEntry && targetEntry < fileInfo.StartEntry + fileInfo.Entries {
+		if fileInfo.StartEntry <= targetEntry && targetEntry < fileInfo.StartEntry+fileInfo.Entries {
 			targetFileIndex = i
 			break
 		}
@@ -511,7 +511,7 @@ func (c *Consumer) scanForwardToEntry(shard *Shard, startPos EntryPosition, star
 	// Now scan within the target file to find the exact position
 	file := reader.files[targetFileIndex]
 	fileData := file.data.Load()
-	if fileData == nil || len(fileData) == 0 {
+	if len(fileData) == 0 {
 		return EntryPosition{}, fmt.Errorf("file %d is empty but should contain entry %d", targetFileIndex, targetEntry)
 	}
 

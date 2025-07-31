@@ -197,27 +197,27 @@ func runRetentionTest() {
 	dir := retentionCmd.String("dir", "", "Data directory")
 	workerID := retentionCmd.Int("worker-id", 0, "Worker ID")
 	streamName := retentionCmd.String("stream", "", "Stream name")
-	
+
 	// Skip the command name
 	retentionCmd.Parse(os.Args[2:])
-	
+
 	if *dir == "" || *streamName == "" {
 		log.Fatal("--dir and --stream are required")
 	}
-	
+
 	config := comet.MultiProcessConfig()
 	config.Retention.MaxAge = 200 * time.Millisecond
 	config.Retention.CleanupInterval = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 2
-	
+
 	client, err := comet.NewClientWithConfig(*dir, config)
 	if err != nil {
 		log.Fatalf("Worker %d: failed to create client: %v", *workerID, err)
 	}
 	defer client.Close()
-	
+
 	ctx := context.Background()
-	
+
 	// Write some data
 	for i := 0; i < 10; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "worker": %d, "timestamp": %d}`, i, *workerID, time.Now().UnixNano()))
@@ -226,7 +226,7 @@ func runRetentionTest() {
 			log.Printf("Worker %d: write error: %v", *workerID, err)
 		}
 	}
-	
+
 	// Worker 0 triggers retention
 	if *workerID == 0 {
 		log.Printf("Worker 0: triggering retention cleanup")
@@ -236,22 +236,22 @@ func runRetentionTest() {
 		// Other workers just wait a bit
 		time.Sleep(200 * time.Millisecond)
 	}
-	
+
 	// All workers try to read to verify data integrity
 	consumer := comet.NewConsumer(client, comet.ConsumerOptions{
 		Group: fmt.Sprintf("worker-%d", *workerID),
 	})
 	defer consumer.Close()
-	
+
 	messages, err := consumer.Read(ctx, []uint32{1}, 5)
 	if err != nil {
 		log.Printf("Worker %d: read error after retention: %v", *workerID, err)
 	} else {
 		log.Printf("Worker %d: successfully read %d messages after retention", *workerID, len(messages))
 	}
-	
+
 	// Sync to ensure all writes are persisted
 	client.Sync(ctx)
-	
+
 	fmt.Printf("Worker %d completed successfully\n", *workerID)
 }

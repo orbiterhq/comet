@@ -739,10 +739,10 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	if err := client.Sync(ctx); err != nil {
 		t.Fatalf("failed to sync: %v", err)
 	}
-	
+
 	// Close and reopen client to ensure all data is persisted
 	client.Close()
-	
+
 	client, err = NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("failed to recreate client: %v", err)
@@ -762,7 +762,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	if fileCount < 2 {
 		t.Errorf("expected multiple files, got %d", fileCount)
 	}
-	
+
 	// Log file info - show ALL files to understand the structure
 	t.Logf("=== File Structure ===")
 	for i, file := range shard.index.Files {
@@ -771,9 +771,9 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 		if err == nil {
 			fileSize = fileInfo.Size()
 		}
-		t.Logf("File[%d]: entries=%d, startEntry=%d, endOffset=%d, size=%d bytes, path=%s", 
+		t.Logf("File[%d]: entries=%d, startEntry=%d, endOffset=%d, size=%d bytes, path=%s",
 			i, file.Entries, file.StartEntry, file.EndOffset, fileSize, filepath.Base(file.Path))
-		
+
 	}
 
 	// Log binary index nodes for debugging
@@ -797,7 +797,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	for totalRead < numEntries {
 		// Read smaller batches near the end to isolate the issue
 		batchSize := 10
-		if totalRead >= numEntries - 20 {
+		if totalRead >= numEntries-20 {
 			batchSize = 1
 			t.Logf("Reading entry %d (single entry mode)", totalRead)
 		}

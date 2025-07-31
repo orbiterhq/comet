@@ -131,7 +131,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 	// Analyze files for deletion
 	filesToDelete := []FileInfo{}
 	filesToKeep := []FileInfo{}
-	
+
 	// Count total non-current files first
 	totalNonCurrentFiles := 0
 	for _, file := range files {
