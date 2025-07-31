@@ -39,9 +39,10 @@ Edge deployments need local observability buffering, but other solutions fall sh
 Unlike other embedded solutions, Comet enables **true multi-process coordination**.
 Perfect for prefork web servers like Go Fiber.
 
-- **Memory-mapped coordination** - Lock-free atomic operations for sequence allocation
+- **Memory-mapped coordination** - Lock-free atomic operations via 216-byte `coordination.state` file
 - **Zero-copy writes** - Direct memory writes to mapped files bypass syscalls
 - **Real process testing** - Spawns actual OS processes, not just goroutines
+- **33μs write latency** - Only 19x slower than single-process (vs 4,470x with traditional file locking)
 
 ## Key Benefits
 

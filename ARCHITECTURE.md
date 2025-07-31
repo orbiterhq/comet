@@ -62,14 +62,14 @@ Unlike byte-based systems, we use entry numbers for addressing. This provides:
 
 ```
 Shard Directory Structure:
-/data/streams/0001/
+/data/streams/shard-0001/
 ├── log-0000000000000001.comet   # First segment file (sequential)
 ├── log-0000000000000002.comet   # Second segment file
 ├── log-0000000000000003.comet   # Current write file
 ├── index.bin                    # Binary index file
 ├── index.state                  # 8-byte index change notification (multi-process mode)
 ├── sequence.state               # 8-byte sequence counter (multi-process mode)
-├── coordination.state           # 256-byte mmap coordination state (multi-process mode)
+├── coordination.state           # 216-byte mmap coordination state (multi-process mode)
 ├── index.lock                   # Index write lock (multi-process mode)
 └── shard.lock                   # Data write lock (multi-process mode)
 ```
@@ -238,9 +238,11 @@ Comet's multi-process coordination has evolved through three generations to achi
 
 The latest implementation uses memory-mapped files for ultra-fast multi-process writes:
 
-#### Coordination State Structure
+#### Coordination State File (coordination.state)
 
-The `coordination.state` file contains atomic coordination data:
+The `coordination.state` file is the heart of Comet's ultra-fast multi-process coordination. This 216-byte memory-mapped file enables lock-free coordination between processes.
+
+##### Structure
 
 ```go
 type MmapCoordinationState struct {
@@ -250,8 +252,26 @@ type MmapCoordinationState struct {
     RotationInProgress atomic.Int64  // 1 if rotation is happening, 0 otherwise
     LastWriteNanos     atomic.Int64  // Timestamp of last write
     TotalWrites        atomic.Int64  // Total number of writes
+    // ... additional fields for padding/alignment
 }
 ```
+
+##### How It Works
+
+1. **Memory-Mapped Shared State**: All processes map this file into their address space
+2. **Lock-Free Operations**: Atomic operations ensure consistency without locks
+3. **Write Coordination**: Processes atomically reserve space in the current data file
+4. **File Rotation**: Coordinated through RotationInProgress flag
+5. **Staleness Detection**: TotalWrites helps detect when indexes need rebuilding
+
+##### Performance Impact
+
+This design enables:
+
+- **33μs multi-process writes** (vs 7.6ms with file locking)
+- **Zero system calls** for coordination (just atomic CPU operations)
+- **No lock contention** between writers
+- **Instant visibility** of changes across all processes
 
 #### Lock-Free Sequence Allocation
 
@@ -277,7 +297,11 @@ For non-mmap mode, we use advisory file locks (flock) to coordinate writes betwe
 
 A separate lock for index updates prevents reader starvation. Writers can update the index without blocking data reads. This separation is crucial for maintaining low read latency.
 
-### Memory-Mapped State File (index.state)
+### Multi-Process State Files
+
+Comet uses three memory-mapped state files for coordination:
+
+#### 1. index.state (8 bytes)
 
 The `index.state` file enables instant change detection without locks or system calls.
 
@@ -314,6 +338,34 @@ We use `!=` comparison instead of `>` to handle clock skew:
 - **No system calls**: Direct memory access
 - **No lock contention**: Readers never block writers
 - **Cache efficient**: 8 bytes stay in L1 cache
+
+#### 2. sequence.state (8 bytes)
+
+The `sequence.state` file tracks the monotonically increasing sequence number for file naming:
+
+```go
+type SequenceState struct {
+    LastEntryNumber int64  // Last allocated entry number
+}
+```
+
+This ensures unique, sequential file names across all processes without coordination overhead.
+
+#### 3. coordination.state (216 bytes)
+
+As described above, this file contains the full coordination state for lock-free multi-process writes.
+
+#### How The Three Files Work Together
+
+1. **coordination.state**: Coordinates writes, tracks active file, manages space allocation
+2. **sequence.state**: Ensures unique file names during rotation
+3. **index.state**: Notifies readers when index has changed
+
+This three-file design separates concerns:
+
+- Write coordination doesn't block reads
+- File naming doesn't require write locks
+- Index updates are instantly visible
 
 #### Race Condition Handling
 
