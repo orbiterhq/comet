@@ -676,7 +676,7 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 		// Check if rebuild needed while holding read lock
 		needsRebuild := shard.checkIfRebuildNeeded()
 		shard.mu.RUnlock()
-		
+
 		if needsRebuild {
 			// Acquire write lock for rebuild
 			shard.mu.Lock()
@@ -686,7 +686,7 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 			}
 			shard.mu.Unlock()
 		}
-		
+
 		// Re-acquire read lock
 		shard.mu.RLock()
 	}
@@ -1521,10 +1521,10 @@ func (s *Shard) checkIfRebuildNeeded() bool {
 	if s.mmapWriter == nil || s.mmapWriter.CoordinationState() == nil {
 		return false
 	}
-	
+
 	coordState := s.mmapWriter.CoordinationState()
 	currentTotalWrites := coordState.TotalWrites.Load()
-	
+
 	// Check if total writes in coordination state exceed what we have in index
 	return currentTotalWrites > s.index.CurrentEntryNumber
 }
