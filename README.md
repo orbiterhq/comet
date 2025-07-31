@@ -24,7 +24,7 @@ Edge deployments need local observability buffering, but other solutions fall sh
 
 ## Features
 
-- **Ultra-low latency**: 1.7μs single-process, 31μs multi-process writes
+- **Ultra-low latency**: 1.7μs single-process, 33μs multi-process writes
 - **Predictable performance**: No compaction stalls or write amplification like LSM-trees
 - **True multi-process support**: Memory-mapped coordination, atomic operations, real OS processes
 - **O(log n) lookups**: Binary searchable index with bounded memory usage
@@ -57,7 +57,7 @@ Perfect for prefork web servers like Go Fiber.
 
 | Feature              | Comet                      | Kafka               | Redis Streams      | RocksDB            | Proof                                         |
 | -------------------- | -------------------------- | ------------------- | ------------------ | ------------------ | --------------------------------------------- |
-| **Write Latency**    | 1.7μs (31μs multi-process) | 1-5ms               | 50-100μs           | 50-200μs           | [Code](benchmarks_test.go#L22)                |
+| **Write Latency**    | 1.7μs (33μs multi-process) | 1-5ms               | 50-100μs           | 50-200μs           | [Code](benchmarks_test.go#L22)                |
 | **Multi-Process**    | ✅ Real OS processes       | ✅ Distributed      | ❌ Single process  | ⚠️ Mutex locks      | [Test](multiprocess_simple_test.go#L101)      |
 | **Resource Bounds**  | ✅ Time & size limits      | ⚠️ JVM heap          | ⚠️ Memory only      | ⚠️ Manual compact   | [Retention](retention.go#L144-L196)           |
 | **Crash Recovery**   | ✅ Automatic               | ✅ Replicas         | ⚠️ AOF/RDB          | ✅ WAL             | [Test](multiprocess_integration_test.go#L154) |
@@ -277,32 +277,34 @@ Benchmarked on Apple M2 with SSD (see [Performance Guide](PERFORMANCE.md) for de
 
 Optimized for single-process deployments with best performance:
 
-- **Single entry**: 1.7μs latency (588k entries/sec)
-- **10-entry batch**: 0.26μs per entry (3.9M entries/sec)
-- **100-entry batch**: 0.29μs per entry (3.4M entries/sec)
-- **1000-entry batch**: 0.11μs per entry (9.1M entries/sec)
+- **Single entry**: 1.7μs latency (594k entries/sec)
+- **10-entry batch**: 2.7μs per batch (3.6M entries/sec)
+- **100-entry batch**: 9.0μs per batch (11.1M entries/sec)
+- **1000-entry batch**: 112μs per batch (8.9M entries/sec)
+- **10000-entry batch**: 548μs per batch (18.2M entries/sec)
 
 ### Multi-Process Mode
 
 For prefork/multi-process deployments with memory-mapped coordination:
 
-- **Single entry**: 31μs latency (32k entries/sec) - ultra-fast for multi-process!
-- **10-entry batch**: 3.5μs per entry (288k entries/sec)
-- **100-entry batch**: 0.64μs per entry (1.6M entries/sec)
-- **1000-entry batch**: 0.19μs per entry (5.7M entries/sec)
+- **Single entry**: 33μs latency (30k entries/sec) - ultra-fast for multi-process!
+- **10-entry batch**: 35μs per batch (283k entries/sec)
+- **100-entry batch**: 56μs per batch (1.8M entries/sec)
+- **1000-entry batch**: 170μs per batch (5.9M entries/sec)
+- **10000-entry batch**: 2.0ms per batch (5.0M entries/sec)
 
-**Note on Multi-Process Latency**: While single-entry writes are ~18x slower in multi-process mode (31μs vs 1.7μs), this difference is often irrelevant in production:
+**Note on Multi-Process Latency**: While single-entry writes are ~19x slower in multi-process mode (33μs vs 1.7μs), this difference is often irrelevant in production:
 
 - **With async batching**: If you're buffering writes (like most ingest services), the latency is hidden from your request path
-- **With large batches**: At 1000-entry batches, the difference shrinks to just 0.19μs vs 0.11μs per entry
+- **With large batches**: At 1000-entry batches, multi-process is only ~1.5x slower per batch (170μs vs 112μs)
 - **With prefork benefits**: You gain linear CPU scaling, process isolation, and crash resilience
 
-**When the 31μs matters**: Direct, synchronous writes where every microsecond counts
+**When the 33μs matters**: Direct, synchronous writes where every microsecond counts
 **When it doesn't**: HTTP APIs, batched ingestion, async workers, or any pattern that decouples the write from the request
 
 ### Other Performance Metrics
 
-- **ACK performance**: 30ns per ACK (33M ACKs/sec) with batch optimization
+- **ACK performance**: 30ns per ACK (34M ACKs/sec) with batch optimization
 - **Memory efficiency**: Zero allocations for ACKs, 5 allocations per write batch
 - **Multi-process coordination**: Memory-mapped atomic operations for lock-free sequence allocation
 - **Storage overhead**: 12 bytes per entry (4-byte length + 8-byte timestamp)

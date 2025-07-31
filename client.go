@@ -1492,7 +1492,7 @@ func (s *Shard) loadIndexWithRetry() error {
 			return nil
 		}
 		// Retry on EOF and file size errors to handle race conditions
-		if (strings.Contains(err.Error(), "unexpected EOF") || 
+		if (strings.Contains(err.Error(), "unexpected EOF") ||
 			strings.Contains(err.Error(), "index file too small")) && attempt < 2 {
 			time.Sleep(time.Duration(attempt+1) * time.Millisecond) // 1ms, 2ms
 			continue

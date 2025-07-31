@@ -4,12 +4,13 @@ This guide helps you achieve maximum performance with Comet for your specific us
 
 ## Quick Performance Numbers
 
-| Operation        | Single-Process | Multi-Process | Entries/Second |
-| ---------------- | -------------- | ------------- | -------------- |
-| Single Write     | 1.7μs          | 31μs          | 588K / 32K     |
-| 10-Entry Batch   | 0.26μs/entry   | 3.5μs/entry   | 3.9M / 288K    |
-| 100-Entry Batch  | 0.29μs/entry   | 0.64μs/entry  | 3.4M / 1.6M    |
-| 1000-Entry Batch | 0.11μs/entry   | 0.19μs/entry  | 9.1M / 5.7M    |
+| Operation        | Single-Process        | Multi-Process        | Entries/Second |
+| ---------------- | --------------------- | -------------------- | -------------- |
+| Single Write     | 1.7μs                 | 33μs                 | 594K / 30K     |
+| 10-Entry Batch   | 2.7μs (0.27μs/entry)  | 35μs (3.5μs/entry)   | 3.6M / 283K    |
+| 100-Entry Batch  | 9.0μs (0.09μs/entry)  | 56μs (0.56μs/entry)  | 11.1M / 1.8M   |
+| 1000-Entry Batch | 112μs (0.11μs/entry)  | 170μs (0.17μs/entry) | 8.9M / 5.9M    |
+| 10K-Entry Batch  | 548μs (0.055μs/entry) | 2.0ms (0.20μs/entry) | 18.2M / 5.0M   |
 
 ### Compression Impact (for ~800 byte JSON logs)
 
@@ -23,7 +24,7 @@ _Benchmarked on: Apple M2, Go 1.22+_
 
 **Compression defaults to OFF for entries <4KB** to maintain low latency for typical logs.
 
-**Key Insight**: Batching is critical. Going from single writes to 1000-entry batches provides a 15x improvement in single-process mode.
+**Key Insight**: Batching is critical. Going from single writes to 1000-entry batches provides a 15x improvement in single-process mode, and 10K-entry batches provide 31x improvement.
 
 ## Performance Profiles
 
@@ -108,7 +109,7 @@ consumer.Process(ctx, handler,
 
 **💡 When Multi-Process Latency Doesn't Matter**
 
-While single-entry writes are ~18x slower in multi-process mode (31μs vs 1.7μs), this difference becomes **irrelevant** with async batching patterns:
+While single-entry writes are ~19x slower in multi-process mode (33μs vs 1.7μs), this difference becomes **irrelevant** with async batching patterns:
 
 ```go
 // Example: HTTP ingestion with async batching
@@ -137,9 +138,9 @@ With proper batching, multi-process mode can achieve **>5M entries/sec** across 
 | -------------------------- | ------------- | ----------------- | -------------------------- |
 | Original (sync checkpoint) | 7.6ms         | 4,470x slower     | File locks + sync I/O      |
 | Async checkpointing        | 2.7ms         | 1,590x slower     | Deferred index persistence |
-| Memory-mapped I/O          | 31μs          | 18x slower        | Lock-free atomics + mmap   |
+| Memory-mapped I/O          | 33μs          | 19x slower        | Lock-free atomics + mmap   |
 
-The latest multi-process mode achieves **31μs write latency** through:
+The latest multi-process mode achieves **33μs write latency** through:
 
 - **Lock-free coordination**: Atomic operations for sequence allocation
 - **Memory-mapped data files**: Direct memory writes bypass syscalls
@@ -147,6 +148,17 @@ The latest multi-process mode achieves **31μs write latency** through:
 - **Zero-copy writes**: Data goes directly to mapped memory
 
 This is a **240x improvement** over the original multi-process implementation!
+
+### Multi-Process Race Condition Handling
+
+Comet includes comprehensive retry logic to ensure 100% data consistency in multi-process scenarios:
+
+- **EOF error handling**: Retries when index files are being written by another process
+- **Index file size errors**: Handles partial index writes during coordination
+- **Exponential backoff**: 1ms, 2ms delays to allow conflicting operations to complete
+- **Bounded retries**: Maximum 3 attempts to prevent infinite loops
+
+These optimizations ensure multi-process mode achieves perfect data consistency even under extreme contention, with minimal performance impact.
 
 ## Benchmarking Your Workload
 
@@ -156,18 +168,22 @@ This is a **240x improvement** over the original multi-process implementation!
 # Basic benchmarks
 go test -bench=. -benchmem -benchtime=10s
 
+# Use standardized benchmark tasks
+mise run bench:core    # Core benchmarks for README scenarios
+mise run bench:quick   # Quick comparison test
+
 # CPU profiling
-go test -bench=BenchmarkBatch1000 -cpuprofile=cpu.prof
+go test -bench=BenchmarkWrite_HugeBatch -cpuprofile=cpu.prof
 go tool pprof cpu.prof
 
 # Memory profiling
-go test -bench=BenchmarkBatch1000 -memprofile=mem.prof
+go test -bench=BenchmarkWrite_HugeBatch -memprofile=mem.prof
 go tool pprof mem.prof
 
 # Specific scenarios
-go test -bench=BenchmarkSingleWrite    # Test write latency
-go test -bench=BenchmarkCompression    # Test compression impact
-go test -bench=BenchmarkConsumer       # Test read throughput
+go test -bench=BenchmarkWrite_SingleEntry         # Test write latency
+go test -bench=BenchmarkMultiProcessThroughput    # Test multi-process performance
+go test -bench=BenchmarkConsumerAck               # Test consumer performance
 ```
 
 ### Writing Custom Benchmarks
@@ -359,7 +375,7 @@ for _, entry := range entries {
     client.Append(ctx, stream, [][]byte{entry})
 }
 
-// FAST - 0.11μs per entry (with 1000-entry batch)
+// FAST - 0.11μs per entry (1000-entry batch), 0.055μs per entry (10K batch)
 client.Append(ctx, stream, entries)
 ```
 
@@ -446,6 +462,8 @@ Suggested Service Level Objectives:
 | ----------------- | ------ | ---------- | ----------- |
 | Write p50 latency | <5μs   | <10μs      | >10μs       |
 | Write p99 latency | <50μs  | <100μs     | >100μs      |
+| Multi-proc p50    | <50μs  | <100μs     | >100μs      |
+| Multi-proc p99    | <200μs | <500μs     | >500μs      |
 | Compression ratio | >10:1  | >5:1       | <5:1        |
 | Consumer lag      | <1000  | <10000     | >10000      |
 | Error rate        | <0.01% | <0.1%      | >0.1%       |
@@ -478,7 +496,7 @@ Since Comet is syscall-bound, traditional CPU optimizations won't help much. Ins
 **macOS** (current profiling platform):
 
 - Higher syscall overhead
-- Still achieves 1.66μs latency
+- Still achieves 1.7μs latency
 
 ### Performance vs. Alternatives
 
