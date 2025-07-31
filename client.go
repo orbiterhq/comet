@@ -1164,7 +1164,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				finalEntryNumber = entryNumbers[len(entryNumbers)-1] + 1
 			}
 			finalWriteOffset := writeOffset
-			
+
 			// DEBUG: Log entry number calculation
 			if false { // Enable for debugging
 				log.Printf("Shard %d: entryNumbers=%v, finalEntryNumber=%d, initialEntryNumber=%d",
@@ -1989,14 +1989,33 @@ func (s *Shard) loadIndex() error {
 
 	// Check if index file exists
 	if _, err := os.Stat(s.indexPath); os.IsNotExist(err) {
-		// No index yet, keep the already configured index
+		// No index file - attempt to rebuild from data files
 		if s.index == nil {
-			// Only create default if no index was configured
+			// Create default index structure
 			s.index = &ShardIndex{
 				BoundaryInterval: defaultBoundaryInterval,
 				ConsumerOffsets:  make(map[string]int64),
 			}
 		}
+
+		// Try to rebuild index from existing data files
+		shardDir := filepath.Dir(s.indexPath)
+		if err := s.rebuildIndexFromDataFiles(shardDir); err != nil {
+			// Log the error but don't fail - empty index is better than nothing
+			// This allows new shards to start fresh
+			if len(s.index.Files) > 0 {
+				// Only return error if we found files but couldn't read them
+				return fmt.Errorf("failed to rebuild index from data files: %w", err)
+			}
+		}
+
+		// Persist the rebuilt index
+		if len(s.index.Files) > 0 {
+			if err := s.persistIndex(); err != nil {
+				return fmt.Errorf("failed to persist rebuilt index: %w", err)
+			}
+		}
+
 		return nil
 	}
 
@@ -2095,8 +2114,8 @@ func (s *Shard) initSequenceState() error {
 		// New file - initialize with the last allocated entry number
 		// CurrentEntryNumber is the NEXT entry to be written
 		// So if CurrentEntryNumber is 0, no entries have been written yet
-		// and LastEntryNumber should be -1 (but we'll use 0 and adjust in allocation)
-		initialSeq := int64(0)
+		// and LastEntryNumber should be -1
+		initialSeq := int64(-1)
 		if s.index.CurrentEntryNumber > 0 {
 			initialSeq = s.index.CurrentEntryNumber - 1
 		}
@@ -2137,6 +2156,144 @@ func (s *Shard) getNextSequence() int64 {
 	}
 	// Single-process mode: use global atomic counter
 	return atomic.AddInt64(&globalSequenceCounter, 1)
+}
+
+// rebuildIndexFromDataFiles scans all data files and rebuilds the index from scratch
+// This is used for disaster recovery when the index file is lost or corrupted
+func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
+	// Find all data files
+	entries, err := os.ReadDir(shardDir)
+	if err != nil {
+		return fmt.Errorf("failed to read shard directory: %w", err)
+	}
+
+	// Collect and sort data files by sequence number
+	var dataFiles []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, "log-") && strings.HasSuffix(name, ".comet") {
+			dataFiles = append(dataFiles, filepath.Join(shardDir, name))
+		}
+	}
+
+	if len(dataFiles) == 0 {
+		return nil // No files to rebuild from
+	}
+
+	// Sort files by name (which includes sequence number)
+	sort.Strings(dataFiles)
+
+	// Reset index state
+	s.index.Files = make([]FileInfo, 0, len(dataFiles))
+	s.index.BinaryIndex.Nodes = make([]EntryIndexNode, 0)
+	s.index.CurrentEntryNumber = 0
+	s.index.CurrentWriteOffset = 0
+
+	// Scan each file to rebuild the index
+	for _, filePath := range dataFiles {
+		fileInfo, err := s.scanDataFile(filePath)
+		if err != nil {
+			// Skip corrupted files but continue with others
+			continue
+		}
+
+		// Add to index
+		s.index.Files = append(s.index.Files, *fileInfo)
+
+		// Update current file if this is the last one
+		if filePath == dataFiles[len(dataFiles)-1] {
+			s.index.CurrentFile = filePath
+			s.index.CurrentWriteOffset = fileInfo.EndOffset
+		}
+	}
+
+	// Update total entry count
+	if len(s.index.Files) > 0 {
+		lastFile := s.index.Files[len(s.index.Files)-1]
+		s.index.CurrentEntryNumber = lastFile.StartEntry + lastFile.Entries
+	}
+
+	return nil
+}
+
+// scanDataFile reads a data file and extracts metadata for index rebuilding
+func (s *Shard) scanDataFile(filePath string) (*FileInfo, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open data file: %w", err)
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat file: %w", err)
+	}
+
+	fileInfo := &FileInfo{
+		Path:        filePath,
+		StartOffset: 0,
+		EndOffset:   stat.Size(),
+		StartTime:   stat.ModTime(), // Use modification time as approximation
+		EndTime:     stat.ModTime(),
+	}
+
+	// Determine starting entry number
+	if len(s.index.Files) > 0 {
+		prevFile := s.index.Files[len(s.index.Files)-1]
+		fileInfo.StartEntry = prevFile.StartEntry + prevFile.Entries
+	} else {
+		fileInfo.StartEntry = 0
+	}
+
+	// Scan through the file to count entries and build index nodes
+	offset := int64(0)
+	entryCount := int64(0)
+	buffer := make([]byte, 12) // Header size
+
+	for offset < stat.Size() {
+		// Read header
+		n, err := file.ReadAt(buffer, offset)
+		if err != nil || n < 12 {
+			break // End of file or corrupted
+		}
+
+		// Parse header
+		length := binary.LittleEndian.Uint32(buffer[0:4])
+		timestamp := binary.LittleEndian.Uint64(buffer[4:12])
+
+		// Validate entry
+		if length > 100*1024*1024 { // 100MB max
+			break // Corrupted entry
+		}
+
+		// Update timestamps
+		entryTime := time.Unix(0, int64(timestamp))
+		if entryCount == 0 {
+			fileInfo.StartTime = entryTime
+		}
+		fileInfo.EndTime = entryTime
+
+		// Add to binary index at intervals
+		if entryCount%int64(s.index.BoundaryInterval) == 0 {
+			s.index.BinaryIndex.AddIndexNode(fileInfo.StartEntry+entryCount, EntryPosition{
+				FileIndex:  len(s.index.Files), // Current file index
+				ByteOffset: offset,
+			})
+		}
+
+		// Move to next entry
+		entrySize := int64(12 + length)
+		offset += entrySize
+		entryCount++
+	}
+
+	fileInfo.Entries = entryCount
+	fileInfo.EndOffset = offset
+
+	return fileInfo, nil
 }
 
 // updateMmapState atomically updates the shared timestamp to notify other processes of index changes
