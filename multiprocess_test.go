@@ -18,6 +18,7 @@ func TestMultiProcessInSameProcess(t *testing.T) {
 
 	// Create two clients with multi-process config
 	config := MultiProcessConfig()
+	config.Retention.CleanupInterval = 0 // Disable retention to prevent interference
 
 	client1, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -319,6 +320,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 	// Create config with file locking enabled (this enables mmap coordination)
 	config := DefaultCometConfig()
 	config.Concurrency.EnableMultiProcessMode = true
+	config.Retention.CleanupInterval = 0 // Disable retention to prevent interference
 
 	streamName := "events:v1:shard:0001"
 	ctx := context.Background()

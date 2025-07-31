@@ -31,7 +31,7 @@ run = [
 
 [tasks.test]
 description = "Run tests with race detection"
-run = ["go test -v ./... -race -shuffle=on -count=2"]
+run = ["go test -v ./... -race -shuffle=on -count=2 -timeout=5m"]
 
 [tasks."test:all"]
 description = "Run all tests including integration tests"
