@@ -5,8 +5,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"syscall"
 	"testing"
@@ -2084,9 +2086,9 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 // BenchmarkThroughputComparison directly compares single vs multi-process throughput
 func BenchmarkThroughputComparison(b *testing.B) {
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001" 
+	streamName := "test:v1:shard:0001"
 	entry := []byte(`{"level":"INFO","msg":"test entry","id":123}`)
-	
+
 	// Test with 1000-entry batches to show where multi-process wins
 	batch := make([][]byte, 1000)
 	for i := 0; i < 1000; i++ {
@@ -2140,4 +2142,88 @@ func BenchmarkThroughputComparison(b *testing.B) {
 		entriesPerSec := totalEntries / b.Elapsed().Seconds()
 		b.ReportMetric(entriesPerSec/1000000, "M_entries_per_sec")
 	})
+}
+
+// BenchmarkMultiProcess measures performance with multiple processes
+func BenchmarkMultiProcess(b *testing.B) {
+	if os.Getenv("COMET_BENCH_WORKER") != "" {
+		// We're a worker process
+		runBenchmarkWorker(b)
+		return
+	}
+
+	// We're the parent
+	dir := b.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	for _, numProcs := range []int{1, 2, 4} {
+		b.Run(fmt.Sprintf("procs_%d", numProcs), func(b *testing.B) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			var wg sync.WaitGroup
+
+			// Start worker processes
+			for i := 0; i < numProcs; i++ {
+				wg.Add(1)
+				go func(id int) {
+					defer wg.Done()
+
+					cmd := exec.CommandContext(ctx, executable,
+						"-test.bench", "BenchmarkMultiProcess",
+						"-test.run", "^$")
+					cmd.Env = append(os.Environ(),
+						fmt.Sprintf("COMET_BENCH_WORKER=%d", id),
+						fmt.Sprintf("COMET_BENCH_DIR=%s", dir),
+						fmt.Sprintf("COMET_BENCH_N=%d", b.N),
+					)
+					cmd.Run()
+				}(i)
+			}
+
+			wg.Wait()
+
+			// Read final stats
+			config := DefaultCometConfig()
+			client, err := NewClientWithConfig(dir, config)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer client.Close()
+
+			stats := client.GetStats()
+			b.ReportMetric(float64(stats.TotalEntries), "total_entries")
+			b.ReportMetric(float64(stats.TotalEntries)/float64(numProcs), "entries_per_proc")
+		})
+	}
+}
+
+func runBenchmarkWorker(b *testing.B) {
+	dir := os.Getenv("COMET_BENCH_DIR")
+	n, _ := strconv.Atoi(os.Getenv("COMET_BENCH_N"))
+	if n == 0 {
+		n = b.N
+	}
+
+	config := MultiProcessConfig()
+	client, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	streamName := "bench:v1:shard:0001"
+
+	batch := make([][]byte, 100)
+	for i := 0; i < 100; i++ {
+		batch[i] = []byte(fmt.Sprintf(`{"n":%d,"data":"benchmark entry %d"}`, i, i))
+	}
+
+	for i := 0; i < n; i++ {
+		client.Append(ctx, streamName, batch)
+	}
 }

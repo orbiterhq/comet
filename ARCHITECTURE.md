@@ -228,11 +228,11 @@ Comet's multi-process coordination has evolved through three generations to achi
 
 ### Evolution of Multi-Process Performance
 
-| Generation | Write Latency | vs Single-Process | Key Technology |
-|------------|---------------|-------------------|----------------|
-| Original (sync checkpoint) | 7.6ms | 4,575x slower | File locks + sync I/O |
-| Async checkpointing | 3.2ms | 1,940x slower | Deferred index persistence |
-| **Memory-mapped I/O** | **32μs** | **20x slower** | **Lock-free atomics + mmap** |
+| Generation                 | Write Latency | vs Single-Process | Key Technology               |
+| -------------------------- | ------------- | ----------------- | ---------------------------- |
+| Original (sync checkpoint) | 7.6ms         | 4,575x slower     | File locks + sync I/O        |
+| Async checkpointing        | 3.2ms         | 1,940x slower     | Deferred index persistence   |
+| **Memory-mapped I/O**      | **32μs**      | **20x slower**    | **Lock-free atomics + mmap** |
 
 ### Memory-Mapped Writer (Current Implementation)
 
@@ -258,7 +258,7 @@ type MmapCoordinationState struct {
 Processes coordinate through atomic operations on shared memory:
 
 1. **Sequence Allocation**: `atomic.Add()` on sequence counter to reserve entry numbers
-2. **Write Space Allocation**: `atomic.Add()` on write offset to reserve file space  
+2. **Write Space Allocation**: `atomic.Add()` on write offset to reserve file space
 3. **Direct Memory Writes**: Data written directly to memory-mapped region
 4. **Atomic File Growth**: File extended atomically when needed
 
@@ -567,7 +567,7 @@ The system favors throughput over immediate durability, suitable for observabili
 
 ### Single-Process Mode (Default)
 
-```  
+```
 BenchmarkSingleWrite-8          588,235 ops/s    1.7μs/op     202 B/op    6 allocs/op
 BenchmarkBatch10-8            2,000,000 ops/s    0.50μs/op    1309 B/op   5 allocs/op
 BenchmarkBatch100-8           4,100,000 ops/s    0.24μs/op    13090 B/op  5 allocs/op

@@ -317,7 +317,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		defer client1.Close()
 
 		// Debug: Check initial shard state
-		initialShard, _ := client1.getOrCreateShard(1) 
+		initialShard, _ := client1.getOrCreateShard(1)
 		initialShard.mu.RLock()
 		t.Logf("Initial writer shard state: Files=%d, CurrentWriteOffset=%d, CurrentEntryNumber=%d",
 			len(initialShard.index.Files), initialShard.index.CurrentWriteOffset, initialShard.index.CurrentEntryNumber)

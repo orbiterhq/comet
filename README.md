@@ -15,6 +15,7 @@ Each shard maintains a series of immutable segment files that are rotated at siz
 Edge deployments need local observability buffering, but:
 
 - **Kafka**: Requires clusters, complex ops, ~1-5ms latency
+- **RocksDB**: Single-threaded writes, 10-50μs best case, 100ms during stalls
 - **SQLite**: Unbounded growth, no sharding, ~100μs+ latency
 - **Ring buffers**: No persistence, no compression, data loss on overflow
 - **Files + rotation**: No indexing, no consumers, manual everything
@@ -22,8 +23,6 @@ Edge deployments need local observability buffering, but:
 **The gap**: No embedded solution with Kafka's reliability at ring buffer speeds.
 
 ## Features
-
-_How did we do it?_ Lock-free reads, compression outside critical sections, and 8-byte mmap coordination between processes.
 
 - **Ultra-low latency** writes (1.7μs single-process mode, 32μs multi-process mode)
 - **Multi-process coordination** with lock-free mmap-based coordination and atomic operations
@@ -40,14 +39,13 @@ _How did we do it?_ Lock-free reads, compression outside critical sections, and 
 
 ## Multi-Process Coordination
 
-Unlike other embedded solutions, Comet enables **true multi-process coordination**:
+Unlike other embedded solutions, Comet enables **true multi-process coordination**.
+Perfect for prefork web servers like Go Fiber.
 
 - **Memory-mapped coordination** - Lock-free atomic operations for sequence allocation
-- **Zero-copy writes** - Direct memory writes to mapped files bypass syscalls  
+- **Zero-copy writes** - Direct memory writes to mapped files bypass syscalls
 - **32μs write latency** - 237x faster than original multi-process implementation
 - **Real process testing** - Spawns actual OS processes, not just goroutines
-
-Perfect for prefork web servers, distributed workers, and containerized deployments.
 
 ## Key Benefits
 
@@ -61,31 +59,21 @@ Perfect for prefork web servers, distributed workers, and containerized deployme
 
 ## How Does Comet Compare?
 
-| Feature              | Comet                 | Kafka               | Redis Streams      | SQLite             | Proof                                    |
-| -------------------- | --------------------- | ------------------- | ------------------ | ------------------ | ---------------------------------------- |
-| **Write Latency**    | 1.7μs (32μs multi-process) | 1-5ms               | 50-100μs           | 100μs+             | [Code](benchmarks_test.go#L22)           |
-| **Multi-Process**    | ✅ Real OS processes  | ✅ Distributed      | ❌ Single process  | ❌ File locks only | [Test](multiprocess_simple_test.go#L101) |
-| **Resource Bounds**  | ✅ Time & size limits | ⚠️ JVM heap          | ⚠️ Memory only      | ❌ Unbounded       | [Retention](retention.go#L144-L196)      |
-| **Compression**      | ✅ Optional zstd      | ✅ Multiple codecs  | ❌ None            | ❌ None            | [Code](benchmarks_test.go#L283)          |
-| **Crash Recovery**   | ✅ Automatic          | ✅ Replicas         | ⚠️ AOF/RDB          | ✅ WAL             | [Test](multiprocess_lock_test.go#L154)   |
-| **Zero Copy Reads**  | ✅ mmap               | ❌ Network          | ❌ Serialization   | ❌ SQL parsing     | [Code](reader.go#L89)                    |
-| **Storage Overhead** | ~12 bytes/entry       | ~50 bytes/entry     | ~20 bytes/entry    | ~100 bytes/row     | [Format](ARCHITECTURE.md#wire-format)    |
-| **Embedded**         | ✅ Native             | ❌ Requires cluster | ❌ Requires server | ✅ Native          | -                                        |
-| **Sharding**         | ✅ Built-in           | ✅ Partitions       | ❌ Manual          | ❌ Manual          | [Code](client.go#L776)                   |
-
-```go
-// This is all you need for production-ready event streaming:
-client, _ := comet.NewClient("/data")
-consumer := comet.NewConsumer(client, comet.ConsumerOptions{Group: "my-app"})
-
-consumer.Process(ctx, handleEvents)  // That's it!
-```
-
-That's it. Comet handles compression, sharding, retries, checkpointing, and cleanup.
+| Feature              | Comet                      | Kafka               | Redis Streams      | SQLite             | Proof                                         |
+| -------------------- | -------------------------- | ------------------- | ------------------ | ------------------ | --------------------------------------------- |
+| **Write Latency**    | 1.7μs (32μs multi-process) | 1-5ms               | 50-100μs           | 100μs+             | [Code](benchmarks_test.go#L22)                |
+| **Multi-Process**    | ✅ Real OS processes       | ✅ Distributed      | ❌ Single process  | ❌ File locks only | [Test](multiprocess_simple_test.go#L101)      |
+| **Resource Bounds**  | ✅ Time & size limits      | ⚠️ JVM heap          | ⚠️ Memory only      | ❌ Unbounded       | [Retention](retention.go#L144-L196)           |
+| **Crash Recovery**   | ✅ Automatic               | ✅ Replicas         | ⚠️ AOF/RDB          | ✅ WAL             | [Test](multiprocess_integration_test.go#L154) |
+| **Zero Copy Reads**  | ✅ mmap                    | ❌ Network          | ❌ Serialization   | ❌ SQL parsing     | [Code](reader.go#L89)                         |
+| **Storage Overhead** | ~12 bytes/entry            | ~50 bytes/entry     | ~20 bytes/entry    | ~100 bytes/row     | [Format](ARCHITECTURE.md#wire-format)         |
+| **Embedded**         | ✅ Native                  | ❌ Requires cluster | ❌ Requires server | ✅ Native          | -                                             |
+| **Sharding**         | ✅ Built-in                | ✅ Partitions       | ❌ Manual          | ❌ Manual          | [Code](client.go#L776)                        |
+| **Compression**      | ✅ Optional zstd           | ✅ Multiple codecs  | ❌ None            | ❌ None            | [Code](benchmarks_test.go#L283)               |
 
 ## Quick Start
 
-### The Easy Way™ - Just Three Steps!
+### The Easy Way™
 
 **Step 1: Create a client**
 
@@ -132,7 +120,7 @@ err = consumer.Process(ctx, func(messages []comet.StreamMessage) error {
 ### Want more control? Scale horizontally:
 
 ```go
-// Deploy this same code on 3 machines:
+// Deploy this same code across 3 processes:
 err = consumer.Process(ctx, processEvents,
     comet.WithStream("events:v1:shard:*"),
     comet.WithConsumerAssignment(workerID, numWorkers),  // This worker + total count
@@ -161,19 +149,6 @@ err = consumer.Process(ctx, processEvents,
 )
 ```
 
-## Zero Config Required!
-
-Comet works great out of the box:
-
-```go
-// That's it! Sensible defaults for edge deployments:
-// - Keeps last 4 hours of data
-// - 1GB per shard, 10GB total
-// - Automatic compression for entries > 1KB
-// - Cleans up every 15 minutes
-client, err := comet.NewClient("/var/lib/comet")
-```
-
 ### Need to tweak something?
 
 ```go
@@ -188,7 +163,7 @@ config = comet.MultiProcessConfig()         // For prefork deployments
 config = comet.HighThroughputConfig()       // For maximum write speed
 ```
 
-### Configuration Structure
+#### Configuration Structure
 
 ```go
 type CometConfig struct {
@@ -306,16 +281,7 @@ Optimized for single-process deployments with best performance:
 - **100-entry batch**: 0.24μs per entry (4.1M entries/sec)
 - **1000-entry batch**: 0.098μs per entry (10.2M entries/sec)
 
-### Multi-Process Mode
-
-For prefork/multi-process deployments with memory-mapped coordination:
-
-- **Single entry**: 32μs latency (31k entries/sec) - ultra-fast for multi-process!
-- **10-entry batch**: 3.2μs per entry (312k entries/sec)
-- **100-entry batch**: 0.32μs per entry (3.1M entries/sec)
-- **1000-entry batch**: 0.032μs per entry (31M entries/sec)
-
-### Compression Impact
+#### Compression Impact
 
 Compression trades latency for storage savings (benchmarked with ~800 byte JSON logs):
 
@@ -327,6 +293,15 @@ Compression trades latency for storage savings (benchmarked with ~800 byte JSON 
 
 _Compression is OFF by default (threshold: 4KB) to maintain ultra-low latency._
 
+### Multi-Process Mode
+
+For prefork/multi-process deployments with memory-mapped coordination:
+
+- **Single entry**: 32μs latency (31k entries/sec) - ultra-fast for multi-process!
+- **10-entry batch**: 3.2μs per entry (312k entries/sec)
+- **100-entry batch**: 0.32μs per entry (3.1M entries/sec)
+- **1000-entry batch**: 0.032μs per entry (31M entries/sec)
+
 ### Other Performance Metrics
 
 - **ACK performance**: 29ns per ACK (34M ACKs/sec) with batch optimization
@@ -336,7 +311,7 @@ _Compression is OFF by default (threshold: 4KB) to maintain ultra-low latency._
 
 ## Use Cases
 
-✅ **Perfect for:**
+✅ **Right fit for:**
 
 - Edge deployments with limited storage
 - High-frequency observability data (metrics, logs, traces)
@@ -350,24 +325,6 @@ _Compression is OFF by default (threshold: 4KB) to maintain ultra-low latency._
 - Transactional data requiring ACID
 - Random access patterns
 - Complex queries or aggregations
-
-## Comparison to Similar Systems
-
-| Feature         | Comet         | Kafka         | SQLite WAL      | Ring Buffer     |
-| --------------- | ------------- | ------------- | --------------- | --------------- |
-| Pattern         | Segmented Log | Segmented Log | Write-Ahead Log | Circular Buffer |
-| Embedded        | ✅            | ❌            | ✅              | ✅              |
-| Bounded Size    | ✅            | ✅            | ❌              | ✅              |
-| Compression     | ✅            | ✅            | ❌              | ❌              |
-| Sharding        | ✅            | ✅            | ❌              | ❌              |
-| Zero-Copy Reads | ✅            | ✅            | ❌              | ✅              |
-| Low Latency     | ✅            | ❌            | ❌              | ✅              |
-
-## Design Philosophy
-
-Comet brings Kafka's proven segmented log pattern to edge deployments. While Kafka optimizes for distributed durability and replication, Comet optimizes for resource constraints and embedded use cases.
-
-By implementing compression outside of locks and leveraging atomic operations for lock-free reads, Comet achieves good performance while maintaining correctness and thread safety.
 
 ## Configuration
 
@@ -398,14 +355,6 @@ client, err := comet.NewClientWithConfig("/data/streams", config)
 - Microservices with dedicated storage
 - Maximum performance requirements
 - Containerized deployments with process isolation
-
-## Production Ready
-
-- ✅ **Bounded growth**: Both memory and disk usage are capped
-- ✅ **Safe concurrency**: Lock-free reads, minimal write locks
-- ✅ **Crash recovery**: Automatic recovery from last checkpoint
-- ✅ **Observable**: Comprehensive metrics for monitoring
-- ✅ **Battle-tested**: Optimizations based on real benchmarks, not theory
 
 ## License
 
