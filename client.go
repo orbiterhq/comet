@@ -1206,19 +1206,21 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			currentFile.Entries += int64(len(entries))
 		}
 
-		// Maybe checkpoint index - MUST happen after index updates in multi-process mode
-		s.maybeCheckpoint(clientMetrics, config)
-
-		// In multi-process mode, force checkpoint after every write for immediate visibility
-		if config.Concurrency.EnableMultiProcessMode && s.writesSinceCheckpoint > 0 {
-			if err := s.persistIndex(); err != nil {
-				// Log but don't fail the write
-				if clientMetrics != nil {
-					clientMetrics.ErrorCount.Add(1)
-				}
+		// In multi-process mode, update mmap state immediately for visibility
+		if config.Concurrency.EnableMultiProcessMode && s.mmapState != nil {
+			// Fast path: Update coordination state immediately (~10ns total)
+			atomic.StoreInt64(&s.mmapState.LastUpdateNanos, time.Now().UnixNano())
+			if s.sequenceState != nil {
+				atomic.StoreInt64(&s.sequenceState.LastEntryNumber, s.index.CurrentEntryNumber)
 			}
-			s.lastCheckpoint = time.Now()
-			s.writesSinceCheckpoint = 0
+			
+			// Schedule async checkpoint if needed (don't block the write)
+			if s.writesSinceCheckpoint > 0 && time.Since(s.lastCheckpoint) > 100*time.Millisecond {
+				s.scheduleAsyncCheckpoint(clientMetrics, config)
+			}
+		} else {
+			// Single-process mode: use regular checkpointing
+			s.maybeCheckpoint(clientMetrics, config)
 		}
 
 		// Check if we need to rotate file
@@ -1313,6 +1315,55 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 			clientMetrics.LastCheckpoint.Store(uint64(time.Now().UnixNano()))
 		}
 	}
+}
+
+// scheduleAsyncCheckpoint schedules an asynchronous checkpoint for multi-process mode
+// This allows writes to return immediately while index persistence happens in background
+func (s *Shard) scheduleAsyncCheckpoint(clientMetrics *ClientMetrics, config *CometConfig) {
+	// Clone index while holding lock (caller holds the lock)
+	indexCopy := s.cloneIndex()
+	s.writesSinceCheckpoint = 0
+	s.lastCheckpoint = time.Now()
+
+	// Persist index in background to avoid blocking writes
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+
+		// For multi-process safety, use the separate index lock
+		if s.indexLockFile != nil {
+			// Acquire exclusive lock for index writes
+			if err := syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_EX); err != nil {
+				if clientMetrics != nil {
+					clientMetrics.IndexPersistErrors.Add(1)
+					clientMetrics.ErrorCount.Add(1)
+					clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
+				}
+				return
+			}
+			defer syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_UN)
+		}
+
+		// Serialize index writes to prevent file corruption
+		s.indexMu.Lock()
+		err := s.saveBinaryIndex(indexCopy)
+		s.indexMu.Unlock()
+
+		if err != nil {
+			// Track error in metrics - next checkpoint will retry
+			if clientMetrics != nil {
+				clientMetrics.IndexPersistErrors.Add(1)
+				clientMetrics.ErrorCount.Add(1)
+				clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
+			}
+		} else {
+			// Track checkpoint metrics
+			if clientMetrics != nil {
+				clientMetrics.CheckpointCount.Add(1)
+				clientMetrics.LastCheckpoint.Store(uint64(time.Now().UnixNano()))
+			}
+		}
+	}()
 }
 
 // cloneIndex creates a deep copy of the index for safe serialization

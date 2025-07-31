@@ -38,7 +38,7 @@ _How did we do it?_ Lock-free reads, compression outside critical sections, and 
 - **Batch optimizations** for high-throughput scenarios
 - **Optional compression** with zstd (saves ~37% storage, disabled by default for speed)
 
-## Multi-Process Coordination Breakthrough
+## Multi-Process Coordination
 
 Unlike other embedded solutions, Comet enables **true multi-process coordination**:
 
