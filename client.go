@@ -2435,6 +2435,13 @@ func (s *Shard) recoverFromCrash() error {
 func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) error {
 	// Handle mmap writer rotation
 	if s.mmapWriter != nil {
+		// Update final stats for current file BEFORE rotation
+		if len(s.index.Files) > 0 {
+			current := &s.index.Files[len(s.index.Files)-1]
+			current.EndOffset = s.index.CurrentWriteOffset
+			current.EndTime = time.Now()
+		}
+
 		// Let mmap writer handle its own file rotation
 		if err := s.mmapWriter.rotateFile(); err != nil {
 			return fmt.Errorf("failed to rotate mmap file: %w", err)

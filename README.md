@@ -44,16 +44,6 @@ Perfect for prefork web servers like Go Fiber.
 - **Real process testing** - Spawns actual OS processes, not just goroutines
 - **33μs write latency** - Only 19x slower than single-process (vs 4,470x with traditional file locking)
 
-## Key Benefits
-
-**1. Drop-in simplicity** - No configuration needed. No external dependencies. No operational burden.
-
-**2. Predictable performance** - Bounded memory usage, consistent microsecond latency, automatic resource cleanup.
-
-**3. Edge-optimized** - Designed for resource-constrained environments where every byte and microsecond matters.
-
-**4. Battle-tested patterns** - Implements Kafka's proven segmented log design, adapted for embedded use cases.
-
 ## How Does Comet Compare?
 
 | Feature              | Comet                      | Kafka               | Redis Streams      | RocksDB            | Proof                                         |

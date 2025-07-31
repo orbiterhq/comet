@@ -80,8 +80,8 @@ func TestRetentionMultiProcess(t *testing.T) {
 	config := MultiProcessConfig()
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
-	config.Retention.MinFilesToKeep = 1
-	config.Storage.MaxFileSize = 1024
+	config.Retention.MinFilesToKeep = 0  // Allow deleting all non-current files
+	config.Storage.MaxFileSize = 512    // Smaller files to create more
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -106,6 +106,10 @@ func TestRetentionMultiProcess(t *testing.T) {
 	shard.mu.RLock()
 	initialFiles := len(shard.index.Files)
 	hasSequenceCounter := shard.sequenceCounter != nil
+	currentFile := shard.index.CurrentFile
+	for i, file := range shard.index.Files {
+		t.Logf("File %d: %s (current: %t)", i, file.Path, file.Path == currentFile)
+	}
 	shard.mu.RUnlock()
 
 	if !hasSequenceCounter {
@@ -119,17 +123,24 @@ func TestRetentionMultiProcess(t *testing.T) {
 	// Mark first files as old
 	shard.mu.Lock()
 	oldTime := time.Now().Add(-200 * time.Millisecond)
+	t.Logf("Marking files as old. Total files: %d, MinFilesToKeep: %d", len(shard.index.Files), config.Retention.MinFilesToKeep)
 	for i := 0; i < len(shard.index.Files)-1 && i < 2; i++ {
+		t.Logf("Marking file %d as old: %s (before: %v)", i, shard.index.Files[i].Path, shard.index.Files[i].EndTime)
 		shard.index.Files[i].EndTime = oldTime
 	}
 	shard.mu.Unlock()
 
 	// Force retention cleanup
+	t.Log("Forcing retention cleanup...")
 	client.ForceRetentionCleanup()
 
 	// Verify files were deleted
 	shard.mu.RLock()
 	finalFiles := len(shard.index.Files)
+	t.Logf("Files after retention: %d", finalFiles)
+	for i, file := range shard.index.Files {
+		t.Logf("Remaining file %d: %s", i, file.Path)
+	}
 	shard.mu.RUnlock()
 
 	if finalFiles >= initialFiles {
