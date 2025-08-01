@@ -431,12 +431,12 @@ func TestMultiProcessIntegration(t *testing.T) {
 			t.Logf("WARNING: index.bin does not exist!")
 		}
 
-		// Check coordination.state size
-		coordPath := filepath.Join(shardDir, "coordination.state")
-		if stat, err := os.Stat(coordPath); err == nil {
-			t.Logf("coordination.state exists with size: %d", stat.Size())
-			if stat.Size() > 256 {
-				t.Logf("coordination.state appears to contain data beyond header")
+		// Check comet.state size
+		statePath := filepath.Join(shardDir, "comet.state")
+		if stat, err := os.Stat(statePath); err == nil {
+			t.Logf("comet.state exists with size: %d", stat.Size())
+			if stat.Size() > CometStateSize {
+				t.Logf("comet.state appears to contain data beyond header")
 			}
 		}
 
@@ -482,22 +482,21 @@ func TestMultiProcessIntegration(t *testing.T) {
 		// Wait longer for coordination state to stabilize after sync
 		time.Sleep(2 * time.Second)
 
-		// Check coordination state BEFORE creating client to ensure it's stabilized
+		// Check state BEFORE creating client to ensure it's stabilized
 		shardDir2 := filepath.Join(testDir, "shard-0001")
-		coordPath2 := filepath.Join(shardDir2, "coordination.state")
-		if coordFile, coordErr := os.Open(coordPath2); coordErr == nil {
-			defer coordFile.Close()
-			const stateSize = 256
-			if data, mmapErr := syscall.Mmap(int(coordFile.Fd()), 0, stateSize,
+		statePath2 := filepath.Join(shardDir2, "comet.state")
+		if stateFile, stateErr := os.Open(statePath2); stateErr == nil {
+			defer stateFile.Close()
+			if data, mmapErr := syscall.Mmap(int(stateFile.Fd()), 0, CometStateSize,
 				syscall.PROT_READ, syscall.MAP_SHARED); mmapErr == nil {
 				defer syscall.Munmap(data)
 
-				coordState := (*MmapCoordinationState)(unsafe.Pointer(&data[0]))
-				writeOffset := coordState.WriteOffset.Load()
-				totalWrites := coordState.TotalWrites.Load()
-				lastWrite := coordState.LastWriteNanos.Load()
+				state := (*CometState)(unsafe.Pointer(&data[0]))
+				writeOffset := atomic.LoadUint64(&state.WriteOffset)
+				totalWrites := atomic.LoadUint64(&state.TotalWrites)
+				lastWrite := atomic.LoadInt64(&state.LastWriteNanos)
 
-				t.Logf("Final coordination state before creating client: WriteOffset=%d, TotalWrites=%d, LastWrite=%d",
+				t.Logf("Final state before creating client: WriteOffset=%d, TotalWrites=%d, LastWrite=%d",
 					writeOffset, totalWrites, lastWrite)
 			}
 		}
@@ -775,12 +774,12 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		shard, exists := client.shards[uint32(1)]
 		client.mu.RUnlock()
 
-		if !exists || shard.mmapState == nil {
-			t.Fatal("Shard or mmap state not found")
+		if !exists || shard.state == nil {
+			t.Fatal("Shard or unified state not found")
 		}
 
 		// Monitor for changes
-		lastTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+		lastTimestamp := shard.state.GetLastIndexUpdate()
 		changesDetected := 0
 		writerEntriesFound := 0
 
@@ -799,7 +798,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 				return
 			case <-ticker.C:
 				// Check mmap timestamp
-				currentTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+				currentTimestamp := shard.state.GetLastIndexUpdate()
 				if currentTimestamp > lastTimestamp {
 					changesDetected++
 					t.Logf("✓ Mmap reader: mmap change detected! (change #%d)", changesDetected)

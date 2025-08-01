@@ -409,14 +409,14 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 
 	client.Close()
 
-	// Delete both index file and coordination state to force complete rebuild
+	// Delete both index file and state to force complete rebuild
 	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
-	coordPath := filepath.Join(dir, "shard-0001", "coordination.state")
+	statePath := filepath.Join(dir, "shard-0001", "comet.state")
 
 	if err := os.Remove(indexPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(coordPath); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 
@@ -432,8 +432,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	shard2.mu.RLock()
 	rebuiltFiles := len(shard2.index.Files)
 	rebuiltEntries := shard2.index.CurrentEntryNumber
-	hasSequenceState := shard2.sequenceState != nil
-	hasMmapState := shard2.mmapState != nil
+	hasCometState := shard2.state != nil
 	t.Logf("After rebuild: %d files, %d entries", rebuiltFiles, rebuiltEntries)
 	shard2.mu.RUnlock()
 
@@ -448,12 +447,8 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	}
 
 	// Verify multi-process coordination state was rebuilt
-	if !hasSequenceState {
-		t.Error("SequenceState should be initialized in multi-process mode")
-	}
-
-	if !hasMmapState {
-		t.Error("MmapState should be initialized in multi-process mode")
+	if !hasCometState {
+		t.Error("CometState should be initialized in multi-process mode")
 	}
 
 	// Verify we can read data after rebuild (at least what we wrote)

@@ -85,10 +85,17 @@ func (c *Client) startRetentionManager() {
 
 // runRetentionCleanup performs a single cleanup pass
 func (c *Client) runRetentionCleanup() {
+	start := time.Now()
+
 	c.mu.RLock()
 	shards := make([]*Shard, 0, len(c.shards))
 	for _, shard := range c.shards {
 		shards = append(shards, shard)
+		// Track retention run in each shard's metrics
+		if shard.state != nil {
+			atomic.AddUint64(&shard.state.RetentionRuns, 1)
+			atomic.StoreInt64(&shard.state.LastRetentionNanos, start.UnixNano())
+		}
 	}
 	c.mu.RUnlock()
 
@@ -102,6 +109,34 @@ func (c *Client) runRetentionCleanup() {
 	if c.config.Retention.MaxTotalSize > 0 && totalSize > c.config.Retention.MaxTotalSize {
 		// Need to delete more files to get under total limit
 		c.enforceGlobalSizeLimit(shards, totalSize)
+	}
+
+	// Update retention time metrics
+	duration := time.Since(start)
+	for _, shard := range shards {
+		if shard.state != nil {
+			atomic.AddInt64(&shard.state.RetentionTimeNanos, duration.Nanoseconds())
+		}
+	}
+
+	// Debug log retention summary
+	if Debug && c.logger != nil {
+		var totalFiles, deletedFiles int
+		for _, shard := range shards {
+			shard.mu.RLock()
+			totalFiles += len(shard.index.Files)
+			shard.mu.RUnlock()
+			if shard.state != nil {
+				deletedFiles += int(atomic.LoadUint64(&shard.state.FilesDeleted))
+			}
+		}
+		c.logger.Debug("Retention cleanup completed",
+			"shards", len(shards),
+			"totalFiles", totalFiles,
+			"totalSizeMB", totalSize/(1<<20),
+			"duration", duration,
+			"maxAge", c.config.Retention.MaxAge,
+			"maxSizeMB", c.config.Retention.MaxTotalSize/(1<<20))
 	}
 }
 
@@ -198,6 +233,10 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 			fileLastEntry := file.StartEntry + file.Entries - 1
 			if fileLastEntry >= oldestProtectedEntry {
 				shouldDelete = false
+				// Track files protected by consumers
+				if shard.state != nil {
+					atomic.AddUint64(&shard.state.ProtectedByConsumers, 1)
+				}
 			}
 		}
 
@@ -245,6 +284,35 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 		c.deleteFiles(shard, filesToDelete, &c.metrics)
 	}
 
+	// Update oldest entry timestamp
+	if shard.state != nil {
+		if len(filesToKeep) > 0 {
+			// Find the oldest file that remains
+			oldestTime := filesToKeep[0].StartTime
+			for _, file := range filesToKeep {
+				if file.StartTime.Before(oldestTime) && !file.StartTime.IsZero() {
+					oldestTime = file.StartTime
+				}
+			}
+			// Only set if we found a valid timestamp
+			if !oldestTime.IsZero() {
+				atomic.StoreInt64(&shard.state.OldestEntryNanos, oldestTime.UnixNano())
+			}
+		} else if len(shard.index.Files) > 0 {
+			// If we're keeping all files (no deletion), still update the metric
+			oldestTime := time.Time{}
+			for _, file := range shard.index.Files {
+				if !file.StartTime.IsZero() && (oldestTime.IsZero() || file.StartTime.Before(oldestTime)) {
+					oldestTime = file.StartTime
+				}
+			}
+			// Only set if we found a valid timestamp
+			if !oldestTime.IsZero() {
+				atomic.StoreInt64(&shard.state.OldestEntryNanos, oldestTime.UnixNano())
+			}
+		}
+	}
+
 	// Return remaining size
 	var remainingSize int64
 	for _, file := range filesToKeep {
@@ -288,27 +356,10 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	}
 
 	shard.index.Files = newFiles
-	shard.mu.Unlock()
-
-	// STEP 2: Now delete the physical files - readers can no longer find them in the index
-	deletedCount := 0
-	for _, file := range files {
-		err := os.Remove(file.Path)
-		if err != nil && !os.IsNotExist(err) {
-			// Log error but continue - file may have been deleted by another process
-			continue
-		}
-		deletedCount++
-	}
-
-	// Update metrics (using existing TotalFiles counter)
-	if metrics != nil && deletedCount > 0 {
-		// Note: TotalFiles tracks total files created, not current count
-		// Could add a separate metric for files deleted if needed
-	}
 
 	// Clean up entry boundaries for deleted files
 	// Clean up binary index to remove entries that reference deleted files
+	// Must be done while holding the lock!
 	if len(files) > 0 {
 		minDeletedEntry := files[0].StartEntry
 
@@ -322,12 +373,37 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 		shard.index.BinaryIndex.Nodes = newNodes
 	}
 
-	// Persist the updated index
+	// Persist the updated index while still holding the lock
 	shard.persistIndex()
 
-	// Update metrics
-	if metrics != nil {
-		metrics.FileRotations.Add(uint64(deletedCount))
+	// Now we can release the lock - all index modifications are complete
+	shard.mu.Unlock()
+
+	// STEP 2: Now delete the physical files - readers can no longer find them in the index
+	deletedCount := 0
+	var bytesReclaimed uint64
+	var entriesDeleted uint64
+
+	for _, file := range files {
+		err := os.Remove(file.Path)
+		if err != nil && !os.IsNotExist(err) {
+			// Log error but continue - file may have been deleted by another process
+			// Track retention errors
+			if shard.state != nil {
+				atomic.AddUint64(&shard.state.RetentionErrors, 1)
+			}
+			continue
+		}
+		deletedCount++
+		bytesReclaimed += uint64(file.EndOffset - file.StartOffset)
+		entriesDeleted += uint64(file.Entries)
+	}
+
+	// Update retention metrics
+	if shard.state != nil && deletedCount > 0 {
+		atomic.AddUint64(&shard.state.FilesDeleted, uint64(deletedCount))
+		atomic.AddUint64(&shard.state.BytesReclaimed, bytesReclaimed)
+		atomic.AddUint64(&shard.state.EntriesDeleted, entriesDeleted)
 	}
 }
 

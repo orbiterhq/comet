@@ -10,6 +10,7 @@
       "Bash(go vet:*)",
       "Bash(go test:*)",
       "Bash(go tool pprof:*)",
+      "Bash(go run:*)",
       "Bash(mise run test:*)",
       "Bash(mise run lint:*)",
       "Bash(git stash:*)",

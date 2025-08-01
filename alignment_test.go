@@ -28,9 +28,7 @@ func TestStructAlignment(t *testing.T) {
 		{"Client", Client{}},
 		// Frequently allocated structs
 		{"AtomicSlice", AtomicSlice{}},
-		{"MmapSharedState", MmapSharedState{}},
-		{"SequenceState", SequenceState{}},
-		{"MmapCoordinationState", MmapCoordinationState{}},
+		{"CometState", CometState{}},
 		{"MmapWriter", MmapWriter{}},
 		{"EntryIndexNode", EntryIndexNode{}},
 		{"BinarySearchableIndex", BinarySearchableIndex{}},
@@ -198,8 +196,8 @@ func TestFieldAlignmentDetails(t *testing.T) {
 		logStructLayout(t, typ)
 	})
 
-	t.Run("MmapSharedState", func(t *testing.T) {
-		typ := reflect.TypeOf(MmapSharedState{})
+	t.Run("CometState", func(t *testing.T) {
+		typ := reflect.TypeOf(CometState{})
 		logStructLayout(t, typ)
 	})
 }

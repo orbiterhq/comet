@@ -67,9 +67,7 @@ Shard Directory Structure:
 ├── log-0000000000000002.comet   # Second segment file
 ├── log-0000000000000003.comet   # Current write file
 ├── index.bin                    # Binary index file
-├── index.state                  # 8-byte index change notification (multi-process mode)
-├── sequence.state               # 8-byte sequence counter (multi-process mode)
-├── coordination.state           # 216-byte mmap coordination state (multi-process mode)
+├── comet.state                  # 1024-byte unified state (multi-process mode)
 ├── index.lock                   # Index write lock (multi-process mode)
 ├── retention.lock               # Retention coordination lock (multi-process mode)
 ├── rotation.lock                # File rotation coordination lock (multi-process mode)
@@ -132,7 +130,7 @@ Parallel compression with bounded queues. Multiple worker goroutines handle comp
 
 ### 7. Instant Change Detection
 
-8-byte mmap for multi-process coordination. Writers update a timestamp after modifying the index. Readers check this timestamp before each batch to detect changes. This provides instant coordination without locks or system calls.
+Unified state for multi-process coordination. Writers update the `LastIndexUpdate` timestamp in comet.state after modifying the index. Readers check this timestamp before each batch to detect changes. This provides instant coordination without locks or system calls.
 
 ## Concurrency Model
 
@@ -253,22 +251,38 @@ Comet's multi-process coordination has evolved through three generations to achi
 
 The latest implementation uses memory-mapped files for ultra-fast multi-process writes:
 
-#### Coordination State File (coordination.state)
+#### Unified State File (comet.state)
 
-The `coordination.state` file is the heart of Comet's ultra-fast multi-process coordination. This 216-byte memory-mapped file enables lock-free coordination between processes.
+The `comet.state` file is the heart of Comet's ultra-fast multi-process coordination. This 1024-byte memory-mapped file provides comprehensive metrics and coordination state in a single, cache-aligned structure.
 
 ##### Structure
 
 ```go
-type MmapCoordinationState struct {
-    ActiveFileIndex atomic.Int64  // Current file being written to
-    WriteOffset     atomic.Int64  // Current write position in active file
-    FileSize        atomic.Int64  // Current size of active file
-    LastWriteNanos  atomic.Int64  // Timestamp of last write
-    TotalWrites     atomic.Int64  // Total number of writes
-    // ... additional fields for padding/alignment
+type CometState struct {
+    // Cache line 1: Core metrics (0-63 bytes)
+    Version          uint64  // Format version
+    WriteOffset      uint64  // Current write position in active file
+    LastEntryNumber  int64   // Last allocated entry number (-1 = uninitialized)
+    LastIndexUpdate  int64   // Timestamp of last index update
+    ActiveFileIndex  uint64  // Current file being written to
+    FileSize         uint64  // Current size of active file
+    LastFileSequence uint64  // Last file sequence number
+    _padding1        uint64  // Padding for cache alignment
+    
+    // Cache line 2: Write metrics (64-127 bytes)
+    TotalEntries     int64   // Total entries written
+    TotalBytes       uint64  // Total uncompressed bytes
+    TotalWrites      uint64  // Total write operations
+    LastWriteNanos   int64   // Timestamp of last write
+    // ... continues with more metrics organized by cache lines
 }
 ```
+
+The structure is carefully designed with:
+
+- 64-byte cache line alignment for optimal CPU performance
+- Atomic-safe fields using raw int64/uint64 types
+- Comprehensive metrics replacing multiple fragmented state files
 
 ##### How It Works
 
@@ -291,12 +305,12 @@ This design enables:
 
 Comet uses a hybrid approach that leverages the strengths of both memory-mapped coordination and OS file locking:
 
-**Memory-Mapped Coordination** (coordination.state):
+**Memory-Mapped Coordination** (comet.state):
 
 - **Best for**: High-frequency atomic operations (write offsets, counters, timestamps)
 - **Performance**: Zero system calls, just atomic CPU operations
 - **Reliability**: Excellent for data sharing, but problematic for critical sections
-- **Use cases**: Write coordination, sequence allocation, change detection
+- **Use cases**: Write coordination, sequence allocation, change detection, comprehensive metrics
 
 **OS File Locking** (*.lock files):
 
@@ -331,75 +345,49 @@ For non-mmap mode, we use advisory file locks (flock) to coordinate writes betwe
 
 A separate lock for index updates prevents reader starvation. Writers can update the index without blocking data reads. This separation is crucial for maintaining low read latency.
 
-### Multi-Process State Files
+### Unified State Architecture
 
-Comet uses three memory-mapped state files for coordination:
+Comet consolidates all multi-process coordination into a single memory-mapped state file:
 
-#### 1. index.state (8 bytes)
+#### comet.state (1024 bytes)
 
-The `index.state` file enables instant change detection without locks or system calls.
+The unified `comet.state` file replaces the previous three-file design (coordination.state, sequence.state, index.state) with a single, comprehensive structure that provides:
 
-#### Structure
+1. **Write Coordination**: Atomic space allocation, file management, sequence tracking
+2. **Change Detection**: Index update timestamps for instant reader notification
+3. **Comprehensive Metrics**: Write latencies, compression ratios, error counts, and more
+4. **Cache Optimization**: 64-byte aligned sections minimize CPU cache misses
 
-The file contains a single 64-bit integer representing Unix nanoseconds of the last index update. This timestamp serves as a change notification mechanism.
+#### Key Benefits of Unified State
 
-#### Why 8 Bytes?
+- **Single Memory Map**: One mmap operation instead of three
+- **Atomic Updates**: Related fields updated together without coordination
+- **Better Cache Locality**: Related data in the same cache lines
+- **Simplified Code**: One state structure to manage instead of three
+- **Comprehensive Visibility**: All metrics available in one place
 
-- Single atomic operation on 64-bit systems
-- No torn reads/writes
-- Cache-line friendly
-- Minimal memory overhead
+#### State Access Patterns
 
-#### Writer Operation
+**Writers** use atomic operations to:
 
-After updating the index, writers atomically update the timestamp in index.state. This signals to all readers that the index has changed.
+- Allocate write space (`AddWriteOffset`)
+- Track entry numbers (`IncrementLastEntryNumber`)
+- Update metrics (`AddTotalBytes`, `UpdateWriteLatency`)
+- Signal changes (`SetLastIndexUpdate`)
 
-#### Reader Operation
+**Readers** use atomic loads to:
 
-Before each read batch, readers check the index.state timestamp. If it differs from their last check, they reload the index. This check is extremely fast (single atomic load) and requires no locks.
+- Detect index changes (`GetLastIndexUpdate`)
+- Check write progress (`GetTotalWrites`)
+- Monitor system health (`GetErrorCount`)
 
-#### Clock Skew Immunity
-
-We use `!=` comparison instead of `>` to handle clock skew:
-
-- Works even if system clock goes backwards
-- Robust across different processes
-- No dependency on synchronized clocks
-
-#### Performance Impact
+#### Performance Characteristics
 
 - **Check cost**: ~2ns (single atomic load)
+- **Update cost**: ~10ns (atomic store with memory barrier)
 - **No system calls**: Direct memory access
-- **No lock contention**: Readers never block writers
-- **Cache efficient**: 8 bytes stay in L1 cache
-
-#### 2. sequence.state (8 bytes)
-
-The `sequence.state` file tracks the monotonically increasing sequence number for file naming:
-
-```go
-type SequenceState struct {
-    LastEntryNumber int64  // Last allocated entry number
-}
-```
-
-This ensures unique, sequential file names across all processes without coordination overhead.
-
-#### 3. coordination.state (216 bytes)
-
-As described above, this file contains the full coordination state for lock-free multi-process writes.
-
-#### How The Three Files Work Together
-
-1. **coordination.state**: Coordinates writes, tracks active file, manages space allocation
-2. **sequence.state**: Ensures unique file names during rotation
-3. **index.state**: Notifies readers when index has changed
-
-This three-file design separates concerns:
-
-- Write coordination doesn't block reads
-- File naming doesn't require write locks
-- Index updates are instantly visible
+- **No lock contention**: Lock-free atomic operations
+- **Cache efficient**: Hot fields in first cache line
 
 #### Race Condition Handling
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -117,15 +116,15 @@ func TestMultiProcessMmapSize(t *testing.T) {
 		t.Fatal("Shard 1 not found")
 	}
 
-	if shard.mmapState == nil {
-		t.Fatal("Mmap state not initialized")
+	if shard.state == nil {
+		t.Fatal("Unified state not initialized")
 	}
 
-	// The state file should be exactly 8 bytes
-	if len(shard.indexStateData) != 8 {
-		t.Errorf("Mmap state file is %d bytes, expected 8", len(shard.indexStateData))
+	// The state file should be exactly 1024 bytes
+	if len(shard.stateData) != CometStateSize {
+		t.Errorf("Unified state file is %d bytes, expected %d", len(shard.stateData), CometStateSize)
 	} else {
-		t.Log("✓ Mmap state file is exactly 8 bytes")
+		t.Log("✓ Unified state file is exactly 1024 bytes")
 	}
 }
 
@@ -375,9 +374,10 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 
 		// DEBUG: Check what the actual data in the file is
 		if shard1.mmapWriter != nil {
-			coordState := shard1.mmapWriter.CoordinationState()
-			t.Logf("MmapWriter state: WriteOffset=%d, FileSize=%d",
-				coordState.WriteOffset.Load(), coordState.FileSize.Load())
+			if shard1.mmapWriter.state != nil {
+				t.Logf("MmapWriter state: WriteOffset=%d, FileSize=%d",
+					shard1.mmapWriter.state.GetWriteOffset(), shard1.mmapWriter.state.GetFileSize())
+			}
 		}
 
 		shard1.persistIndex()
@@ -405,8 +405,9 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		}
 
 		if shard2.mmapWriter != nil {
-			coordState := shard2.mmapWriter.CoordinationState()
-			t.Logf("Reader mmap state: WriteOffset=%d", coordState.WriteOffset.Load())
+			if shard2.mmapWriter.state != nil {
+				t.Logf("Reader mmap state: WriteOffset=%d", shard2.mmapWriter.state.GetWriteOffset())
+			}
 		}
 
 		// Try to read the data written by the first client
@@ -434,8 +435,8 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 	})
 }
 
-// TestMmapStateFile tests the mmap state file creation and format
-func TestMmapStateFile(t *testing.T) {
+// TestCometStateFile tests the unified state file creation and format
+func TestCometStateFile(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
 
@@ -447,23 +448,23 @@ func TestMmapStateFile(t *testing.T) {
 
 	ctx := context.Background()
 	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{
-		[]byte(`{"test": "mmap state"}`),
+		[]byte(`{"test": "unified state"}`),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Check that the index.state file was created
+	// Check that the comet.state file was created
 	shardDir := filepath.Join(dir, "shard-0001")
-	stateFile := filepath.Join(shardDir, "index.state")
+	stateFile := filepath.Join(shardDir, "comet.state")
 
 	info, err := os.Stat(stateFile)
 	if err != nil {
-		t.Fatalf("index.state file not created: %v", err)
+		t.Fatalf("comet.state file not created: %v", err)
 	}
 
-	if info.Size() != 8 {
-		t.Errorf("Expected state file size 8 bytes, got %d", info.Size())
+	if info.Size() != CometStateSize {
+		t.Errorf("Expected state file size %d bytes, got %d", CometStateSize, info.Size())
 	}
 
 	t.Logf("Index state file created successfully: %s (%d bytes)", stateFile, info.Size())
@@ -485,7 +486,7 @@ func TestMmapTimestampUpdates(t *testing.T) {
 
 	// Get the shard and check initial timestamp
 	shard, _ := client.getOrCreateShard(1)
-	initialTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+	initialTimestamp := shard.state.GetLastIndexUpdate()
 	t.Logf("Initial mmap timestamp: %d", initialTimestamp)
 
 	// Write something
@@ -503,7 +504,7 @@ func TestMmapTimestampUpdates(t *testing.T) {
 	}
 
 	// Check timestamp was updated
-	updatedTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+	updatedTimestamp := shard.state.GetLastIndexUpdate()
 	t.Logf("Updated mmap timestamp: %d", updatedTimestamp)
 
 	if updatedTimestamp <= initialTimestamp {
@@ -524,7 +525,7 @@ func TestMmapTimestampUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	finalTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+	finalTimestamp := shard.state.GetLastIndexUpdate()
 	t.Logf("Final mmap timestamp: %d", finalTimestamp)
 
 	if finalTimestamp <= updatedTimestamp {

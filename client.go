@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
-	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,16 +23,8 @@ import (
 // Wire format for each entry:
 // [uint32 length][uint64 timestamp][byte[] data]
 
-// MmapSharedState provides instant multi-process coordination
-// Just 8 bytes - a timestamp indicating when the index was last modified
-type MmapSharedState struct {
-	LastUpdateNanos int64 // Nanosecond timestamp of last index change
-}
-
-// SequenceState is a memory-mapped structure for atomic entry number generation
-type SequenceState struct {
-	LastEntryNumber int64 // Last allocated entry number
-}
+// NOTE: MmapSharedState and SequenceState have been replaced by CometState
+// which provides comprehensive metrics and coordination in a single memory-mapped structure
 
 // DURABILITY SEMANTICS:
 //
@@ -163,6 +154,21 @@ type CometStats struct {
 	CompressionWaitNano uint64 `json:"compression_wait_nano"`
 }
 
+// Health represents the health status of the Comet client
+type Health struct {
+	Status        string    `json:"status"`    // "healthy", "degraded", "unhealthy"
+	Healthy       bool      `json:"healthy"`   // Simple boolean for quick checks
+	WritesOK      bool      `json:"writes_ok"` // Can we write data?
+	ReadsOK       bool      `json:"reads_ok"`  // Can we read data?
+	LastWriteTime time.Time `json:"last_write_time"`
+	LastErrorTime time.Time `json:"last_error_time"`
+	ErrorCount    uint64    `json:"error_count"`
+	ActiveShards  int       `json:"active_shards"`
+	TotalFiles    uint64    `json:"total_files"`
+	Uptime        string    `json:"uptime"`
+	Details       string    `json:"details,omitempty"` // Optional details about issues
+}
+
 // ClientMetrics holds atomic counters for thread-safe metrics tracking
 type ClientMetrics struct {
 	TotalEntries       atomic.Uint64
@@ -240,6 +246,8 @@ type CometConfig struct {
 
 	// Retention policy
 	Retention RetentionConfig `json:"retention"`
+	// Logging configuration
+	Log LogConfig `json:"log"`
 }
 
 // DefaultCometConfig returns sensible defaults optimized for logging workloads
@@ -309,11 +317,6 @@ func HighThroughputConfig() CometConfig {
 	return cfg
 }
 
-// migrateConfig migrates deprecated fields to new structure
-func migrateConfig(cfg *CometConfig) {
-	// Currently no migrations needed since we removed all deprecated fields
-}
-
 // validateConfig ensures configuration values are reasonable
 func validateConfig(cfg *CometConfig) error {
 	// Storage validation
@@ -369,46 +372,45 @@ func validateConfig(cfg *CometConfig) error {
 type Client struct {
 	dataDir     string
 	config      CometConfig
+	logger      Logger
 	shards      map[uint32]*Shard
 	metrics     ClientMetrics
 	mu          sync.RWMutex
 	closed      bool
 	retentionWg sync.WaitGroup
 	stopCh      chan struct{}
+	startTime   time.Time
 }
 
 // Shard represents a single stream shard with its own files
 // Fields ordered for optimal memory alignment (64-bit words first)
 type Shard struct {
 	// 64-bit aligned fields first (8 bytes each)
-	readerCount     int64     // Lock-free reader tracking
-	lastCheckpoint  time.Time // 64-bit on most systems
-	lastMmapCheck   int64     // Last mmap timestamp we saw (for change detection)
-	sequenceCounter *int64    // Memory-mapped sequence counter for file naming
+	readerCount    int64     // Lock-free reader tracking
+	lastCheckpoint time.Time // 64-bit on most systems
+	lastMmapCheck  int64     // Last mmap timestamp we saw (for change detection)
 
 	// Pointers (8 bytes each on 64-bit)
-	dataFile          *os.File         // Data file handle
-	writer            *bufio.Writer    // Buffered writer
-	compressor        *zstd.Encoder    // Compression engine
-	index             *ShardIndex      // Shard metadata
-	lockFile          *os.File         // File lock for multi-writer safety
-	indexLockFile     *os.File         // Separate lock for index writes
-	retentionLockFile *os.File         // Separate lock for retention operations
-	rotationLockFile  *os.File         // Separate lock for file rotation operations
-	mmapState         *MmapSharedState // Memory-mapped coordination state
-	sequenceState     *SequenceState   // Memory-mapped sequence state for entry numbers
-	sequenceFile      *os.File         // File handle for sequence counter
-	mmapWriter        *MmapWriter      // Memory-mapped writer for ultra-fast multi-process writes
+	dataFile          *os.File      // Data file handle
+	writer            *bufio.Writer // Buffered writer
+	compressor        *zstd.Encoder // Compression engine
+	index             *ShardIndex   // Shard metadata
+	lockFile          *os.File      // File lock for multi-writer safety
+	indexLockFile     *os.File      // Separate lock for index writes
+	retentionLockFile *os.File      // Separate lock for retention operations
+	rotationLockFile  *os.File      // Separate lock for file rotation operations
+	// NOTE: mmapState and sequenceState replaced by state
+	mmapWriter *MmapWriter // Memory-mapped writer for ultra-fast multi-process writes
+	state      *CometState // NEW: Unified memory-mapped state for all metrics and coordination
+	logger     Logger      // Logger for this shard
 
 	// Strings (24 bytes: ptr + len + cap)
 	indexPath         string // Path to index file
-	indexStatePath    string // Path to index state file
 	indexLockPath     string // Path to index lock file
 	retentionLockPath string // Path to retention lock file
 	rotationLockPath  string // Path to rotation lock file
-	sequenceStatePath string // Path to sequence counter file
-	indexStateData    []byte // Memory-mapped index state data (slice header: 24 bytes)
-	sequenceStateData []byte // Memory-mapped sequence state data (slice header: 24 bytes)
+	statePath         string // Path to unified state file
+	stateData         []byte // Memory-mapped unified state data (slice header: 24 bytes)
 
 	// Mutex (platform-specific, often 24 bytes)
 	mu      sync.RWMutex
@@ -599,9 +601,6 @@ func NewClient(dataDir string) (*Client, error) {
 
 // NewClientWithConfig creates a new comet client with custom configuration
 func NewClientWithConfig(dataDir string, config CometConfig) (*Client, error) {
-	// Migrate deprecated fields to new structure
-	migrateConfig(&config)
-
 	// Validate configuration
 	if err := validateConfig(&config); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
@@ -611,11 +610,21 @@ func NewClientWithConfig(dataDir string, config CometConfig) (*Client, error) {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
+	// Create logger based on config
+	logger := createLogger(config.Log)
+
+	// Set debug mode from config
+	if config.Log.EnableDebug {
+		SetDebug(true)
+	}
+
 	c := &Client{
-		dataDir: dataDir,
-		config:  config,
-		shards:  make(map[uint32]*Shard),
-		stopCh:  make(chan struct{}),
+		dataDir:   dataDir,
+		config:    config,
+		logger:    logger,
+		shards:    make(map[uint32]*Shard),
+		stopCh:    make(chan struct{}),
+		startTime: time.Now(),
 	}
 
 	// Start retention manager if configured
@@ -676,7 +685,7 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 	}
 
 	// In multi-process mode, check if we need to rebuild index AFTER reloading
-	if shard.mmapState != nil {
+	if shard.state != nil {
 		// Check if rebuild needed while holding read lock
 		needsRebuild := shard.checkIfRebuildNeeded()
 		shard.mu.RUnlock()
@@ -864,12 +873,12 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 
 	shard = &Shard{
 		shardID:           shardID,
+		logger:            c.logger.WithFields("shard", shardID),
 		indexPath:         filepath.Join(shardDir, "index.bin"),
-		indexStatePath:    filepath.Join(shardDir, "index.state"),
 		indexLockPath:     filepath.Join(shardDir, "index.lock"),
 		retentionLockPath: filepath.Join(shardDir, "retention.lock"),
 		rotationLockPath:  filepath.Join(shardDir, "rotation.lock"),
-		sequenceStatePath: filepath.Join(shardDir, "sequence.state"),
+		statePath:         filepath.Join(shardDir, "comet.state"),
 		index: &ShardIndex{
 			BoundaryInterval: c.config.Indexing.BoundaryInterval,
 			ConsumerOffsets:  make(map[string]int64),
@@ -879,6 +888,11 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 			},
 		},
 		lastCheckpoint: time.Now(),
+	}
+
+	// Initialize unified state (memory-mapped in multi-process mode, in-memory otherwise)
+	if err := shard.initCometState(c.config.Concurrency.EnableMultiProcessMode); err != nil {
+		return nil, fmt.Errorf("failed to initialize unified state: %w", err)
 	}
 
 	// Create lock files for multi-writer coordination if enabled
@@ -919,17 +933,12 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		shard.rotationLockFile = rotationLockFile
 	}
 
-	// Initialize mmap shared state only if file locking is enabled
+	// NOTE: Old mmapState and sequenceState initialization removed - replaced by CometState
 	if c.config.Concurrency.EnableMultiProcessMode {
-		if err := shard.initMmapState(); err != nil {
-			return nil, fmt.Errorf("failed to initialize mmap state: %w", err)
-		}
-		if err := shard.initSequenceState(); err != nil {
-			return nil, fmt.Errorf("failed to initialize sequence state: %w", err)
-		}
+		// CometState initialization already handled above
 
 		// Initialize memory-mapped writer for ultra-fast writes
-		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, &c.metrics, shard.rotationLockFile)
+		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, shard.state, shard.rotationLockFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize mmap writer: %w", err)
 		}
@@ -941,12 +950,11 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		return nil, err
 	}
 
-	// If we have an mmap writer, sync the index with the coordination state
-	if shard.mmapWriter != nil {
-		coordState := shard.mmapWriter.CoordinationState()
-		writeOffset := coordState.WriteOffset.Load()
-		if writeOffset > shard.index.CurrentWriteOffset {
-			shard.index.CurrentWriteOffset = writeOffset
+	// If we have an mmap writer, sync the index with the state
+	if shard.mmapWriter != nil && shard.mmapWriter.state != nil {
+		writeOffset := shard.mmapWriter.state.GetWriteOffset()
+		if writeOffset > uint64(shard.index.CurrentWriteOffset) {
+			shard.index.CurrentWriteOffset = int64(writeOffset)
 		}
 	}
 
@@ -956,11 +964,28 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	}
 
 	// Recover from crash if needed
+	// Track recovery attempt
+	if shard.state != nil {
+		atomic.AddUint64(&shard.state.RecoveryAttempts, 1)
+	}
 	if err := shard.recoverFromCrash(); err != nil {
 		return nil, err
 	}
+	// Recovery successful if we got here
+	if shard.state != nil {
+		atomic.AddUint64(&shard.state.RecoverySuccesses, 1)
+	}
 
 	c.shards[shardID] = shard
+
+	// Debug log shard creation
+	if Debug && c.logger != nil {
+		c.logger.Debug("Created new shard",
+			"shardID", shardID,
+			"path", shardDir,
+			"multiProcess", c.config.Concurrency.EnableMultiProcessMode)
+	}
+
 	return shard, nil
 }
 
@@ -981,7 +1006,15 @@ func (s *Shard) preCompressEntries(entries [][]byte, config *CometConfig) []Comp
 
 		if len(data) >= config.Compression.MinCompressSize && s.compressor != nil {
 			// Compress the data
+			compressionStart := time.Now()
 			compressedData := s.compressor.EncodeAll(data, nil)
+			compressionDuration := time.Since(compressionStart)
+
+			// Track compression time
+			if s.state != nil {
+				atomic.AddInt64(&s.state.CompressionTimeNanos, compressionDuration.Nanoseconds())
+			}
+
 			compressed[i] = CompressedEntry{
 				Data:           compressedData,
 				OriginalSize:   originalSize,
@@ -1023,13 +1056,14 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	var compressedCount, skippedCount uint64
 
 	// Critical section: prepare write data and update indices
+	var criticalErr error
 	func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
 		// Check mmap state for instant change detection (no lock needed for read)
-		if config.Concurrency.EnableMultiProcessMode && s.mmapState != nil {
-			currentTimestamp := atomic.LoadInt64(&s.mmapState.LastUpdateNanos)
+		if config.Concurrency.EnableMultiProcessMode && s.state != nil {
+			currentTimestamp := s.state.GetLastIndexUpdate()
 			if currentTimestamp != s.lastMmapCheck {
 				// Index changed - reload it with retry for EOF errors
 				if err := s.loadIndexWithRetry(); err != nil {
@@ -1037,7 +1071,8 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 					if s.handleMissingShardDirectory(err) {
 						s.lastMmapCheck = currentTimestamp
 					} else {
-						panic(fmt.Errorf("failed to reload index after detecting mmap change: %w", err))
+						criticalErr = fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
+						return
 					}
 				} else {
 					s.lastMmapCheck = currentTimestamp
@@ -1124,14 +1159,15 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 
 			// Pre-allocate entry numbers atomically
 			entryNumbers := make([]int64, len(entries))
-			if s.sequenceState != nil {
+			if s.state != nil {
 				for i := range entries {
-					oldVal := atomic.LoadInt64(&s.sequenceState.LastEntryNumber)
-					newVal := atomic.AddInt64(&s.sequenceState.LastEntryNumber, 1)
-					entryNumbers[i] = newVal - 1
-					if false { // Enable for debugging
-						log.Printf("Shard %d: seq %d->%d, allocated entry %d",
-							s.shardID, oldVal, newVal, entryNumbers[i])
+					// Use CometState for entry number allocation
+					entryNumbers[i] = s.state.IncrementLastEntryNumber() - 1
+
+					if Debug && s.logger != nil {
+						s.logger.Debug("Allocated entry",
+							"shard", s.shardID,
+							"entryNumber", entryNumbers[i])
 					}
 				}
 			} else {
@@ -1139,6 +1175,11 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				baseEntry := s.index.CurrentEntryNumber
 				for i := range entries {
 					entryNumbers[i] = baseEntry + int64(i)
+
+					// Track in CometState if available
+					if s.state != nil {
+						s.state.IncrementLastEntryNumber()
+					}
 				}
 			}
 
@@ -1207,9 +1248,12 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			finalWriteOffset := writeOffset
 
 			// DEBUG: Log entry number calculation
-			if false { // Enable for debugging
-				log.Printf("Shard %d: entryNumbers=%v, finalEntryNumber=%d, initialEntryNumber=%d",
-					s.shardID, entryNumbers, finalEntryNumber, initialEntryNumber)
+			if Debug && s.logger != nil {
+				s.logger.Debug("Entry number calculation",
+					"shard", s.shardID,
+					"entryNumbers", entryNumbers,
+					"finalEntryNumber", finalEntryNumber,
+					"initialEntryNumber", initialEntryNumber)
 			}
 			writeReq.UpdateFunc = func() error {
 				s.mu.Lock()
@@ -1232,7 +1276,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				}
 
 				// Update mmap state to notify readers
-				if s.mmapState != nil {
+				if s.state != nil {
 					s.updateMmapState()
 				}
 
@@ -1265,9 +1309,9 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	// Use memory-mapped writer for ultra-fast multi-process writes if available
 	if config.Concurrency.EnableMultiProcessMode && s.mmapWriter != nil {
 		// Extract entry numbers from IDs
-		entryNumbers := make([]int64, len(writeReq.IDs))
+		entryNumbers := make([]uint64, len(writeReq.IDs))
 		for i, id := range writeReq.IDs {
-			entryNumbers[i] = id.EntryNumber
+			entryNumbers[i] = uint64(id.EntryNumber)
 		}
 
 		// Extract raw data from write buffers (skip headers, they will be recreated)
@@ -1313,7 +1357,9 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		// Update index after successful mmap write - must be protected by mutex
 		if writeErr == nil {
 			s.mu.Lock()
-			s.index.CurrentWriteOffset = s.mmapWriter.CoordinationState().WriteOffset.Load()
+			if s.mmapWriter.state != nil {
+				s.index.CurrentWriteOffset = int64(s.mmapWriter.state.GetWriteOffset())
+			}
 			s.mu.Unlock()
 		}
 	} else {
@@ -1380,6 +1426,14 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			clientMetrics.ErrorCount.Add(1)
 			clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
 
+			// Track in CometState if available
+			if s.state != nil {
+				atomic.AddUint64(&s.state.ErrorCount, 1)
+				atomic.StoreInt64(&s.state.LastErrorNanos, time.Now().UnixNano())
+				// Track failed write batch
+				atomic.AddUint64(&s.state.FailedWrites, 1)
+			}
+
 			// Rollback index state
 			if writeReq.UpdateFunc != nil {
 				writeReq.UpdateFunc()
@@ -1404,14 +1458,38 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	clientMetrics.CompressedEntries.Add(compressedCount)
 	clientMetrics.SkippedCompression.Add(skippedCount)
 
+	// Track unified state metrics (if available)
+	if s.state != nil {
+		atomic.AddInt64(&s.state.TotalEntries, int64(len(entries)))
+		atomic.AddUint64(&s.state.TotalBytes, totalOriginalBytes)
+		atomic.AddUint64(&s.state.TotalWrites, 1)
+		atomic.StoreInt64(&s.state.LastWriteNanos, time.Now().UnixNano())
+		atomic.AddUint64(&s.state.TotalCompressed, totalCompressedBytes)
+		atomic.AddUint64(&s.state.CompressedEntries, compressedCount)
+		atomic.AddUint64(&s.state.SkippedCompression, skippedCount)
+
+		// Batch metrics
+		atomic.StoreUint64(&s.state.CurrentBatchSize, uint64(len(entries)))
+		atomic.AddUint64(&s.state.TotalBatches, 1)
+	}
+
 	// Update latency metrics using EMA
 	if totalOriginalBytes > 0 && totalCompressedBytes > 0 {
 		ratio := (totalOriginalBytes * 100) / totalCompressedBytes // x100 for fixed point
 		clientMetrics.CompressionRatio.Store(ratio)
+		// Also update in shard state
+		if s.state != nil {
+			atomic.StoreUint64(&s.state.CompressionRatio, ratio)
+		}
 	}
 
 	// Track write latency with min/max
 	clientMetrics.WriteLatencyNano.Store(writeLatency)
+
+	// Update unified state latency metrics (if available)
+	if s.state != nil {
+		s.state.UpdateWriteLatency(writeLatency)
+	}
 	for {
 		currentMin := clientMetrics.MinWriteLatency.Load()
 		if currentMin == 0 || writeLatency < currentMin {
@@ -1445,15 +1523,21 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			currentFile.Entries += int64(len(entries))
 		}
 
-		// In multi-process mode, update mmap state immediately for visibility
-		if config.Concurrency.EnableMultiProcessMode && s.mmapState != nil {
+		// In multi-process mode, update unified state immediately for visibility
+		if config.Concurrency.EnableMultiProcessMode && s.state != nil {
 			// Fast path: Update coordination state immediately (~10ns total)
-			atomic.StoreInt64(&s.mmapState.LastUpdateNanos, time.Now().UnixNano())
-			if s.sequenceState != nil {
-				// LastEntryNumber should be the last allocated entry, not the next one
-				// CurrentEntryNumber is the next entry to be written
-				if s.index.CurrentEntryNumber > 0 {
-					atomic.StoreInt64(&s.sequenceState.LastEntryNumber, s.index.CurrentEntryNumber-1)
+			s.state.SetLastIndexUpdate(time.Now().UnixNano())
+			// LastEntryNumber should be the last allocated entry, not the next one
+			// CurrentEntryNumber is the next entry to be written
+			if s.index.CurrentEntryNumber > 0 {
+				// Sync CometState with current index if needed
+				currentLastEntry := s.state.GetLastEntryNumber()
+				expectedLastEntry := s.index.CurrentEntryNumber - 1
+				if currentLastEntry < expectedLastEntry {
+					// Catch up to the expected value
+					for s.state.GetLastEntryNumber() < expectedLastEntry {
+						s.state.IncrementLastEntryNumber()
+					}
 				}
 			}
 
@@ -1466,10 +1550,16 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		// Check if we need to rotate file
 		if s.index.CurrentWriteOffset > config.Storage.MaxFileSize {
 			if err := s.rotateFile(clientMetrics, config); err != nil {
-				panic(err) // Will be caught by deferred recover
+				criticalErr = fmt.Errorf("failed to rotate file: %w", err)
+				return
 			}
 		}
 	}()
+
+	// Check if critical section encountered an error
+	if criticalErr != nil {
+		return nil, criticalErr
+	}
 
 	return writeReq.IDs, nil
 }
@@ -1514,6 +1604,13 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 						clientMetrics.IndexPersistErrors.Add(1)
 						clientMetrics.ErrorCount.Add(1)
 						clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
+					}
+
+					// Track in CometState if available
+					if s.state != nil {
+						atomic.AddUint64(&s.state.IndexPersistErrors, 1)
+						atomic.AddUint64(&s.state.ErrorCount, 1)
+						atomic.StoreInt64(&s.state.LastErrorNanos, time.Now().UnixNano())
 					}
 					return
 				}
@@ -1585,6 +1682,12 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 		if clientMetrics != nil {
 			clientMetrics.CheckpointCount.Add(1)
 			clientMetrics.LastCheckpoint.Store(uint64(time.Now().UnixNano()))
+		}
+
+		// Track in CometState if available
+		if s.state != nil {
+			atomic.AddUint64(&s.state.CheckpointCount, 1)
+			atomic.StoreInt64(&s.state.LastCheckpointNanos, time.Now().UnixNano())
 		}
 	}
 }
@@ -1665,9 +1768,8 @@ func (s *Shard) initializeMmapWriter(config *CometConfig) error {
 		s.mmapWriter = nil
 	}
 
-	// Create new mmap writer - this will need metrics from somewhere
-	// For recovery, we'll use nil metrics since we don't have access to client metrics here
-	mmapWriter, err := NewMmapWriter(shardDir, config.Storage.MaxFileSize, s.index, nil, s.rotationLockFile)
+	// Create new mmap writer - use existing state
+	mmapWriter, err := NewMmapWriter(shardDir, config.Storage.MaxFileSize, s.index, s.state, s.rotationLockFile)
 	if err != nil {
 		return fmt.Errorf("failed to create mmap writer: %w", err)
 	}
@@ -1702,15 +1804,14 @@ func (s *Shard) loadIndexWithRetry() error {
 // checkIfRebuildNeeded checks if the index needs rebuilding without acquiring locks
 // Must be called while holding at least a read lock
 func (s *Shard) checkIfRebuildNeeded() bool {
-	if s.mmapWriter == nil || s.mmapWriter.CoordinationState() == nil {
+	if s.mmapWriter == nil || s.mmapWriter.state == nil {
 		return false
 	}
 
-	coordState := s.mmapWriter.CoordinationState()
-	currentTotalWrites := coordState.TotalWrites.Load()
+	currentTotalWrites := s.mmapWriter.state.GetTotalWrites()
 
-	// Check if total writes in coordination state exceed what we have in index
-	return currentTotalWrites > s.index.CurrentEntryNumber
+	// Check if total writes in state exceed what we have in index
+	return currentTotalWrites > uint64(s.index.CurrentEntryNumber)
 }
 
 func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
@@ -1754,26 +1855,26 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 		scanSize := actualSize
 		if config.Concurrency.EnableMultiProcessMode && i == len(s.index.Files)-1 {
 			// For the current file, check the coordination state
-			coordPath := filepath.Join(shardDir, "coordination.state")
-			if coordFile, err := os.Open(coordPath); err == nil {
-				defer coordFile.Close()
+			statePath := filepath.Join(shardDir, "comet.state")
+			if stateFile, err := os.Open(statePath); err == nil {
+				defer stateFile.Close()
 
-				// Map the coordination state temporarily to read it
-				const stateSize = 256
-				if data, err := syscall.Mmap(int(coordFile.Fd()), 0, stateSize,
+				// Map the state temporarily to read it
+				if data, err := syscall.Mmap(int(stateFile.Fd()), 0, CometStateSize,
 					syscall.PROT_READ, syscall.MAP_SHARED); err == nil {
 					defer syscall.Munmap(data)
 
 					// Read the write offset from the shared state
 					// In multi-process scenarios, retry a few times to handle timing issues
-					coordState := (*MmapCoordinationState)(unsafe.Pointer(&data[0]))
+					state := (*CometState)(unsafe.Pointer(&data[0]))
 					var writeOffset int64
+					var totalWrites int64
 					maxRetries := 3
 
 					for retry := 0; retry < maxRetries; retry++ {
-						writeOffset = coordState.WriteOffset.Load()
-						lastWrite := coordState.LastWriteNanos.Load()
-						totalWrites := coordState.TotalWrites.Load()
+						writeOffset = int64(atomic.LoadUint64(&state.WriteOffset))
+						lastWrite := atomic.LoadInt64(&state.LastWriteNanos)
+						totalWrites = int64(atomic.LoadUint64(&state.TotalWrites))
 
 						// Check if we expect more writes than we see in the offset
 						// If TotalWrites is significantly higher than what the offset suggests, wait for coordination to stabilize
@@ -1799,10 +1900,10 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 						break
 					}
 
-					// Get the latest coordination state values for stabilization check
-					latestTotalWrites := coordState.TotalWrites.Load()
+					// Get the latest state values for stabilization check
+					latestTotalWrites := totalWrites
 
-					// Wait for coordination state to stabilize if we're in a high-contention scenario
+					// Wait for state to stabilize if we're in a high-contention scenario
 					if latestTotalWrites > 100 {
 
 						// Wait for a brief period to let any pending writes complete
@@ -1811,8 +1912,8 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 
 						for attempts := 0; attempts < 10; attempts++ {
 							time.Sleep(50 * time.Millisecond)
-							currentWrites := coordState.TotalWrites.Load()
-							currentOffset := coordState.WriteOffset.Load()
+							currentWrites := int64(atomic.LoadUint64(&state.TotalWrites))
+							currentOffset := int64(atomic.LoadUint64(&state.WriteOffset))
 
 							if currentWrites == stableTotalWrites && currentOffset == stableWriteOffset {
 								// Coordination state is stable
@@ -1840,10 +1941,11 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 				}
 			} else if s.mmapWriter != nil {
 				// Fallback to local mmapWriter if available
-				coordState := s.mmapWriter.CoordinationState()
-				writeOffset := coordState.WriteOffset.Load()
-				if writeOffset > 0 && writeOffset < actualSize {
-					scanSize = writeOffset
+				if s.mmapWriter.state != nil {
+					writeOffset := s.mmapWriter.state.GetWriteOffset()
+					if writeOffset > 0 && writeOffset < uint64(actualSize) {
+						scanSize = int64(writeOffset)
+					}
 				}
 			}
 		}
@@ -2032,11 +2134,24 @@ func (s *Shard) scheduleAsyncCheckpoint(clientMetrics *ClientMetrics, config *Co
 				clientMetrics.ErrorCount.Add(1)
 				clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
 			}
+
+			// Track in CometState if available
+			if s.state != nil {
+				atomic.AddUint64(&s.state.IndexPersistErrors, 1)
+				atomic.AddUint64(&s.state.ErrorCount, 1)
+				atomic.StoreInt64(&s.state.LastErrorNanos, time.Now().UnixNano())
+			}
 		} else {
 			// Track checkpoint metrics
 			if clientMetrics != nil {
 				clientMetrics.CheckpointCount.Add(1)
 				clientMetrics.LastCheckpoint.Store(uint64(time.Now().UnixNano()))
+			}
+
+			// Track in CometState if available
+			if s.state != nil {
+				atomic.AddUint64(&s.state.CheckpointCount, 1)
+				atomic.StoreInt64(&s.state.LastCheckpointNanos, time.Now().UnixNano())
 			}
 		}
 	}()
@@ -2079,11 +2194,33 @@ func (s *Shard) persistIndex() error {
 	// Clone the index - caller already holds lock
 	indexCopy := s.cloneIndex()
 
+	// Calculate total file bytes while we have the index
+	if s.state != nil {
+		var totalBytes uint64
+		for _, file := range s.index.Files {
+			totalBytes += uint64(file.EndOffset - file.StartOffset)
+		}
+		atomic.StoreUint64(&s.state.TotalFileBytes, totalBytes)
+		// Also update current files count
+		atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
+	}
+
 	// Use binary format for efficiency
 	err := s.saveBinaryIndex(indexCopy)
 	if err == nil {
 		// Only update mmap state after successful persistence
 		s.updateMmapState()
+
+		// Track successful index persistence
+		if s.state != nil {
+			atomic.AddUint64(&s.state.IndexPersistCount, 1)
+			atomic.StoreInt64(&s.state.LastIndexUpdate, time.Now().UnixNano())
+			// Update binary index node count
+			atomic.StoreUint64(&s.state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
+		}
+	} else if s.state != nil {
+		// Track failed index persistence
+		atomic.AddUint64(&s.state.IndexPersistErrors, 1)
 	}
 	return err
 }
@@ -2174,6 +2311,10 @@ func (s *Shard) loadIndex() error {
 
 		// Try to rebuild index from existing data files
 		shardDir := filepath.Dir(s.indexPath)
+		// Track recovery attempt
+		if s.state != nil {
+			atomic.AddUint64(&s.state.RecoveryAttempts, 1)
+		}
 		if err := s.rebuildIndexFromDataFiles(shardDir); err != nil {
 			// Log the error but don't fail - empty index is better than nothing
 			// This allows new shards to start fresh
@@ -2187,6 +2328,10 @@ func (s *Shard) loadIndex() error {
 		if len(s.index.Files) > 0 {
 			if err := s.persistIndex(); err != nil {
 				return fmt.Errorf("failed to persist rebuilt index: %w", err)
+			}
+			// Track recovery success if we successfully rebuilt from files
+			if s.state != nil {
+				atomic.AddUint64(&s.state.RecoverySuccesses, 1)
 			}
 		}
 
@@ -2229,104 +2374,16 @@ func (s *Shard) loadIndex() error {
 	return nil
 }
 
-// initMmapState initializes the memory-mapped shared state for multi-process coordination
-func (s *Shard) initMmapState() error {
-	// Create or open the mmap state file (8 bytes)
-	file, err := os.OpenFile(s.indexStatePath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to create mmap state file: %w", err)
-	}
-	defer file.Close()
-
-	// Ensure file is exactly 8 bytes
-	stat, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to stat mmap state file: %w", err)
-	}
-
-	if stat.Size() == 0 {
-		// New file - initialize with current timestamp
-		now := time.Now().UnixNano()
-		if err := binary.Write(file, binary.LittleEndian, now); err != nil {
-			return fmt.Errorf("failed to initialize mmap state: %w", err)
-		}
-	} else if stat.Size() != 8 {
-		return fmt.Errorf("mmap state file has invalid size %d, expected 8", stat.Size())
-	}
-
-	// Memory-map the file
-	data, err := syscall.Mmap(int(file.Fd()), 0, 8, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		return fmt.Errorf("failed to mmap state file: %w", err)
-	}
-
-	s.indexStateData = data
-	s.mmapState = (*MmapSharedState)(unsafe.Pointer(&data[0]))
-
-	// Initialize our last seen timestamp
-	s.lastMmapCheck = atomic.LoadInt64(&s.mmapState.LastUpdateNanos)
-
-	return nil
-}
-
-// initSequenceState initializes the memory-mapped sequence counter for file naming
-func (s *Shard) initSequenceState() error {
-	// Create or open the sequence state file (8 bytes)
-	file, err := os.OpenFile(s.sequenceStatePath, os.O_CREATE|os.O_RDWR, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to create sequence state file: %w", err)
-	}
-	s.sequenceFile = file
-
-	// Ensure file is exactly 8 bytes
-	stat, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to stat sequence state file: %w", err)
-	}
-
-	if stat.Size() == 0 {
-		// New file - initialize with the last allocated entry number
-		// CurrentEntryNumber is the NEXT entry to be written
-		// So if CurrentEntryNumber is 0, no entries have been written yet
-		// and LastEntryNumber should be -1
-		initialSeq := int64(-1)
-		if s.index.CurrentEntryNumber > 0 {
-			initialSeq = s.index.CurrentEntryNumber - 1
-		}
-		if err := binary.Write(file, binary.LittleEndian, initialSeq); err != nil {
-			return fmt.Errorf("failed to initialize sequence state: %w", err)
-		}
-	} else if stat.Size() != 8 {
-		return fmt.Errorf("sequence state file has invalid size %d, expected 8", stat.Size())
-	}
-
-	// Memory-map the file
-	data, err := syscall.Mmap(int(file.Fd()), 0, 8, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		return fmt.Errorf("failed to mmap sequence state file: %w", err)
-	}
-
-	s.sequenceStateData = data
-	s.sequenceCounter = (*int64)(unsafe.Pointer(&data[0]))
-
-	// Also set up the SequenceState pointer for entry number tracking
-	s.sequenceState = (*SequenceState)(unsafe.Pointer(&data[0]))
-
-	// For now, we're using the same counter for files and entries
-	// This means entry numbers will start from 1 if a file has been created
-	// TODO: Use separate counters for files and entries
-
-	return nil
-}
+// NOTE: initMmapState and initSequenceState removed - replaced by initCometState
 
 // Global sequence counter for single-process mode
 var globalSequenceCounter int64
 
 // getNextSequence atomically increments and returns the next sequence number for file naming
 func (s *Shard) getNextSequence() int64 {
-	if s.sequenceCounter != nil {
-		// Multi-process mode: use mmap'd counter
-		return atomic.AddInt64(s.sequenceCounter, 1)
+	if s.state != nil {
+		// Multi-process mode: use unified state's file sequence
+		return int64(s.state.AddLastFileSequence(1))
 	}
 	// Single-process mode: use global atomic counter
 	return atomic.AddInt64(&globalSequenceCounter, 1)
@@ -2390,6 +2447,11 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 		s.index.CurrentEntryNumber = lastFile.StartEntry + lastFile.Entries
 	}
 
+	// Track recovery success
+	if s.state != nil {
+		atomic.AddUint64(&s.state.RecoverySuccesses, 1)
+	}
+
 	return nil
 }
 
@@ -2440,6 +2502,10 @@ func (s *Shard) scanDataFile(filePath string) (*FileInfo, error) {
 
 		// Validate entry
 		if length > 100*1024*1024 { // 100MB max
+			// Track corruption detection
+			if s.state != nil {
+				atomic.AddUint64(&s.state.CorruptionDetected, 1)
+			}
 			break // Corrupted entry
 		}
 
@@ -2472,9 +2538,9 @@ func (s *Shard) scanDataFile(filePath string) (*FileInfo, error) {
 
 // updateMmapState atomically updates the shared timestamp to notify other processes of index changes
 func (s *Shard) updateMmapState() {
-	// Check if mmapState is still valid (not nil and not unmapped)
-	if s.mmapState != nil && s.indexStateData != nil {
-		atomic.StoreInt64(&s.mmapState.LastUpdateNanos, time.Now().UnixNano())
+	// Check if state is still valid
+	if s.state != nil {
+		s.state.SetLastIndexUpdate(time.Now().UnixNano())
 	}
 }
 
@@ -2508,6 +2574,18 @@ func (s *Shard) openDataFileWithConfig(shardDir string, config *CometConfig) err
 	}
 
 	s.dataFile = file
+
+	// Track file creation if this is a new file
+	if s.state != nil {
+		// Check if file was newly created
+		fileInfo, err := file.Stat()
+		if err == nil && fileInfo.Size() == 0 {
+			// New file created
+			atomic.AddUint64(&s.state.FilesCreated, 1)
+		}
+		// Update current file count
+		atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
+	}
 
 	// Create buffered writer
 	// In multi-process mode, use smaller buffer to reduce conflicts
@@ -2544,6 +2622,7 @@ func (s *Shard) recoverFromCrash() error {
 	offset := s.index.CurrentWriteOffset
 	validEntries := int64(0)
 	var lastEntryOffset int64
+	partialWriteDetected := false
 
 	// Open file for reading
 	f, err := os.Open(s.index.CurrentFile)
@@ -2555,6 +2634,7 @@ func (s *Shard) recoverFromCrash() error {
 	// Scan entries until EOF or corruption
 	for offset < actualSize {
 		if offset+headerSize > actualSize {
+			partialWriteDetected = true
 			break // Incomplete header
 		}
 
@@ -2565,6 +2645,7 @@ func (s *Shard) recoverFromCrash() error {
 
 		length := binary.LittleEndian.Uint32(header[0:4])
 		if offset+headerSize+int64(length) > actualSize {
+			partialWriteDetected = true
 			break // Incomplete entry
 		}
 
@@ -2599,6 +2680,11 @@ func (s *Shard) recoverFromCrash() error {
 			FileIndex:  len(s.index.Files) - 1,
 			ByteOffset: lastEntryOffset,
 		})
+	}
+
+	// Track partial write if detected
+	if partialWriteDetected && s.state != nil {
+		atomic.AddUint64(&s.state.PartialWrites, 1)
 	}
 
 	return nil
@@ -2645,6 +2731,37 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 		// Track file rotation
 		clientMetrics.FileRotations.Add(1)
 		clientMetrics.TotalFiles.Add(1)
+		if s.state != nil {
+			atomic.AddUint64(&s.state.FileRotations, 1)
+		}
+
+		// Debug log file rotation
+		if Debug && s.logger != nil {
+			var oldFile string
+			if len(s.index.Files) > 1 {
+				oldFile = s.index.Files[len(s.index.Files)-2].Path
+			}
+			s.logger.Debug("File rotated",
+				"oldFile", filepath.Base(oldFile),
+				"newFile", filepath.Base(newPath),
+				"totalFiles", len(s.index.Files))
+		}
+
+		// Don't persist index on every rotation - it will be persisted during checkpoints
+		// This avoids performance issues with frequent rotations
+
+		// But update the metrics that would have been updated by persistIndex
+		if s.state != nil {
+			// Update file count metric
+			atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
+
+			// Calculate and update total file size
+			var totalBytes uint64
+			for _, file := range s.index.Files {
+				totalBytes += uint64(file.EndOffset - file.StartOffset)
+			}
+			atomic.StoreUint64(&s.state.TotalFileBytes, totalBytes)
+		}
 
 		return nil
 	}
@@ -2701,6 +2818,9 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 	// Track file rotation
 	clientMetrics.FileRotations.Add(1)
 	clientMetrics.TotalFiles.Add(1)
+	if s.state != nil {
+		atomic.AddUint64(&s.state.FileRotations, 1)
+	}
 
 	// Ensure the shard directory exists before trying to create the new file
 	if err := os.MkdirAll(shardDir, 0755); err != nil {
@@ -2708,7 +2828,27 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 	}
 
 	// Open with preallocation and setup
-	return s.openDataFileWithConfig(shardDir, config)
+	if err := s.openDataFileWithConfig(shardDir, config); err != nil {
+		return err
+	}
+
+	// Don't persist index on every rotation - it will be persisted during checkpoints
+	// This avoids performance issues with frequent rotations
+
+	// But update the metrics that would have been updated by persistIndex
+	if s.state != nil {
+		// Update file count metric
+		atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
+
+		// Calculate and update total file size
+		var totalBytes uint64
+		for _, file := range s.index.Files {
+			totalBytes += uint64(file.EndOffset - file.StartOffset)
+		}
+		atomic.StoreUint64(&s.state.TotalFileBytes, totalBytes)
+	}
+
+	return nil
 }
 
 // parseShardFromStream extracts shard ID from stream name
@@ -2824,25 +2964,30 @@ func (c *Client) Close() error {
 		if shard.rotationLockFile != nil {
 			shard.rotationLockFile.Close()
 		}
-		if shard.sequenceFile != nil {
-			shard.sequenceFile.Close()
-		}
+		// NOTE: sequenceFile removed - file sequence now tracked in CometState
 		shard.mu.Unlock()
 
-		// Now safe to unmap shared state
-		if shard.indexStateData != nil {
-			syscall.Munmap(shard.indexStateData)
-			shard.indexStateData = nil
-			shard.mmapState = nil
-		}
-		if shard.sequenceStateData != nil {
-			syscall.Munmap(shard.sequenceStateData)
-			shard.sequenceStateData = nil
-			shard.sequenceCounter = nil
+		// Now safe to unmap unified state
+		if shard.stateData != nil {
+			syscall.Munmap(shard.stateData)
+			shard.stateData = nil
+			shard.state = nil
 		}
 	}
 
 	return nil
+}
+
+// getAllShards returns all shards for testing purposes
+func (c *Client) getAllShards() map[uint32]*Shard {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := make(map[uint32]*Shard, len(c.shards))
+	for k, v := range c.shards {
+		result[k] = v
+	}
+	return result
 }
 
 // GetStats returns current metrics for monitoring
@@ -2897,4 +3042,193 @@ func (c *Client) GetStats() CometStats {
 		IndexPersistErrors:  c.metrics.IndexPersistErrors.Load(),
 		CompressionWaitNano: c.metrics.CompressionWait.Load(),
 	}
+}
+
+// Health returns the current health status of the Comet client
+func (c *Client) Health() Health {
+	c.mu.RLock()
+	shardCount := len(c.shards)
+	c.mu.RUnlock()
+
+	// Get current stats
+	stats := c.GetStats()
+
+	// Calculate uptime
+	uptime := time.Since(c.startTime)
+	uptimeStr := uptime.Truncate(time.Second).String()
+
+	// Determine health status
+	health := Health{
+		Healthy:      true,
+		Status:       "healthy",
+		WritesOK:     true,
+		ReadsOK:      true,
+		ActiveShards: shardCount,
+		TotalFiles:   stats.TotalFiles,
+		ErrorCount:   stats.ErrorCount,
+		Uptime:       uptimeStr,
+	}
+
+	// Check last write time across all shards
+	var lastWriteNano int64
+	c.mu.RLock()
+	for _, shard := range c.shards {
+		if shard.state != nil {
+			shardLastWrite := atomic.LoadInt64(&shard.state.LastWriteNanos)
+			if shardLastWrite > lastWriteNano {
+				lastWriteNano = shardLastWrite
+			}
+		}
+	}
+	c.mu.RUnlock()
+
+	if lastWriteNano > 0 {
+		health.LastWriteTime = time.Unix(0, lastWriteNano)
+	}
+
+	// Check last error time
+	if stats.LastErrorNano > 0 {
+		health.LastErrorTime = time.Unix(0, int64(stats.LastErrorNano))
+
+		// If error was recent (within 1 minute), mark as degraded
+		if time.Since(health.LastErrorTime) < time.Minute {
+			health.Status = "degraded"
+			health.Details = "Recent errors detected"
+		}
+	}
+
+	// Check for high error rate
+	if stats.TotalEntries > 0 && stats.ErrorCount > 0 {
+		errorRate := float64(stats.ErrorCount) / float64(stats.TotalEntries)
+		if errorRate > 0.01 { // More than 1% error rate
+			health.Status = "degraded"
+			health.Healthy = false
+			health.WritesOK = false
+			if health.Details != "" {
+				health.Details += "; "
+			}
+			health.Details += fmt.Sprintf("High error rate: %.2f%%", errorRate*100)
+		}
+	}
+
+	// Check if we've written recently (within 5 minutes)
+	if health.LastWriteTime.IsZero() || time.Since(health.LastWriteTime) > 5*time.Minute {
+		// No recent writes, but this might be normal for low-traffic systems
+		// Don't mark as unhealthy, just note it
+		if stats.TotalEntries == 0 {
+			if health.Details != "" {
+				health.Details += "; "
+			}
+			health.Details += "No data written yet"
+		}
+	}
+
+	// Check for index persist errors
+	if stats.IndexPersistErrors > 0 {
+		health.Status = "degraded"
+		if health.Details != "" {
+			health.Details += "; "
+		}
+		health.Details += fmt.Sprintf("Index persist errors: %d", stats.IndexPersistErrors)
+	}
+
+	// Simple ping test - try to access a shard
+	if shardCount > 0 {
+		// Try to get any shard to verify basic functionality
+		c.mu.RLock()
+		for _, shard := range c.shards {
+			// Just accessing the shard and checking if we can read its state
+			if shard.state == nil {
+				health.ReadsOK = false
+				health.Status = "unhealthy"
+				health.Healthy = false
+				if health.Details != "" {
+					health.Details += "; "
+				}
+				health.Details += "Shard state unavailable"
+			}
+			break // Just check one shard
+		}
+		c.mu.RUnlock()
+	}
+
+	// Set final health status
+	if health.Status == "unhealthy" {
+		health.Healthy = false
+	}
+
+	return health
+}
+
+// initCometState initializes the unified state for metrics and coordination
+// In multi-process mode, it's memory-mapped to a file for sharing between processes
+// In single-process mode, it's allocated in regular memory
+func (s *Shard) initCometState(multiProcessMode bool) error {
+	if multiProcessMode {
+		return s.initCometStateMmap()
+	} else {
+		return s.initCometStateMemory()
+	}
+}
+
+// initCometStateMemory initializes unified state in regular memory (single-process mode)
+func (s *Shard) initCometStateMemory() error {
+	s.state = &CometState{}
+
+	// Initialize version
+	atomic.StoreUint64(&s.state.Version, CometStateVersion1)
+
+	// Initialize with -1 to indicate "not yet set" for LastEntryNumber
+	atomic.StoreInt64(&s.state.LastEntryNumber, -1)
+
+	return nil
+}
+
+// initCometStateMmap initializes unified state via memory mapping (multi-process mode)
+func (s *Shard) initCometStateMmap() error {
+	// Create or open the unified state file
+	file, err := os.OpenFile(s.statePath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open unified state file: %w", err)
+	}
+	defer file.Close()
+
+	// Ensure file is the correct size
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat unified state file: %w", err)
+	}
+
+	if stat.Size() == 0 {
+		// New file - initialize with zeros and set version
+		if err := file.Truncate(CometStateSize); err != nil {
+			return fmt.Errorf("failed to set unified state file size: %w", err)
+		}
+	} else if stat.Size() != CometStateSize {
+		return fmt.Errorf("unified state file has wrong size: got %d, expected %d", stat.Size(), CometStateSize)
+	}
+
+	// Memory map the file
+	data, err := syscall.Mmap(int(file.Fd()), 0, CometStateSize,
+		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		return fmt.Errorf("failed to mmap unified state file: %w", err)
+	}
+
+	s.stateData = data
+	s.state = (*CometState)(unsafe.Pointer(&data[0]))
+
+	// Initialize version if this is a new file
+	if stat.Size() == 0 {
+		atomic.StoreUint64(&s.state.Version, CometStateVersion1)
+		// Initialize with -1 to indicate "not yet set" for LastEntryNumber
+		atomic.StoreInt64(&s.state.LastEntryNumber, -1)
+	} else {
+		// Validate existing state file
+		if err := s.validateAndRecoverState(); err != nil {
+			return fmt.Errorf("state validation failed: %w", err)
+		}
+	}
+
+	return nil
 }
