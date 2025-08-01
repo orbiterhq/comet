@@ -606,6 +606,16 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	if !exists {
 		startEntryNum = 0
 	}
+
+	// After retention, the requested start entry might no longer exist
+	// Adjust to the earliest available entry if needed
+	if len(shard.index.Files) > 0 {
+		earliestEntry := shard.index.Files[0].StartEntry
+		if startEntryNum < earliestEntry {
+			startEntryNum = earliestEntry
+		}
+	}
+
 	endEntryNum := shard.index.CurrentEntryNumber
 	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()
@@ -637,6 +647,15 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			if !exists {
 				startEntryNum = 0
 			}
+
+			// After retention, adjust to earliest available entry if needed
+			if len(shard.index.Files) > 0 {
+				earliestEntry := shard.index.Files[0].StartEntry
+				if startEntryNum < earliestEntry {
+					startEntryNum = earliestEntry
+				}
+			}
+
 			endEntryNum = shard.index.CurrentEntryNumber
 			fileCount = len(shard.index.Files)
 			shard.mu.Unlock()

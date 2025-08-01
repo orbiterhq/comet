@@ -80,7 +80,7 @@ func TestRetentionMultiProcess(t *testing.T) {
 	config := MultiProcessConfig()
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
-	config.Retention.MinFilesToKeep = 0  // Allow deleting all non-current files
+	config.Retention.MinFilesToKeep = 0 // Allow deleting all non-current files
 	config.Storage.MaxFileSize = 512    // Smaller files to create more
 
 	client, err := NewClientWithConfig(dir, config)

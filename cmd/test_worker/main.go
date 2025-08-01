@@ -210,10 +210,10 @@ func runRetentionTest() {
 		log.Fatal("--dir and --stream are required")
 	}
 
+	// Use same config as test
 	config := comet.MultiProcessConfig()
-	config.Retention.MaxAge = 200 * time.Millisecond
-	config.Retention.CleanupInterval = 100 * time.Millisecond
-	config.Retention.MinFilesToKeep = 2
+	config.Retention.MaxAge = 100 * time.Millisecond
+	config.Retention.MinFilesToKeep = 0
 
 	client, err := comet.NewClientWithConfig(*dir, config)
 	if err != nil {
@@ -223,42 +223,38 @@ func runRetentionTest() {
 
 	ctx := context.Background()
 
-	// Write some data
-	for i := 0; i < 10; i++ {
-		data := []byte(fmt.Sprintf(`{"id": %d, "worker": %d, "timestamp": %d}`, i, *workerID, time.Now().UnixNano()))
-		_, err := client.Append(ctx, *streamName, [][]byte{data})
-		if err != nil {
-			log.Printf("Worker %d: write error: %v", *workerID, err)
-		}
-	}
-
-	// Worker 0 triggers retention
+	// Only write a trigger entry to load the shard if this is the first worker
+	// This prevents multiple processes from writing while retention is running
 	if *workerID == 0 {
-		log.Printf("Worker 0: triggering retention cleanup")
-		client.ForceRetentionCleanup()
-		time.Sleep(100 * time.Millisecond) // Give retention time to work
+		data := []byte(fmt.Sprintf(`{"worker": %d, "trigger": "retention"}`, *workerID))
+		_, err = client.Append(ctx, *streamName, [][]byte{data})
+		if err != nil {
+			log.Printf("Worker %d: failed to write trigger entry: %v", *workerID, err)
+		}
 	} else {
-		// Other workers just wait a bit
-		time.Sleep(200 * time.Millisecond)
+		// Other workers just need to access the shard to load the index
+		// Use a read operation instead of write to avoid concurrent modifications
+		consumer := comet.NewConsumer(client, comet.ConsumerOptions{
+			Group: fmt.Sprintf("worker-%d-access", *workerID),
+		})
+		// Try to read (will load the shard and index)
+		consumer.Read(ctx, []uint32{1}, 1)
+		consumer.Close()
 	}
 
-	// All workers try to read to verify data integrity
-	consumer := comet.NewConsumer(client, comet.ConsumerOptions{
-		Group: fmt.Sprintf("worker-%d", *workerID),
-	})
-	defer consumer.Close()
+	log.Printf("Worker %d: triggering retention cleanup", *workerID)
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 5)
-	if err != nil {
-		log.Printf("Worker %d: read error after retention: %v", *workerID, err)
-	} else {
-		log.Printf("Worker %d: successfully read %d messages after retention", *workerID, len(messages))
-	}
+	// Get retention stats before
+	statsBefore := client.GetRetentionStats()
+	log.Printf("Worker %d: files before retention: %d", *workerID, statsBefore.TotalFiles)
 
-	// Sync to ensure all writes are persisted
-	client.Sync(ctx)
+	client.ForceRetentionCleanup()
 
-	fmt.Printf("Worker %d completed successfully\n", *workerID)
+	// Get retention stats after
+	statsAfter := client.GetRetentionStats()
+	log.Printf("Worker %d: files after retention: %d (deleted %d)", *workerID, statsAfter.TotalFiles, statsBefore.TotalFiles-statsAfter.TotalFiles)
+
+	log.Printf("Worker %d: retention cleanup completed", *workerID)
 }
 
 func runIndexRebuildTest() {

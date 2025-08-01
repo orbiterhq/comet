@@ -387,21 +387,23 @@ type Shard struct {
 	sequenceCounter *int64    // Memory-mapped sequence counter for file naming
 
 	// Pointers (8 bytes each on 64-bit)
-	dataFile      *os.File         // Data file handle
-	writer        *bufio.Writer    // Buffered writer
-	compressor    *zstd.Encoder    // Compression engine
-	index         *ShardIndex      // Shard metadata
-	lockFile      *os.File         // File lock for multi-writer safety
-	indexLockFile *os.File         // Separate lock for index writes
-	mmapState     *MmapSharedState // Memory-mapped coordination state
-	sequenceState *SequenceState   // Memory-mapped sequence state for entry numbers
-	sequenceFile  *os.File         // File handle for sequence counter
-	mmapWriter    *MmapWriter      // Memory-mapped writer for ultra-fast multi-process writes
+	dataFile          *os.File         // Data file handle
+	writer            *bufio.Writer    // Buffered writer
+	compressor        *zstd.Encoder    // Compression engine
+	index             *ShardIndex      // Shard metadata
+	lockFile          *os.File         // File lock for multi-writer safety
+	indexLockFile     *os.File         // Separate lock for index writes
+	retentionLockFile *os.File         // Separate lock for retention operations
+	mmapState         *MmapSharedState // Memory-mapped coordination state
+	sequenceState     *SequenceState   // Memory-mapped sequence state for entry numbers
+	sequenceFile      *os.File         // File handle for sequence counter
+	mmapWriter        *MmapWriter      // Memory-mapped writer for ultra-fast multi-process writes
 
 	// Strings (24 bytes: ptr + len + cap)
 	indexPath         string // Path to index file
 	indexStatePath    string // Path to index state file
 	indexLockPath     string // Path to index lock file
+	retentionLockPath string // Path to retention lock file
 	sequenceStatePath string // Path to sequence counter file
 	indexStateData    []byte // Memory-mapped index state data (slice header: 24 bytes)
 	sequenceStateData []byte // Memory-mapped sequence state data (slice header: 24 bytes)
@@ -781,9 +783,19 @@ func (c *Client) Sync(ctx context.Context) error {
 								if diskIndex.CurrentEntryNumber > 0 {
 									entriesInOtherFiles := int64(0)
 									for i := 0; i < len(indexCopy.Files)-1; i++ {
-										entriesInOtherFiles += indexCopy.Files[i].Entries
+										// Skip files with corrupted entry counts
+										if indexCopy.Files[i].Entries >= 0 {
+											entriesInOtherFiles += indexCopy.Files[i].Entries
+										}
 									}
-									lastFile.Entries = indexCopy.CurrentEntryNumber - entriesInOtherFiles
+									calculatedEntries := indexCopy.CurrentEntryNumber - entriesInOtherFiles
+
+									// Prevent negative entry counts which cause corruption
+									if calculatedEntries >= 0 {
+										lastFile.Entries = calculatedEntries
+									}
+									// If calculation would be negative, keep the existing value
+									// This prevents the uint64 overflow issue during serialization
 								}
 							}
 						}
@@ -853,6 +865,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		indexPath:         filepath.Join(shardDir, "index.bin"),
 		indexStatePath:    filepath.Join(shardDir, "index.state"),
 		indexLockPath:     filepath.Join(shardDir, "index.lock"),
+		retentionLockPath: filepath.Join(shardDir, "retention.lock"),
 		sequenceStatePath: filepath.Join(shardDir, "sequence.state"),
 		index: &ShardIndex{
 			BoundaryInterval: c.config.Indexing.BoundaryInterval,
@@ -882,6 +895,15 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 			return nil, fmt.Errorf("failed to create index lock file: %w", err)
 		}
 		shard.indexLockFile = indexLockFile
+
+		// Separate retention lock for coordinating retention operations
+		retentionLockFile, err := os.OpenFile(shard.retentionLockPath, os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			lockFile.Close()
+			indexLockFile.Close()
+			return nil, fmt.Errorf("failed to create retention lock file: %w", err)
+		}
+		shard.retentionLockFile = retentionLockFile
 	}
 
 	// Initialize mmap shared state only if file locking is enabled
@@ -2623,6 +2645,9 @@ func (c *Client) Close() error {
 		}
 		if shard.indexLockFile != nil {
 			shard.indexLockFile.Close()
+		}
+		if shard.retentionLockFile != nil {
+			shard.retentionLockFile.Close()
 		}
 		if shard.sequenceFile != nil {
 			shard.sequenceFile.Close()

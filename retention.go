@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -106,6 +107,24 @@ func (c *Client) runRetentionCleanup() {
 
 // cleanupShard cleans up old files in a single shard
 func (c *Client) cleanupShard(shard *Shard) int64 {
+	// For multi-process safety, acquire retention lock first
+	if c.config.Concurrency.EnableMultiProcessMode && shard.retentionLockFile != nil {
+		// Use non-blocking try-lock to avoid hanging if another process is doing retention
+		if err := syscall.Flock(int(shard.retentionLockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			// Another process is doing retention - skip this cleanup
+			// Return current shard size without cleanup
+			shard.mu.RLock()
+			var currentSize int64
+			for _, file := range shard.index.Files {
+				currentSize += file.EndOffset - file.StartOffset
+			}
+			shard.mu.RUnlock()
+			return currentSize
+		}
+		// Ensure we release the lock when done
+		defer syscall.Flock(int(shard.retentionLockFile.Fd()), syscall.LOCK_UN)
+	}
+
 	shard.mu.RLock()
 	files := make([]FileInfo, len(shard.index.Files))
 	copy(files, shard.index.Files)
@@ -242,6 +261,16 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	}
 
 	// STEP 1: Update the shard index FIRST to prevent readers from accessing files we're about to delete
+	// For multi-process safety, use the index lock
+	if c.config.Concurrency.EnableMultiProcessMode && shard.indexLockFile != nil {
+		// Acquire exclusive lock for index writes
+		if err := syscall.Flock(int(shard.indexLockFile.Fd()), syscall.LOCK_EX); err != nil {
+			// Failed to acquire index lock - skip deletion to avoid corruption
+			return
+		}
+		defer syscall.Flock(int(shard.indexLockFile.Fd()), syscall.LOCK_UN)
+	}
+
 	shard.mu.Lock()
 
 	// Create a map of files to delete for quick lookup
