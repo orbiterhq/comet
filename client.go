@@ -3044,6 +3044,11 @@ func (s *Shard) initCometStateMmap() error {
 		atomic.StoreUint64(&s.state.Version, CometStateVersion1)
 		// Initialize with -1 to indicate "not yet set" for LastEntryNumber
 		atomic.StoreInt64(&s.state.LastEntryNumber, -1)
+	} else {
+		// Validate existing state file
+		if err := s.validateAndRecoverState(); err != nil {
+			return fmt.Errorf("state validation failed: %w", err)
+		}
 	}
 
 	return nil
