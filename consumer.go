@@ -571,7 +571,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			shard.mu.Lock()
 			// Double-check after acquiring lock
 			if currentTimestamp != shard.lastMmapCheck {
-				if err := shard.loadIndexWithRetry(); err != nil {
+				if err := shard.loadIndexWithRecovery(); err != nil {
 					shard.mu.Unlock()
 					return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 				}
@@ -913,7 +913,7 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 			shard.mu.Lock()
 			// Double-check after acquiring lock
 			if currentTimestamp != shard.lastMmapCheck {
-				if err := shard.loadIndexWithRetry(); err != nil {
+				if err := shard.loadIndexWithRecovery(); err != nil {
 					shard.mu.Unlock()
 					return 0, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 				}
@@ -1022,7 +1022,7 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 			shard.mu.Lock()
 			// Double-check after acquiring lock
 			if currentTimestamp != shard.lastMmapCheck {
-				if err := shard.loadIndexWithRetry(); err != nil {
+				if err := shard.loadIndexWithRecovery(); err != nil {
 					shard.mu.Unlock()
 					return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 				}
