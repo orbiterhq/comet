@@ -399,6 +399,7 @@ type Shard struct {
 	sequenceState     *SequenceState   // Memory-mapped sequence state for entry numbers
 	sequenceFile      *os.File         // File handle for sequence counter
 	mmapWriter        *MmapWriter      // Memory-mapped writer for ultra-fast multi-process writes
+	unifiedState      *UnifiedState    // NEW: Unified memory-mapped state for all metrics and coordination
 
 	// Strings (24 bytes: ptr + len + cap)
 	indexPath         string // Path to index file
@@ -407,8 +408,10 @@ type Shard struct {
 	retentionLockPath string // Path to retention lock file
 	rotationLockPath  string // Path to rotation lock file
 	sequenceStatePath string // Path to sequence counter file
+	unifiedStatePath  string // Path to unified state file
 	indexStateData    []byte // Memory-mapped index state data (slice header: 24 bytes)
 	sequenceStateData []byte // Memory-mapped sequence state data (slice header: 24 bytes)
+	unifiedStateData  []byte // Memory-mapped unified state data (slice header: 24 bytes)
 
 	// Mutex (platform-specific, often 24 bytes)
 	mu      sync.RWMutex
@@ -870,6 +873,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		retentionLockPath: filepath.Join(shardDir, "retention.lock"),
 		rotationLockPath:  filepath.Join(shardDir, "rotation.lock"),
 		sequenceStatePath: filepath.Join(shardDir, "sequence.state"),
+		unifiedStatePath:  filepath.Join(shardDir, "comet.state"),
 		index: &ShardIndex{
 			BoundaryInterval: c.config.Indexing.BoundaryInterval,
 			ConsumerOffsets:  make(map[string]int64),
@@ -879,6 +883,11 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 			},
 		},
 		lastCheckpoint: time.Now(),
+	}
+
+	// Initialize unified state (memory-mapped in multi-process mode, in-memory otherwise)
+	if err := shard.initUnifiedState(c.config.Concurrency.EnableMultiProcessMode); err != nil {
+		return nil, fmt.Errorf("failed to initialize unified state: %w", err)
 	}
 
 	// Create lock files for multi-writer coordination if enabled
@@ -1129,6 +1138,12 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 					oldVal := atomic.LoadInt64(&s.sequenceState.LastEntryNumber)
 					newVal := atomic.AddInt64(&s.sequenceState.LastEntryNumber, 1)
 					entryNumbers[i] = newVal - 1
+					
+					// Track in UnifiedState if available
+					if s.unifiedState != nil {
+						s.unifiedState.IncrementLastEntryNumber()
+					}
+					
 					if false { // Enable for debugging
 						log.Printf("Shard %d: seq %d->%d, allocated entry %d",
 							s.shardID, oldVal, newVal, entryNumbers[i])
@@ -1139,6 +1154,11 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				baseEntry := s.index.CurrentEntryNumber
 				for i := range entries {
 					entryNumbers[i] = baseEntry + int64(i)
+					
+					// Track in UnifiedState if available
+					if s.unifiedState != nil {
+						s.unifiedState.IncrementLastEntryNumber()
+					}
 				}
 			}
 
@@ -1379,6 +1399,12 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			// Track error
 			clientMetrics.ErrorCount.Add(1)
 			clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
+			
+			// Track in UnifiedState if available
+			if s.unifiedState != nil {
+				atomic.AddUint64(&s.unifiedState.ErrorCount, 1)
+				atomic.StoreInt64(&s.unifiedState.LastErrorNanos, time.Now().UnixNano())
+			}
 
 			// Rollback index state
 			if writeReq.UpdateFunc != nil {
@@ -1404,6 +1430,17 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	clientMetrics.CompressedEntries.Add(compressedCount)
 	clientMetrics.SkippedCompression.Add(skippedCount)
 
+	// Track unified state metrics (if available)
+	if s.unifiedState != nil {
+		atomic.AddInt64(&s.unifiedState.TotalEntries, int64(len(entries)))
+		atomic.AddUint64(&s.unifiedState.TotalBytes, totalOriginalBytes)
+		atomic.AddUint64(&s.unifiedState.TotalWrites, 1)
+		atomic.StoreInt64(&s.unifiedState.LastWriteNanos, time.Now().UnixNano())
+		atomic.AddUint64(&s.unifiedState.TotalCompressed, totalCompressedBytes)
+		atomic.AddUint64(&s.unifiedState.CompressedEntries, compressedCount)
+		atomic.AddUint64(&s.unifiedState.SkippedCompression, skippedCount)
+	}
+
 	// Update latency metrics using EMA
 	if totalOriginalBytes > 0 && totalCompressedBytes > 0 {
 		ratio := (totalOriginalBytes * 100) / totalCompressedBytes // x100 for fixed point
@@ -1412,6 +1449,11 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 
 	// Track write latency with min/max
 	clientMetrics.WriteLatencyNano.Store(writeLatency)
+
+	// Update unified state latency metrics (if available)
+	if s.unifiedState != nil {
+		s.unifiedState.UpdateWriteLatency(writeLatency)
+	}
 	for {
 		currentMin := clientMetrics.MinWriteLatency.Load()
 		if currentMin == 0 || writeLatency < currentMin {
@@ -1515,6 +1557,13 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 						clientMetrics.ErrorCount.Add(1)
 						clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
 					}
+					
+					// Track in UnifiedState if available
+					if s.unifiedState != nil {
+						atomic.AddUint64(&s.unifiedState.IndexPersistErrors, 1)
+						atomic.AddUint64(&s.unifiedState.ErrorCount, 1)
+						atomic.StoreInt64(&s.unifiedState.LastErrorNanos, time.Now().UnixNano())
+					}
 					return
 				}
 
@@ -1585,6 +1634,12 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 		if clientMetrics != nil {
 			clientMetrics.CheckpointCount.Add(1)
 			clientMetrics.LastCheckpoint.Store(uint64(time.Now().UnixNano()))
+		}
+		
+		// Track in UnifiedState if available
+		if s.unifiedState != nil {
+			atomic.AddUint64(&s.unifiedState.CheckpointCount, 1)
+			atomic.StoreInt64(&s.unifiedState.LastCheckpointNanos, time.Now().UnixNano())
 		}
 	}
 }
@@ -2032,11 +2087,24 @@ func (s *Shard) scheduleAsyncCheckpoint(clientMetrics *ClientMetrics, config *Co
 				clientMetrics.ErrorCount.Add(1)
 				clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
 			}
+			
+			// Track in UnifiedState if available
+			if s.unifiedState != nil {
+				atomic.AddUint64(&s.unifiedState.IndexPersistErrors, 1)
+				atomic.AddUint64(&s.unifiedState.ErrorCount, 1)
+				atomic.StoreInt64(&s.unifiedState.LastErrorNanos, time.Now().UnixNano())
+			}
 		} else {
 			// Track checkpoint metrics
 			if clientMetrics != nil {
 				clientMetrics.CheckpointCount.Add(1)
 				clientMetrics.LastCheckpoint.Store(uint64(time.Now().UnixNano()))
+			}
+			
+			// Track in UnifiedState if available
+			if s.unifiedState != nil {
+				atomic.AddUint64(&s.unifiedState.CheckpointCount, 1)
+				atomic.StoreInt64(&s.unifiedState.LastCheckpointNanos, time.Now().UnixNano())
 			}
 		}
 	}()
@@ -2845,6 +2913,18 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// getAllShards returns all shards for testing purposes
+func (c *Client) getAllShards() map[uint32]*Shard {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	result := make(map[uint32]*Shard, len(c.shards))
+	for k, v := range c.shards {
+		result[k] = v
+	}
+	return result
+}
+
 // GetStats returns current metrics for monitoring
 func (c *Client) GetStats() CometStats {
 	var totalReaders uint64
@@ -2897,4 +2977,72 @@ func (c *Client) GetStats() CometStats {
 		IndexPersistErrors:  c.metrics.IndexPersistErrors.Load(),
 		CompressionWaitNano: c.metrics.CompressionWait.Load(),
 	}
+}
+
+// initUnifiedState initializes the unified state for metrics and coordination
+// In multi-process mode, it's memory-mapped to a file for sharing between processes
+// In single-process mode, it's allocated in regular memory
+func (s *Shard) initUnifiedState(multiProcessMode bool) error {
+	if multiProcessMode {
+		return s.initUnifiedStateMmap()
+	} else {
+		return s.initUnifiedStateMemory()
+	}
+}
+
+// initUnifiedStateMemory initializes unified state in regular memory (single-process mode)
+func (s *Shard) initUnifiedStateMemory() error {
+	s.unifiedState = &UnifiedState{}
+
+	// Initialize version
+	atomic.StoreUint64(&s.unifiedState.Version, UnifiedStateVersion1)
+
+	// Initialize with -1 to indicate "not yet set" for LastEntryNumber
+	atomic.StoreInt64(&s.unifiedState.LastEntryNumber, -1)
+
+	return nil
+}
+
+// initUnifiedStateMmap initializes unified state via memory mapping (multi-process mode)
+func (s *Shard) initUnifiedStateMmap() error {
+	// Create or open the unified state file
+	file, err := os.OpenFile(s.unifiedStatePath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open unified state file: %w", err)
+	}
+	defer file.Close()
+
+	// Ensure file is the correct size
+	stat, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat unified state file: %w", err)
+	}
+
+	if stat.Size() == 0 {
+		// New file - initialize with zeros and set version
+		if err := file.Truncate(UnifiedStateSize); err != nil {
+			return fmt.Errorf("failed to set unified state file size: %w", err)
+		}
+	} else if stat.Size() != UnifiedStateSize {
+		return fmt.Errorf("unified state file has wrong size: got %d, expected %d", stat.Size(), UnifiedStateSize)
+	}
+
+	// Memory map the file
+	data, err := syscall.Mmap(int(file.Fd()), 0, UnifiedStateSize,
+		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	if err != nil {
+		return fmt.Errorf("failed to mmap unified state file: %w", err)
+	}
+
+	s.unifiedStateData = data
+	s.unifiedState = (*UnifiedState)(unsafe.Pointer(&data[0]))
+
+	// Initialize version if this is a new file
+	if stat.Size() == 0 {
+		atomic.StoreUint64(&s.unifiedState.Version, UnifiedStateVersion1)
+		// Initialize with -1 to indicate "not yet set" for LastEntryNumber
+		atomic.StoreInt64(&s.unifiedState.LastEntryNumber, -1)
+	}
+
+	return nil
 }
