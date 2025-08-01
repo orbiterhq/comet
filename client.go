@@ -1056,6 +1056,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	var compressedCount, skippedCount uint64
 
 	// Critical section: prepare write data and update indices
+	var criticalErr error
 	func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -1070,7 +1071,8 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 					if s.handleMissingShardDirectory(err) {
 						s.lastMmapCheck = currentTimestamp
 					} else {
-						panic(fmt.Errorf("failed to reload index after detecting mmap change: %w", err))
+						criticalErr = fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
+						return
 					}
 				} else {
 					s.lastMmapCheck = currentTimestamp
@@ -1548,10 +1550,16 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		// Check if we need to rotate file
 		if s.index.CurrentWriteOffset > config.Storage.MaxFileSize {
 			if err := s.rotateFile(clientMetrics, config); err != nil {
-				panic(err) // Will be caught by deferred recover
+				criticalErr = fmt.Errorf("failed to rotate file: %w", err)
+				return
 			}
 		}
 	}()
+
+	// Check if critical section encountered an error
+	if criticalErr != nil {
+		return nil, criticalErr
+	}
 
 	return writeReq.IDs, nil
 }

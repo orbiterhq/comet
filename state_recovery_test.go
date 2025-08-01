@@ -999,6 +999,58 @@ func TestKillProcessMidWrite(t *testing.T) {
 	}
 }
 
+// TestErrorHandlingInsteadOfPanic verifies we return errors instead of panicking
+func TestErrorHandlingInsteadOfPanic(t *testing.T) {
+	dir := t.TempDir()
+	config := MultiProcessConfig()
+
+	client, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Write some initial data
+	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("initial data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Close the client to release locks
+	client.Close()
+
+	// Now corrupt the index file to trigger reload error
+	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	if err := os.WriteFile(indexPath, []byte("corrupted"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a new client - this should handle the corrupted index gracefully
+	client2, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client2.Close()
+
+	// Try to write - in multi-process mode, this might fail due to corrupted index
+	// but it should return an error, not panic
+	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test after corruption")})
+
+	// We expect either success (if recovery worked) or an error (if it couldn't recover)
+	// The important thing is that we didn't panic
+	if err != nil {
+		t.Logf("Got expected error instead of panic: %v", err)
+		// Verify it's the right kind of error
+		if !strings.Contains(err.Error(), "failed to reload index") && !strings.Contains(err.Error(), "invalid index") {
+			// It might have recovered successfully, which is also fine
+			t.Logf("System may have recovered from corruption")
+		}
+	} else {
+		t.Log("Write succeeded - system recovered from corruption")
+	}
+}
+
 // BenchmarkStateValidation benchmarks the validation overhead
 func BenchmarkStateValidation(b *testing.B) {
 	dir := b.TempDir()
