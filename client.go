@@ -301,11 +301,6 @@ func HighThroughputConfig() CometConfig {
 	return cfg
 }
 
-// migrateConfig migrates deprecated fields to new structure
-func migrateConfig(cfg *CometConfig) {
-	// Currently no migrations needed since we removed all deprecated fields
-}
-
 // validateConfig ensures configuration values are reasonable
 func validateConfig(cfg *CometConfig) error {
 	// Storage validation
@@ -587,9 +582,6 @@ func NewClient(dataDir string) (*Client, error) {
 
 // NewClientWithConfig creates a new comet client with custom configuration
 func NewClientWithConfig(dataDir string, config CometConfig) (*Client, error) {
-	// Migrate deprecated fields to new structure
-	migrateConfig(&config)
-
 	// Validate configuration
 	if err := validateConfig(&config); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
@@ -1725,9 +1717,8 @@ func (s *Shard) initializeMmapWriter(config *CometConfig) error {
 		s.mmapWriter = nil
 	}
 
-	// Create new mmap writer - this will need metrics from somewhere
-	// For recovery, we'll use nil metrics since we don't have access to client metrics here
-	mmapWriter, err := NewMmapWriter(shardDir, config.Storage.MaxFileSize, s.index, nil, s.rotationLockFile)
+	// Create new mmap writer - use existing state
+	mmapWriter, err := NewMmapWriter(shardDir, config.Storage.MaxFileSize, s.index, s.state, s.rotationLockFile)
 	if err != nil {
 		return fmt.Errorf("failed to create mmap writer: %w", err)
 	}
