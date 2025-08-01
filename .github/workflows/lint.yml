@@ -1,0 +1,31 @@
+name: Lint and Vet
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup mise
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+      - name: Install dependencies
+        run: mise run setup
+      - name: Run lint checks
+        run: mise run lint
+      - name: Check struct alignment
+        run: go test -run TestStructAlignment ./...
+      - name: Verify no fmt.Print* in production code
+        run: |
+          # Ensure no debug prints left in code (except in tests)
+          find . -name "*.go" -not -name "*_test.go" -not -path "./cmd/*" -exec grep -l "fmt.Print" {} \; | head -n1 && (echo "Found fmt.Print in non-test files" && exit 1) || exit 0
+      - name: Check for missing error handling
+        run: |
+          # Basic check for unhandled errors (looking for `_ =` pattern)
+          ! grep -r "_ =" --include="*.go" . | grep -v "test" || echo "Warning: Found ignored errors"

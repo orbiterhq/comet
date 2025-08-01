@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(head:*)",
+      "Bash(find:*)",
+      "Bash(mv:*)",
+      "Bash(printf:*)",
+      "Bash(grep:*)",
+      "Bash(go vet:*)",
+      "Bash(go test:*)",
+      "Bash(go tool pprof:*)",
+      "Bash(mise run test:*)",
+      "Bash(mise run lint:*)",
+      "Bash(git stash:*)"
+    ],
+    "deny": []
+  }
+}
