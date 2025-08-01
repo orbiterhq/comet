@@ -71,6 +71,8 @@ Shard Directory Structure:
 ├── sequence.state               # 8-byte sequence counter (multi-process mode)
 ├── coordination.state           # 216-byte mmap coordination state (multi-process mode)
 ├── index.lock                   # Index write lock (multi-process mode)
+├── retention.lock               # Retention coordination lock (multi-process mode)
+├── rotation.lock                # File rotation coordination lock (multi-process mode)
 └── shard.lock                   # Data write lock (multi-process mode)
 ```
 
@@ -149,6 +151,19 @@ Parallel compression with bounded queues. Multiple worker goroutines handle comp
 2. **Access reader** (sync.Map, usually no lock)
 3. **Read from mmap** (atomic pointer, no lock)
 4. **Decompress** (parallel, no lock)
+
+### Multi-Process Lock Files
+
+In multi-process mode, Comet uses specialized lock files for different coordination needs:
+
+| Lock File        | Purpose                    | Frequency | Blocking | Notes                                |
+| ---------------- | -------------------------- | --------- | -------- | ------------------------------------ |
+| `shard.lock`     | Data write coordination    | High      | Yes      | Ensures only one process writes data |
+| `index.lock`     | Index modification safety  | Medium    | Yes      | Prevents concurrent index corruption |
+| `rotation.lock`  | File rotation coordination | Low       | No       | Non-blocking to prevent deadlocks    |
+| `retention.lock` | Retention operation safety | Low       | No       | Non-blocking to prevent hanging      |
+
+**Non-blocking locks** use `LOCK_NB` flag - if another process holds the lock, the operation is skipped rather than waiting. This prevents deadlocks in scenarios where operations can be safely deferred.
 
 ### Lock Hierarchy
 
@@ -271,6 +286,26 @@ This design enables:
 - **Zero system calls** for coordination (just atomic CPU operations)
 - **No lock contention** between writers
 - **Instant visibility** of changes across all processes
+
+##### Coordination Strategy: Mmap vs File Locks
+
+Comet uses a hybrid approach that leverages the strengths of both memory-mapped coordination and OS file locking:
+
+**Memory-Mapped Coordination** (coordination.state):
+
+- **Best for**: High-frequency atomic operations (write offsets, counters, timestamps)
+- **Performance**: Zero system calls, just atomic CPU operations
+- **Reliability**: Excellent for data sharing, but problematic for critical sections
+- **Use cases**: Write coordination, sequence allocation, change detection
+
+**OS File Locking** (*.lock files):
+
+- **Best for**: Critical section coordination (rotation, retention, index updates)
+- **Performance**: Requires system calls, but used infrequently
+- **Reliability**: Automatic cleanup on process crash, prevents deadlocks
+- **Use cases**: File rotation, retention operations, index modifications
+
+**Key Insight**: Memory-mapped atomics are perfect for lock-free data sharing but terrible for critical section locks because they lack OS-level cleanup when processes crash. File locks provide the robustness needed for infrequent but critical operations.
 
 #### Lock-Free Sequence Allocation
 
