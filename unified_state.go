@@ -6,7 +6,7 @@ import (
 	"unsafe"
 )
 
-// UnifiedState consolidates ALL mmap state and comprehensive metrics
+// CometState consolidates ALL mmap state and comprehensive metrics
 // Stored in: comet.state (1KB file per shard)
 // Total size: 1024 bytes (1KB) for plenty of room to grow
 //
@@ -16,7 +16,7 @@ import (
 // 3. Generous reserved space for future additions
 // 4. All fields are atomic-safe for multi-process access
 // 5. CRITICAL: Use raw int64/uint64 fields with atomic operations, NOT atomic.Int64
-type UnifiedState struct {
+type CometState struct {
 	// ======== Header (0-63): Version and core state ========
 	Version          uint64  // 0-7:   Format version (start with 1)
 	WriteOffset      uint64  // 8-15:  Current write position in active file
@@ -122,28 +122,28 @@ type UnifiedState struct {
 }
 
 // Compile-time checks
-const unifiedStateSize = unsafe.Sizeof(UnifiedState{})
+const stateSize = unsafe.Sizeof(CometState{})
 
 func init() {
-	if unifiedStateSize != UnifiedStateSize {
-		panic(fmt.Sprintf("UnifiedState must be exactly %d bytes, got %d", UnifiedStateSize, unifiedStateSize))
+	if stateSize != CometStateSize {
+		panic(fmt.Sprintf("CometState must be exactly %d bytes, got %d", CometStateSize, stateSize))
 	}
-	if unifiedStateSize%64 != 0 {
-		panic("UnifiedState must be 64-byte aligned")
+	if stateSize%64 != 0 {
+		panic("CometState must be 64-byte aligned")
 	}
 }
 
 // Helper methods for non-atomic version field
-func (s *UnifiedState) GetVersion() uint64 {
+func (s *CometState) GetVersion() uint64 {
 	return atomic.LoadUint64(&s.Version)
 }
 
-func (s *UnifiedState) SetVersion(v uint64) {
+func (s *CometState) SetVersion(v uint64) {
 	atomic.StoreUint64(&s.Version, v)
 }
 
 // Helper methods for atomic operations on uint64 fields
-func (s *UnifiedState) GetLastEntryNumber() int64 {
+func (s *CometState) GetLastEntryNumber() int64 {
 	val := atomic.LoadInt64(&s.LastEntryNumber)
 	if false { // Set to true for extreme debugging
 		fmt.Printf("DEBUG GetLastEntryNumber: val=%d, ptr=%p, structPtr=%p\n", val, &s.LastEntryNumber, s)
@@ -151,7 +151,7 @@ func (s *UnifiedState) GetLastEntryNumber() int64 {
 	return val
 }
 
-func (s *UnifiedState) IncrementLastEntryNumber() int64 {
+func (s *CometState) IncrementLastEntryNumber() int64 {
 	oldVal := atomic.LoadInt64(&s.LastEntryNumber)
 	newVal := atomic.AddInt64(&s.LastEntryNumber, 1)
 	afterVal := atomic.LoadInt64(&s.LastEntryNumber)
@@ -163,122 +163,122 @@ func (s *UnifiedState) IncrementLastEntryNumber() int64 {
 	return newVal
 }
 
-func (s *UnifiedState) GetLastIndexUpdate() int64 {
+func (s *CometState) GetLastIndexUpdate() int64 {
 	return atomic.LoadInt64(&s.LastIndexUpdate)
 }
 
-func (s *UnifiedState) SetLastIndexUpdate(nanos int64) {
+func (s *CometState) SetLastIndexUpdate(nanos int64) {
 	atomic.StoreInt64(&s.LastIndexUpdate, nanos)
 }
 
 // WriteOffset methods
-func (s *UnifiedState) GetWriteOffset() uint64 {
+func (s *CometState) GetWriteOffset() uint64 {
 	return atomic.LoadUint64(&s.WriteOffset)
 }
 
-func (s *UnifiedState) AddWriteOffset(delta uint64) uint64 {
+func (s *CometState) AddWriteOffset(delta uint64) uint64 {
 	return atomic.AddUint64(&s.WriteOffset, delta)
 }
 
-func (s *UnifiedState) StoreWriteOffset(val uint64) {
+func (s *CometState) StoreWriteOffset(val uint64) {
 	atomic.StoreUint64(&s.WriteOffset, val)
 }
 
 // ActiveFileIndex methods
-func (s *UnifiedState) GetActiveFileIndex() uint64 {
+func (s *CometState) GetActiveFileIndex() uint64 {
 	return atomic.LoadUint64(&s.ActiveFileIndex)
 }
 
-func (s *UnifiedState) AddActiveFileIndex(delta uint64) uint64 {
+func (s *CometState) AddActiveFileIndex(delta uint64) uint64 {
 	return atomic.AddUint64(&s.ActiveFileIndex, delta)
 }
 
-func (s *UnifiedState) StoreActiveFileIndex(val uint64) {
+func (s *CometState) StoreActiveFileIndex(val uint64) {
 	atomic.StoreUint64(&s.ActiveFileIndex, val)
 }
 
 // FileSize methods
-func (s *UnifiedState) GetFileSize() uint64 {
+func (s *CometState) GetFileSize() uint64 {
 	return atomic.LoadUint64(&s.FileSize)
 }
 
-func (s *UnifiedState) StoreFileSize(val uint64) {
+func (s *CometState) StoreFileSize(val uint64) {
 	atomic.StoreUint64(&s.FileSize, val)
 }
 
 // LastFileSequence methods
-func (s *UnifiedState) AddLastFileSequence(delta uint64) uint64 {
+func (s *CometState) AddLastFileSequence(delta uint64) uint64 {
 	return atomic.AddUint64(&s.LastFileSequence, delta)
 }
 
 // TotalWrites methods
-func (s *UnifiedState) GetTotalWrites() uint64 {
+func (s *CometState) GetTotalWrites() uint64 {
 	return atomic.LoadUint64(&s.TotalWrites)
 }
 
-func (s *UnifiedState) AddTotalWrites(delta uint64) uint64 {
+func (s *CometState) AddTotalWrites(delta uint64) uint64 {
 	return atomic.AddUint64(&s.TotalWrites, delta)
 }
 
 // LastWriteNanos methods
-func (s *UnifiedState) GetLastWriteNanos() int64 {
+func (s *CometState) GetLastWriteNanos() int64 {
 	return atomic.LoadInt64(&s.LastWriteNanos)
 }
 
-func (s *UnifiedState) StoreLastWriteNanos(val int64) {
+func (s *CometState) StoreLastWriteNanos(val int64) {
 	atomic.StoreInt64(&s.LastWriteNanos, val)
 }
 
 // TotalEntries methods
-func (s *UnifiedState) AddTotalEntries(delta int64) int64 {
+func (s *CometState) AddTotalEntries(delta int64) int64 {
 	return atomic.AddInt64(&s.TotalEntries, delta)
 }
 
 // TotalBytes methods
-func (s *UnifiedState) AddTotalBytes(delta uint64) uint64 {
+func (s *CometState) AddTotalBytes(delta uint64) uint64 {
 	return atomic.AddUint64(&s.TotalBytes, delta)
 }
 
 // FileRotations methods
-func (s *UnifiedState) AddFileRotations(delta uint64) uint64 {
+func (s *CometState) AddFileRotations(delta uint64) uint64 {
 	return atomic.AddUint64(&s.FileRotations, delta)
 }
 
 // FilesCreated methods
-func (s *UnifiedState) AddFilesCreated(delta uint64) uint64 {
+func (s *CometState) AddFilesCreated(delta uint64) uint64 {
 	return atomic.AddUint64(&s.FilesCreated, delta)
 }
 
 // MinWriteLatency methods
-func (s *UnifiedState) GetMinWriteLatency() uint64 {
+func (s *CometState) GetMinWriteLatency() uint64 {
 	return atomic.LoadUint64(&s.MinWriteLatency)
 }
 
-func (s *UnifiedState) CompareAndSwapMinWriteLatency(old, new uint64) bool {
+func (s *CometState) CompareAndSwapMinWriteLatency(old, new uint64) bool {
 	return atomic.CompareAndSwapUint64(&s.MinWriteLatency, old, new)
 }
 
 // MaxWriteLatency methods
-func (s *UnifiedState) GetMaxWriteLatency() uint64 {
+func (s *CometState) GetMaxWriteLatency() uint64 {
 	return atomic.LoadUint64(&s.MaxWriteLatency)
 }
 
-func (s *UnifiedState) CompareAndSwapMaxWriteLatency(old, new uint64) bool {
+func (s *CometState) CompareAndSwapMaxWriteLatency(old, new uint64) bool {
 	return atomic.CompareAndSwapUint64(&s.MaxWriteLatency, old, new)
 }
 
 // WriteLatencySum methods
-func (s *UnifiedState) AddWriteLatencySum(delta uint64) uint64 {
+func (s *CometState) AddWriteLatencySum(delta uint64) uint64 {
 	return atomic.AddUint64(&s.WriteLatencySum, delta)
 }
 
 // WriteLatencyCount methods
-func (s *UnifiedState) AddWriteLatencyCount(delta uint64) uint64 {
+func (s *CometState) AddWriteLatencyCount(delta uint64) uint64 {
 	return atomic.AddUint64(&s.WriteLatencyCount, delta)
 }
 
 // Computed metrics helpers
-func (s *UnifiedState) GetAverageWriteLatency() uint64 {
+func (s *CometState) GetAverageWriteLatency() uint64 {
 	count := atomic.LoadUint64(&s.WriteLatencyCount)
 	if count == 0 {
 		return 0
@@ -286,7 +286,7 @@ func (s *UnifiedState) GetAverageWriteLatency() uint64 {
 	return atomic.LoadUint64(&s.WriteLatencySum) / count
 }
 
-func (s *UnifiedState) GetCompressionRatioFloat() float64 {
+func (s *CometState) GetCompressionRatioFloat() float64 {
 	compressed := atomic.LoadUint64(&s.TotalCompressed)
 	original := atomic.LoadUint64(&s.TotalBytes)
 	if original == 0 {
@@ -295,7 +295,7 @@ func (s *UnifiedState) GetCompressionRatioFloat() float64 {
 	return float64(compressed) / float64(original)
 }
 
-func (s *UnifiedState) GetErrorRate() float64 {
+func (s *CometState) GetErrorRate() float64 {
 	errors := atomic.LoadUint64(&s.ErrorCount)
 	writes := atomic.LoadUint64(&s.TotalWrites)
 	if writes == 0 {
@@ -306,7 +306,7 @@ func (s *UnifiedState) GetErrorRate() float64 {
 
 // UpdateWriteLatency updates latency metrics with a new sample
 // Note: nanos should be uint64 since latencies are always positive
-func (s *UnifiedState) UpdateWriteLatency(nanos uint64) {
+func (s *CometState) UpdateWriteLatency(nanos uint64) {
 	atomic.AddUint64(&s.WriteLatencySum, nanos)
 	atomic.AddUint64(&s.WriteLatencyCount, 1)
 
@@ -335,6 +335,6 @@ func (s *UnifiedState) UpdateWriteLatency(nanos uint64) {
 
 // Constants for the unified state
 const (
-	UnifiedStateVersion1 = 1
-	UnifiedStateSize     = 1024
+	CometStateVersion1 = 1
+	CometStateSize     = 1024
 )

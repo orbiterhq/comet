@@ -177,16 +177,8 @@ func TestIndexRebuildIntegration(t *testing.T) {
 
 	// Delete index and coordination files to force rebuild
 	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
-	coordPath := filepath.Join(dir, "shard-0001", "coordination.state")
-	sequencePath := filepath.Join(dir, "shard-0001", "sequence.state")
 
 	if err := os.Remove(indexPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(coordPath); err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	if err := os.Remove(sequencePath); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 

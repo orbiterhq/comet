@@ -202,16 +202,19 @@ func testCoordinationAllocator(role string) {
 	}
 
 	// Record allocations to prove atomicity
-	coordState := shard.mmapWriter.CoordinationState()
+	if shard.mmapWriter.state == nil {
+		fmt.Printf("%s: no mmap state available\n", role)
+		return
+	}
 	allocations := make([][2]int64, 0, 50) // [start, end] pairs
 
 	for i := 0; i < 50; i++ {
 		// Simulate allocation
-		size := int64(60) // Fixed size for easy verification
-		startOffset := coordState.WriteOffset.Add(size) - size
+		size := uint64(60) // Fixed size for easy verification
+		startOffset := shard.mmapWriter.state.AddWriteOffset(size) - size
 		endOffset := startOffset + size - 1
 
-		allocations = append(allocations, [2]int64{startOffset, endOffset})
+		allocations = append(allocations, [2]int64{int64(startOffset), int64(endOffset)})
 
 		// Small delay to increase chance of interleaving
 		time.Sleep(1 * time.Millisecond)

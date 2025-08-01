@@ -105,15 +105,15 @@ func TestRetentionMultiProcess(t *testing.T) {
 	shard, _ := client.getOrCreateShard(1)
 	shard.mu.RLock()
 	initialFiles := len(shard.index.Files)
-	hasSequenceCounter := shard.sequenceCounter != nil
+	hasCometState := shard.state != nil
 	currentFile := shard.index.CurrentFile
 	for i, file := range shard.index.Files {
 		t.Logf("File %d: %s (current: %t)", i, file.Path, file.Path == currentFile)
 	}
 	shard.mu.RUnlock()
 
-	if !hasSequenceCounter {
-		t.Error("Multi-process mode should have sequence counter")
+	if !hasCometState {
+		t.Error("Multi-process mode should have unified state")
 	}
 
 	if initialFiles < 2 {

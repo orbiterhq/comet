@@ -563,9 +563,9 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	atomic.AddInt64(&shard.readerCount, 1)
 	defer atomic.AddInt64(&shard.readerCount, -1)
 
-	// Check mmap state for instant change detection
-	if shard.mmapState != nil {
-		currentTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+	// Check unified state for instant change detection
+	if shard.state != nil {
+		currentTimestamp := shard.state.GetLastIndexUpdate()
 		if currentTimestamp != shard.lastMmapCheck {
 			// Index changed - reload it under write lock
 			shard.mu.Lock()
@@ -579,7 +579,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 
 				// In multi-process mode, check if we need to rebuild index from files
 				// We can tell we're in multi-process mode if mmapState exists
-				if shard.mmapState != nil {
+				if shard.state != nil {
 					shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
 					shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
 				}
@@ -620,10 +620,10 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()
 
-	// In multi-process mode, check if index might be stale by comparing with coordination state
-	if shard.mmapState != nil && shard.mmapWriter != nil {
-		totalWrites := shard.mmapWriter.CoordinationState().TotalWrites.Load()
-		if totalWrites > endEntryNum {
+	// In multi-process mode, check if index might be stale by comparing with state
+	if shard.state != nil && shard.mmapWriter != nil && shard.mmapWriter.state != nil {
+		totalWrites := shard.mmapWriter.state.GetTotalWrites()
+		if totalWrites > uint64(endEntryNum) {
 			// Need write lock for rebuild
 			shard.mu.Lock()
 			shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
@@ -694,7 +694,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		if err != nil {
 			// In multi-process mode, if index-based lookup fails, try direct file scanning
 			// This handles the case where the index is incomplete but the data exists in files
-			if shard.mmapState != nil && !strings.Contains(err.Error(), "no files in shard") {
+			if shard.state != nil && !strings.Contains(err.Error(), "no files in shard") {
 				position, err = c.scanDataFilesForEntry(shard, entryNum)
 			}
 
@@ -905,9 +905,9 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 		return 0, err
 	}
 
-	// Check mmap state for instant change detection
-	if shard.mmapState != nil {
-		currentTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+	// Check unified state for instant change detection
+	if shard.state != nil {
+		currentTimestamp := shard.state.GetLastIndexUpdate()
 		if currentTimestamp != shard.lastMmapCheck {
 			// Index changed - reload it under write lock
 			shard.mu.Lock()
@@ -1014,9 +1014,9 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 		return nil, err
 	}
 
-	// Check mmap state for instant change detection
-	if shard.mmapState != nil {
-		currentTimestamp := atomic.LoadInt64(&shard.mmapState.LastUpdateNanos)
+	// Check unified state for instant change detection
+	if shard.state != nil {
+		currentTimestamp := shard.state.GetLastIndexUpdate()
 		if currentTimestamp != shard.lastMmapCheck {
 			// Index changed - reload it under write lock
 			shard.mu.Lock()
