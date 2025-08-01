@@ -12,7 +12,8 @@
       "Bash(go tool pprof:*)",
       "Bash(mise run test:*)",
       "Bash(mise run lint:*)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(dprint fmt:*)"
     ],
     "deny": []
   }

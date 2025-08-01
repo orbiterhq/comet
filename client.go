@@ -2749,19 +2749,29 @@ func parseShardFromStream(stream string) (uint32, error) {
 // Close gracefully shuts down the client
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closed {
+		c.mu.Unlock()
 		return nil
 	}
-
 	c.closed = true
 
-	// Stop retention manager
+	// Stop retention manager - close the channel while holding lock to prevent races
+	var shouldWait bool
 	if c.stopCh != nil {
 		close(c.stopCh)
+		shouldWait = true
+	}
+	c.mu.Unlock()
+
+	// Wait for retention manager to finish AFTER releasing the lock
+	// This prevents deadlock where retention goroutine needs RLock while we hold Lock
+	if shouldWait {
 		c.retentionWg.Wait()
 	}
+
+	// Re-acquire lock for shard cleanup
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// Close all shards
 	for _, shard := range c.shards {
