@@ -361,22 +361,22 @@ func (s *CometState) UpdateWriteLatency(nanos uint64) {
 	} else {
 		// Always ensure P99 >= P50
 		currentP50Again := atomic.LoadUint64(&s.P50WriteLatency)
-		
+
 		if nanos > currentP99 {
 			// New high value - this becomes our new P99
 			atomic.StoreUint64(&s.P99WriteLatency, nanos)
 		} else {
 			// Decay P99 very slowly (0.999 factor)
 			newP99 := (currentP99 * 999) / 1000
-			
+
 			// But ensure P99 never goes below P50
 			if newP99 < currentP50Again {
-				newP99 = currentP50Again * 2 // Keep P99 at least 2x P50
+				newP99 = currentP50Again * 2  // Keep P99 at least 2x P50
 				if newP99 < currentP50Again { // Handle overflow
 					newP99 = currentP50Again
 				}
 			}
-			
+
 			atomic.StoreUint64(&s.P99WriteLatency, newP99)
 		}
 	}

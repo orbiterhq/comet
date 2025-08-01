@@ -76,7 +76,7 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 func BenchmarkLatencyMetrics(b *testing.B) {
 	dir := b.TempDir()
 	config := MultiProcessConfig()
-	
+
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatal(err)

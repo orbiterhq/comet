@@ -75,17 +75,17 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 		wg.Add(1)
 		go func(role string, duration time.Duration) {
 			defer wg.Done()
-			
+
 			ctx, cancel := context.WithTimeout(context.Background(), duration)
 			defer cancel()
-			
+
 			cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessMetricsIntegration$", "-test.v")
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("COMET_METRICS_WORKER=%s", role),
 				fmt.Sprintf("COMET_METRICS_DIR=%s", dir),
 				"GO_TEST_SUBPROCESS=1",
 			)
-			
+
 			output, err := cmd.CombinedOutput()
 			t.Logf("Worker %s output:\n%s", role, output)
 			if err != nil && ctx.Err() != context.DeadlineExceeded {
@@ -120,7 +120,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			totalEntries := atomic.LoadInt64(&shard.state.TotalEntries)
 			totalBytes := atomic.LoadUint64(&shard.state.TotalBytes)
 			lastWriteNanos := atomic.LoadInt64(&shard.state.LastWriteNanos)
-			
+
 			if totalWrites == 0 {
 				t.Error("TotalWrites = 0, expected > 0")
 			}
@@ -133,8 +133,8 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			if lastWriteNanos == 0 {
 				t.Error("LastWriteNanos = 0, expected > 0")
 			}
-			
-			t.Logf("Write metrics: writes=%d, entries=%d, bytes=%d", 
+
+			t.Logf("Write metrics: writes=%d, entries=%d, bytes=%d",
 				totalWrites, totalEntries, totalBytes)
 		})
 
@@ -144,16 +144,16 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			skippedCompression := atomic.LoadUint64(&shard.state.SkippedCompression)
 			compressionRatio := atomic.LoadUint64(&shard.state.CompressionRatio)
 			compressionTimeNanos := atomic.LoadInt64(&shard.state.CompressionTimeNanos)
-			
+
 			if compressedEntries == 0 {
 				t.Error("CompressedEntries = 0, expected > 0")
 			}
 			if skippedCompression == 0 {
 				t.Error("SkippedCompression = 0, expected > 0")
 			}
-			
+
 			t.Logf("Compression metrics: compressed=%d, skipped=%d, ratio=%d%%, time=%dms",
-				compressedEntries, skippedCompression, compressionRatio, 
+				compressedEntries, skippedCompression, compressionRatio,
 				compressionTimeNanos/1e6)
 		})
 
@@ -164,7 +164,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			maxLatency := atomic.LoadUint64(&shard.state.MaxWriteLatency)
 			p50Latency := atomic.LoadUint64(&shard.state.P50WriteLatency)
 			p99Latency := atomic.LoadUint64(&shard.state.P99WriteLatency)
-			
+
 			if writeLatencyCount == 0 {
 				t.Error("WriteLatencyCount = 0, expected > 0")
 			}
@@ -177,9 +177,9 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			if p99Latency < p50Latency {
 				t.Errorf("P99 (%d) < P50 (%d)", p99Latency, p50Latency)
 			}
-			
+
 			t.Logf("Latency metrics: count=%d, min=%dus, max=%dus, p50=%dus, p99=%dus",
-				writeLatencyCount, minLatency/1000, maxLatency/1000, 
+				writeLatencyCount, minLatency/1000, maxLatency/1000,
 				p50Latency/1000, p99Latency/1000)
 		})
 
@@ -189,12 +189,12 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			fileRotations := atomic.LoadUint64(&shard.state.FileRotations)
 			currentFiles := atomic.LoadUint64(&shard.state.CurrentFiles)
 			totalFileBytes := atomic.LoadUint64(&shard.state.TotalFileBytes)
-			
+
 			if filesCreated == 0 {
 				t.Error("FilesCreated = 0, expected > 0")
 			}
 			// Note: FileRotations may be 0 if files didn't fill up enough to rotate
-			// Multiple processes may create their own initial files (FilesCreated) 
+			// Multiple processes may create their own initial files (FilesCreated)
 			// but rotation only happens when a file reaches MaxFileSize
 			if fileRotations > 0 {
 				t.Logf("File rotations occurred: %d", fileRotations)
@@ -207,7 +207,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			if totalFileBytes == 0 {
 				t.Error("TotalFileBytes = 0, expected > 0")
 			}
-			
+
 			t.Logf("File metrics: created=%d, rotations=%d, current=%d, bytes=%d",
 				filesCreated, fileRotations, currentFiles, totalFileBytes)
 		})
@@ -219,7 +219,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			totalReaders := atomic.LoadUint64(&shard.state.TotalReaders)
 			consumerGroups := atomic.LoadUint64(&shard.state.ConsumerGroups)
 			ackedEntries := atomic.LoadUint64(&shard.state.AckedEntries)
-			
+
 			if totalEntriesRead == 0 {
 				t.Error("TotalEntriesRead = 0, expected > 0")
 			}
@@ -229,7 +229,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			if consumerGroups == 0 {
 				t.Error("ConsumerGroups = 0, expected > 0")
 			}
-			
+
 			t.Logf("Reader metrics: entriesRead=%d, activeReaders=%d, totalReaders=%d, groups=%d, acked=%d",
 				totalEntriesRead, activeReaders, totalReaders, consumerGroups, ackedEntries)
 		})
@@ -241,25 +241,25 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			bytesReclaimed := atomic.LoadUint64(&shard.state.BytesReclaimed)
 			entriesDeleted := atomic.LoadUint64(&shard.state.EntriesDeleted)
 			oldestEntryNanos := atomic.LoadInt64(&shard.state.OldestEntryNanos)
-			
+
 			if retentionRuns == 0 {
 				t.Error("RetentionRuns = 0, expected > 0")
 			}
-			
+
 			// Log file information for debugging
 			shard.mu.RLock()
 			fileCount := len(shard.index.Files)
 			var fileInfo []string
 			for i, f := range shard.index.Files {
-				fileInfo = append(fileInfo, fmt.Sprintf("file[%d]: entries=%d, start=%v", 
+				fileInfo = append(fileInfo, fmt.Sprintf("file[%d]: entries=%d, start=%v",
 					i, f.Entries, f.StartTime.Format("15:04:05.000")))
 			}
 			shard.mu.RUnlock()
-			
+
 			t.Logf("Retention metrics: runs=%d, filesDeleted=%d, bytesReclaimed=%d, entriesDeleted=%d",
 				retentionRuns, filesDeleted, bytesReclaimed, entriesDeleted)
 			t.Logf("File count: %d, files: %v", fileCount, fileInfo)
-			
+
 			if oldestEntryNanos == 0 {
 				t.Error("OldestEntryNanos = 0, expected > 0")
 			} else {
@@ -274,11 +274,11 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			contentionCount := atomic.LoadUint64(&shard.state.ContentionCount)
 			lockWaitNanos := atomic.LoadInt64(&shard.state.LockWaitNanos)
 			mmapRemapCount := atomic.LoadUint64(&shard.state.MMAPRemapCount)
-			
+
 			// These should be tracked during multi-process operations
 			t.Logf("Multi-process metrics: processes=%d, contentions=%d, lockWait=%dms, remaps=%d",
 				processCount, contentionCount, lockWaitNanos/1e6, mmapRemapCount)
-			
+
 			// At minimum, verify they're accessible without panics
 			_ = atomic.LoadUint64(&shard.state.FalseShareCount)
 			_ = atomic.LoadInt64(&shard.state.LastProcessHeartbeat)
@@ -289,7 +289,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			errorCount := atomic.LoadUint64(&shard.state.ErrorCount)
 			failedWrites := atomic.LoadUint64(&shard.state.FailedWrites)
 			readErrors := atomic.LoadUint64(&shard.state.ReadErrors)
-			
+
 			t.Logf("Error metrics: errors=%d, failedWrites=%d, readErrors=%d",
 				errorCount, failedWrites, readErrors)
 		})
@@ -310,7 +310,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 				{"LastFileSequence", atomic.LoadUint64(&shard.state.LastFileSequence)},
 				// ... (all 70 metrics would be listed in production)
 			}
-			
+
 			nonZeroCount := 0
 			for _, m := range metrics {
 				switch v := m.value.(type) {
@@ -324,7 +324,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 					}
 				}
 			}
-			
+
 			t.Logf("Accessed %d metrics, %d have non-zero values", len(metrics), nonZeroCount)
 		})
 	})
@@ -367,12 +367,12 @@ func runMetricsWorker(t *testing.T, role string) {
 				// Small data
 				data = []byte(fmt.Sprintf(`{"w":"%s","i":%d}`, role, i))
 			}
-			
+
 			_, err := client.Append(ctx, streamName, [][]byte{data})
 			if err != nil {
 				t.Logf("Worker %s: write error: %v", role, err)
 			}
-			
+
 			time.Sleep(10 * time.Millisecond)
 		}
 
@@ -384,12 +384,12 @@ func runMetricsWorker(t *testing.T, role string) {
 			for j := range data {
 				data[j] = 'X' // All same character = high compression
 			}
-			
+
 			_, err := client.Append(ctx, streamName, [][]byte{data})
 			if err != nil {
 				t.Logf("Worker %s: write error: %v", role, err)
 			}
-			
+
 			time.Sleep(20 * time.Millisecond)
 		}
 
@@ -397,7 +397,7 @@ func runMetricsWorker(t *testing.T, role string) {
 		// Create consumers and read data
 		consumer := NewConsumer(client, ConsumerOptions{Group: role})
 		defer consumer.Close()
-		
+
 		totalRead := 0
 		for i := 0; i < 50; i++ {
 			messages, err := consumer.Read(ctx, []uint32{1}, 10)
@@ -405,16 +405,16 @@ func runMetricsWorker(t *testing.T, role string) {
 				t.Logf("Worker %s: read error: %v", role, err)
 				continue
 			}
-			
+
 			totalRead += len(messages)
-			
+
 			// ACK some messages
 			for j, msg := range messages {
 				if j%2 == 0 { // ACK every other message
 					consumer.Ack(ctx, msg.ID)
 				}
 			}
-			
+
 			time.Sleep(20 * time.Millisecond)
 		}
 		t.Logf("Worker %s: read %d total messages", role, totalRead)

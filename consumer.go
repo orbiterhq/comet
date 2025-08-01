@@ -983,7 +983,7 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 
 	// Entry-based lag calculation
 	lag := shard.index.CurrentEntryNumber - consumerEntry
-	
+
 	// Track max consumer lag
 	if shard.state != nil && lag > 0 {
 		// Update max lag if this is higher
@@ -997,7 +997,7 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 			}
 		}
 	}
-	
+
 	return lag, nil
 }
 

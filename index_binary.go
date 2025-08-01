@@ -85,21 +85,21 @@ func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
 		// Pre-allocate buffer for all nodes (20 bytes per node)
 		nodeBuf := make([]byte, nodeCount*20)
 		offset := 0
-		
+
 		for _, node := range index.BinaryIndex.Nodes {
 			// EntryNumber (8 bytes)
 			binary.LittleEndian.PutUint64(nodeBuf[offset:], uint64(node.EntryNumber))
 			offset += 8
-			
+
 			// FileIndex (4 bytes)
 			binary.LittleEndian.PutUint32(nodeBuf[offset:], uint32(node.Position.FileIndex))
 			offset += 4
-			
+
 			// ByteOffset (8 bytes)
 			binary.LittleEndian.PutUint64(nodeBuf[offset:], uint64(node.Position.ByteOffset))
 			offset += 8
 		}
-		
+
 		if _, err := f.Write(nodeBuf); err != nil {
 			return err
 		}
@@ -113,18 +113,18 @@ func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
 		for _, file := range index.Files {
 			estimatedSize += 2 + len(file.Path) + 48
 		}
-		
+
 		buf := make([]byte, 0, estimatedSize)
-		
+
 		for _, file := range index.Files {
 			// Write path length (2 bytes)
 			pathBytes := []byte(file.Path)
 			pathLen := uint16(len(pathBytes))
 			buf = append(buf, byte(pathLen), byte(pathLen>>8))
-			
+
 			// Write path
 			buf = append(buf, pathBytes...)
-			
+
 			// Write file metadata (48 bytes total)
 			metaBuf := make([]byte, 48)
 			binary.LittleEndian.PutUint64(metaBuf[0:], uint64(file.StartOffset))
@@ -133,10 +133,10 @@ func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
 			binary.LittleEndian.PutUint64(metaBuf[24:], uint64(file.Entries))
 			binary.LittleEndian.PutUint64(metaBuf[32:], uint64(file.StartTime.UnixNano()))
 			binary.LittleEndian.PutUint64(metaBuf[40:], uint64(file.EndTime.UnixNano()))
-			
+
 			buf = append(buf, metaBuf...)
 		}
-		
+
 		if _, err := f.Write(buf); err != nil {
 			return err
 		}

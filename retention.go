@@ -86,7 +86,7 @@ func (c *Client) startRetentionManager() {
 // runRetentionCleanup performs a single cleanup pass
 func (c *Client) runRetentionCleanup() {
 	start := time.Now()
-	
+
 	c.mu.RLock()
 	shards := make([]*Shard, 0, len(c.shards))
 	for _, shard := range c.shards {
@@ -110,7 +110,7 @@ func (c *Client) runRetentionCleanup() {
 		// Need to delete more files to get under total limit
 		c.enforceGlobalSizeLimit(shards, totalSize)
 	}
-	
+
 	// Update retention time metrics
 	duration := time.Since(start)
 	for _, shard := range shards {
@@ -263,7 +263,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 	if len(filesToDelete) > 0 {
 		c.deleteFiles(shard, filesToDelete, &c.metrics)
 	}
-	
+
 	// Update oldest entry timestamp
 	if shard.state != nil {
 		if len(filesToKeep) > 0 {
@@ -355,7 +355,7 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 
 	// Persist the updated index while still holding the lock
 	shard.persistIndex()
-	
+
 	// Now we can release the lock - all index modifications are complete
 	shard.mu.Unlock()
 
@@ -363,7 +363,7 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	deletedCount := 0
 	var bytesReclaimed uint64
 	var entriesDeleted uint64
-	
+
 	for _, file := range files {
 		err := os.Remove(file.Path)
 		if err != nil && !os.IsNotExist(err) {

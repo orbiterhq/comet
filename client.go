@@ -978,12 +978,12 @@ func (s *Shard) preCompressEntries(entries [][]byte, config *CometConfig) []Comp
 			compressionStart := time.Now()
 			compressedData := s.compressor.EncodeAll(data, nil)
 			compressionDuration := time.Since(compressionStart)
-			
+
 			// Track compression time
 			if s.state != nil {
 				atomic.AddInt64(&s.state.CompressionTimeNanos, compressionDuration.Nanoseconds())
 			}
-			
+
 			compressed[i] = CompressedEntry{
 				Data:           compressedData,
 				OriginalSize:   originalSize,
@@ -1430,7 +1430,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		atomic.AddUint64(&s.state.TotalCompressed, totalCompressedBytes)
 		atomic.AddUint64(&s.state.CompressedEntries, compressedCount)
 		atomic.AddUint64(&s.state.SkippedCompression, skippedCount)
-		
+
 		// Batch metrics
 		atomic.StoreUint64(&s.state.CurrentBatchSize, uint64(len(entries)))
 		atomic.AddUint64(&s.state.TotalBatches, 1)
@@ -2151,7 +2151,7 @@ func (s *Shard) cloneIndex() *ShardIndex {
 func (s *Shard) persistIndex() error {
 	// Clone the index - caller already holds lock
 	indexCopy := s.cloneIndex()
-	
+
 	// Calculate total file bytes while we have the index
 	if s.state != nil {
 		var totalBytes uint64
@@ -2168,7 +2168,7 @@ func (s *Shard) persistIndex() error {
 	if err == nil {
 		// Only update mmap state after successful persistence
 		s.updateMmapState()
-		
+
 		// Track successful index persistence
 		if s.state != nil {
 			atomic.AddUint64(&s.state.IndexPersistCount, 1)
@@ -2532,7 +2532,7 @@ func (s *Shard) openDataFileWithConfig(shardDir string, config *CometConfig) err
 	}
 
 	s.dataFile = file
-	
+
 	// Track file creation if this is a new file
 	if s.state != nil {
 		// Check if file was newly created
@@ -2692,15 +2692,15 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 		if s.state != nil {
 			atomic.AddUint64(&s.state.FileRotations, 1)
 		}
-		
+
 		// Don't persist index on every rotation - it will be persisted during checkpoints
 		// This avoids performance issues with frequent rotations
-		
+
 		// But update the metrics that would have been updated by persistIndex
 		if s.state != nil {
 			// Update file count metric
 			atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
-			
+
 			// Calculate and update total file size
 			var totalBytes uint64
 			for _, file := range s.index.Files {
@@ -2777,15 +2777,15 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 	if err := s.openDataFileWithConfig(shardDir, config); err != nil {
 		return err
 	}
-	
+
 	// Don't persist index on every rotation - it will be persisted during checkpoints
 	// This avoids performance issues with frequent rotations
-	
+
 	// But update the metrics that would have been updated by persistIndex
 	if s.state != nil {
 		// Update file count metric
 		atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
-		
+
 		// Calculate and update total file size
 		var totalBytes uint64
 		for _, file := range s.index.Files {
@@ -2793,7 +2793,7 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 		}
 		atomic.StoreUint64(&s.state.TotalFileBytes, totalBytes)
 	}
-	
+
 	return nil
 }
 
