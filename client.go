@@ -394,6 +394,7 @@ type Shard struct {
 	lockFile          *os.File         // File lock for multi-writer safety
 	indexLockFile     *os.File         // Separate lock for index writes
 	retentionLockFile *os.File         // Separate lock for retention operations
+	rotationLockFile  *os.File         // Separate lock for file rotation operations
 	mmapState         *MmapSharedState // Memory-mapped coordination state
 	sequenceState     *SequenceState   // Memory-mapped sequence state for entry numbers
 	sequenceFile      *os.File         // File handle for sequence counter
@@ -404,6 +405,7 @@ type Shard struct {
 	indexStatePath    string // Path to index state file
 	indexLockPath     string // Path to index lock file
 	retentionLockPath string // Path to retention lock file
+	rotationLockPath  string // Path to rotation lock file
 	sequenceStatePath string // Path to sequence counter file
 	indexStateData    []byte // Memory-mapped index state data (slice header: 24 bytes)
 	sequenceStateData []byte // Memory-mapped sequence state data (slice header: 24 bytes)
@@ -866,6 +868,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		indexStatePath:    filepath.Join(shardDir, "index.state"),
 		indexLockPath:     filepath.Join(shardDir, "index.lock"),
 		retentionLockPath: filepath.Join(shardDir, "retention.lock"),
+		rotationLockPath:  filepath.Join(shardDir, "rotation.lock"),
 		sequenceStatePath: filepath.Join(shardDir, "sequence.state"),
 		index: &ShardIndex{
 			BoundaryInterval: c.config.Indexing.BoundaryInterval,
@@ -904,6 +907,16 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 			return nil, fmt.Errorf("failed to create retention lock file: %w", err)
 		}
 		shard.retentionLockFile = retentionLockFile
+
+		// Separate rotation lock for coordinating file rotation operations
+		rotationLockFile, err := os.OpenFile(shard.rotationLockPath, os.O_CREATE|os.O_RDWR, 0644)
+		if err != nil {
+			lockFile.Close()
+			indexLockFile.Close()
+			retentionLockFile.Close()
+			return nil, fmt.Errorf("failed to create rotation lock file: %w", err)
+		}
+		shard.rotationLockFile = rotationLockFile
 	}
 
 	// Initialize mmap shared state only if file locking is enabled
@@ -916,7 +929,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		}
 
 		// Initialize memory-mapped writer for ultra-fast writes
-		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, &c.metrics)
+		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, &c.metrics, shard.rotationLockFile)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize mmap writer: %w", err)
 		}
@@ -2648,6 +2661,9 @@ func (c *Client) Close() error {
 		}
 		if shard.retentionLockFile != nil {
 			shard.retentionLockFile.Close()
+		}
+		if shard.rotationLockFile != nil {
+			shard.rotationLockFile.Close()
 		}
 		if shard.sequenceFile != nil {
 			shard.sequenceFile.Close()

@@ -14,17 +14,16 @@ import (
 // MmapCoordinationState represents shared state for ultra-fast multi-process coordination
 type MmapCoordinationState struct {
 	// Core coordination fields
-	ActiveFileIndex    atomic.Int64 // Current file being written to
-	WriteOffset        atomic.Int64 // Current write position in active file
-	FileSize           atomic.Int64 // Current size of active file
-	RotationInProgress atomic.Int64 // 1 if rotation is happening, 0 otherwise
+	ActiveFileIndex atomic.Int64 // Current file being written to
+	WriteOffset     atomic.Int64 // Current write position in active file
+	FileSize        atomic.Int64 // Current size of active file
 
 	// Performance tracking
 	LastWriteNanos atomic.Int64 // Timestamp of last write
 	TotalWrites    atomic.Int64 // Total number of writes
 
 	// Reserved for future use
-	_reserved [168]byte // Adjusted for atomic types (each atomic.Int64 is 8 bytes)
+	_reserved [176]byte // Adjusted for atomic types (each atomic.Int64 is 8 bytes)
 }
 
 // CoordinationState returns the coordination state for external access
@@ -56,8 +55,9 @@ type MmapWriter struct {
 	maxFileSize     int64 // Max file size before rotation (default: 1GB)
 
 	// References for index updates
-	index   *ShardIndex
-	metrics *ClientMetrics
+	index            *ShardIndex
+	metrics          *ClientMetrics
+	rotationLockFile *os.File // File lock for rotation coordination
 
 	// Metrics
 	remapCount    int64
@@ -65,7 +65,7 @@ type MmapWriter struct {
 }
 
 // NewMmapWriter creates a new memory-mapped writer for a shard
-func NewMmapWriter(shardDir string, maxFileSize int64, index *ShardIndex, metrics *ClientMetrics) (*MmapWriter, error) {
+func NewMmapWriter(shardDir string, maxFileSize int64, index *ShardIndex, metrics *ClientMetrics, rotationLockFile *os.File) (*MmapWriter, error) {
 	w := &MmapWriter{
 		shardDir:         shardDir,
 		coordinationPath: shardDir + "/coordination.state",
@@ -75,6 +75,7 @@ func NewMmapWriter(shardDir string, maxFileSize int64, index *ShardIndex, metric
 		maxFileSize:      maxFileSize,
 		index:            index,
 		metrics:          metrics,
+		rotationLockFile: rotationLockFile,
 	}
 
 	// Initialize coordination state
@@ -380,15 +381,17 @@ func (w *MmapWriter) growFile(minSize int64) error {
 
 // rotateFile handles file rotation when the current file is full
 func (w *MmapWriter) rotateFile() error {
-	// Try to acquire rotation lock
-	if !w.coordinationState.RotationInProgress.CompareAndSwap(0, 1) {
-		// Another process is rotating, wait for it
-		for w.coordinationState.RotationInProgress.Load() == 1 {
-			time.Sleep(1 * time.Millisecond)
+	// Use proper file locking for multi-process coordination
+	if w.rotationLockFile != nil {
+		// Use non-blocking try-lock to avoid hanging if another process is rotating
+		if err := syscall.Flock(int(w.rotationLockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			// Another process is rotating - just return, they'll handle it
+			return nil
 		}
-		return nil
+		defer syscall.Flock(int(w.rotationLockFile.Fd()), syscall.LOCK_UN)
 	}
-	defer w.coordinationState.RotationInProgress.Store(0)
+	// Note: For single-process mode (rotationLockFile == nil), rotation is already
+	// protected by the shard mutex in the caller, so no additional coordination needed.
 
 	// Close current file
 	w.mu.Lock()

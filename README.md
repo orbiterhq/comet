@@ -10,6 +10,9 @@ Comet is a segmented append-only log optimized for observability data (metrics, 
 
 Each shard maintains a series of immutable segment files that are rotated at size boundaries and deleted based on retention policies, ensuring predictable resource usage without the complexity of circular buffers or in-place overwrites.
 
+Comet requires local filesystems (ext4, xfs, etc.) for its microsecond latency guarantees. It is unapologetically _local_. If you need distributed storage,
+use a proper distributed system like NATS JetStream or Kafka instead.
+
 ### The Edge Storage Problem
 
 Edge deployments need local observability buffering, but other solutions fall short:
@@ -255,6 +258,7 @@ consumer.Ack(ctx, messageIDs...)
 
 ❌ **Not for:**
 
+- Network filesystems (NFS, CIFS, etc.)
 - Long-term storage (use S3/GCS)
 - Transactional data requiring ACID
 - Random access patterns

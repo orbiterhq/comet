@@ -246,12 +246,11 @@ The `coordination.state` file is the heart of Comet's ultra-fast multi-process c
 
 ```go
 type MmapCoordinationState struct {
-    ActiveFileIndex    atomic.Int64  // Current file being written to
-    WriteOffset        atomic.Int64  // Current write position in active file
-    FileSize           atomic.Int64  // Current size of active file
-    RotationInProgress atomic.Int64  // 1 if rotation is happening, 0 otherwise
-    LastWriteNanos     atomic.Int64  // Timestamp of last write
-    TotalWrites        atomic.Int64  // Total number of writes
+    ActiveFileIndex atomic.Int64  // Current file being written to
+    WriteOffset     atomic.Int64  // Current write position in active file
+    FileSize        atomic.Int64  // Current size of active file
+    LastWriteNanos  atomic.Int64  // Timestamp of last write
+    TotalWrites     atomic.Int64  // Total number of writes
     // ... additional fields for padding/alignment
 }
 ```
@@ -261,7 +260,7 @@ type MmapCoordinationState struct {
 1. **Memory-Mapped Shared State**: All processes map this file into their address space
 2. **Lock-Free Operations**: Atomic operations ensure consistency without locks
 3. **Write Coordination**: Processes atomically reserve space in the current data file
-4. **File Rotation**: Coordinated through RotationInProgress flag
+4. **File Rotation**: Coordinated through OS file locking (rotation.lock)
 5. **Staleness Detection**: TotalWrites helps detect when indexes need rebuilding
 
 ##### Performance Impact
