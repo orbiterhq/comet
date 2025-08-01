@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
-	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -232,6 +231,8 @@ type CometConfig struct {
 
 	// Retention policy
 	Retention RetentionConfig `json:"retention"`
+	// Logging configuration
+	Log LogConfig `json:"log"`
 }
 
 // DefaultCometConfig returns sensible defaults optimized for logging workloads
@@ -356,6 +357,7 @@ func validateConfig(cfg *CometConfig) error {
 type Client struct {
 	dataDir     string
 	config      CometConfig
+	logger      Logger
 	shards      map[uint32]*Shard
 	metrics     ClientMetrics
 	mu          sync.RWMutex
@@ -384,6 +386,7 @@ type Shard struct {
 	// NOTE: mmapState and sequenceState replaced by state
 	mmapWriter *MmapWriter // Memory-mapped writer for ultra-fast multi-process writes
 	state      *CometState // NEW: Unified memory-mapped state for all metrics and coordination
+	logger     Logger      // Logger for this shard
 
 	// Strings (24 bytes: ptr + len + cap)
 	indexPath         string // Path to index file
@@ -591,9 +594,18 @@ func NewClientWithConfig(dataDir string, config CometConfig) (*Client, error) {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
+	// Create logger based on config
+	logger := createLogger(config.Log)
+
+	// Set debug mode from config
+	if config.Log.EnableDebug {
+		SetDebug(true)
+	}
+
 	c := &Client{
 		dataDir: dataDir,
 		config:  config,
+		logger:  logger,
 		shards:  make(map[uint32]*Shard),
 		stopCh:  make(chan struct{}),
 	}
@@ -844,6 +856,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 
 	shard = &Shard{
 		shardID:           shardID,
+		logger:            c.logger.WithFields("shard", shardID),
 		indexPath:         filepath.Join(shardDir, "index.bin"),
 		indexLockPath:     filepath.Join(shardDir, "index.lock"),
 		retentionLockPath: filepath.Join(shardDir, "retention.lock"),
@@ -947,6 +960,15 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	}
 
 	c.shards[shardID] = shard
+
+	// Debug log shard creation
+	if Debug && c.logger != nil {
+		c.logger.Debug("Created new shard",
+			"shardID", shardID,
+			"path", shardDir,
+			"multiProcess", c.config.Concurrency.EnableMultiProcessMode)
+	}
+
 	return shard, nil
 }
 
@@ -1123,9 +1145,10 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 					// Use CometState for entry number allocation
 					entryNumbers[i] = s.state.IncrementLastEntryNumber() - 1
 
-					if false { // Enable for debugging
-						log.Printf("Shard %d: allocated entry %d",
-							s.shardID, entryNumbers[i])
+					if Debug && s.logger != nil {
+						s.logger.Debug("Allocated entry",
+							"shard", s.shardID,
+							"entryNumber", entryNumbers[i])
 					}
 				}
 			} else {
@@ -1206,9 +1229,12 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			finalWriteOffset := writeOffset
 
 			// DEBUG: Log entry number calculation
-			if false { // Enable for debugging
-				log.Printf("Shard %d: entryNumbers=%v, finalEntryNumber=%d, initialEntryNumber=%d",
-					s.shardID, entryNumbers, finalEntryNumber, initialEntryNumber)
+			if Debug && s.logger != nil {
+				s.logger.Debug("Entry number calculation",
+					"shard", s.shardID,
+					"entryNumbers", entryNumbers,
+					"finalEntryNumber", finalEntryNumber,
+					"initialEntryNumber", initialEntryNumber)
 			}
 			writeReq.UpdateFunc = func() error {
 				s.mu.Lock()
@@ -2682,6 +2708,18 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 		clientMetrics.TotalFiles.Add(1)
 		if s.state != nil {
 			atomic.AddUint64(&s.state.FileRotations, 1)
+		}
+
+		// Debug log file rotation
+		if Debug && s.logger != nil {
+			var oldFile string
+			if len(s.index.Files) > 1 {
+				oldFile = s.index.Files[len(s.index.Files)-2].Path
+			}
+			s.logger.Debug("File rotated",
+				"oldFile", filepath.Base(oldFile),
+				"newFile", filepath.Base(newPath),
+				"totalFiles", len(s.index.Files))
 		}
 
 		// Don't persist index on every rotation - it will be persisted during checkpoints

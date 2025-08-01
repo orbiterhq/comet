@@ -118,6 +118,26 @@ func (c *Client) runRetentionCleanup() {
 			atomic.AddInt64(&shard.state.RetentionTimeNanos, duration.Nanoseconds())
 		}
 	}
+
+	// Debug log retention summary
+	if Debug && c.logger != nil {
+		var totalFiles, deletedFiles int
+		for _, shard := range shards {
+			shard.mu.RLock()
+			totalFiles += len(shard.index.Files)
+			shard.mu.RUnlock()
+			if shard.state != nil {
+				deletedFiles += int(atomic.LoadUint64(&shard.state.FilesDeleted))
+			}
+		}
+		c.logger.Debug("Retention cleanup completed",
+			"shards", len(shards),
+			"totalFiles", totalFiles,
+			"totalSizeMB", totalSize/(1<<20),
+			"duration", duration,
+			"maxAge", c.config.Retention.MaxAge,
+			"maxSizeMB", c.config.Retention.MaxTotalSize/(1<<20))
+	}
 }
 
 // cleanupShard cleans up old files in a single shard

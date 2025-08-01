@@ -58,8 +58,13 @@ func (s *Shard) validateAndRecoverState() error {
 
 // recoverCorruptedState handles corrupted state by resetting to safe defaults
 func (s *Shard) recoverCorruptedState(reason string) error {
-	// Log the corruption (in production, this would go to proper logging)
-	fmt.Printf("WARN: Corrupted state detected in shard %s: %s. Recovering...\n", s.indexPath, reason)
+	// Log the corruption
+	if s.logger != nil {
+		s.logger.Warn("Corrupted state detected, recovering...",
+			"shard", s.shardID,
+			"indexPath", s.indexPath,
+			"reason", reason)
+	}
 
 	// Store recovery counts to restore after reinit
 	var prevRecoveryAttempts uint64

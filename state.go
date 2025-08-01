@@ -145,7 +145,7 @@ func (s *CometState) SetVersion(v uint64) {
 // Helper methods for atomic operations on uint64 fields
 func (s *CometState) GetLastEntryNumber() int64 {
 	val := atomic.LoadInt64(&s.LastEntryNumber)
-	if false { // Set to true for extreme debugging
+	if Debug {
 		fmt.Printf("DEBUG GetLastEntryNumber: val=%d, ptr=%p, structPtr=%p\n", val, &s.LastEntryNumber, s)
 	}
 	return val
@@ -156,7 +156,7 @@ func (s *CometState) IncrementLastEntryNumber() int64 {
 	newVal := atomic.AddInt64(&s.LastEntryNumber, 1)
 	afterVal := atomic.LoadInt64(&s.LastEntryNumber)
 
-	if false {
+	if Debug {
 		fmt.Printf("DEBUG IncrementLastEntryNumber: old=%d, returned=%d, after=%d, ptr=%p, fieldPtr=%p\n",
 			oldVal, newVal, afterVal, s, &s.LastEntryNumber)
 	}
