@@ -942,8 +942,16 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	}
 
 	// Recover from crash if needed
+	// Track recovery attempt
+	if shard.state != nil {
+		atomic.AddUint64(&shard.state.RecoveryAttempts, 1)
+	}
 	if err := shard.recoverFromCrash(); err != nil {
 		return nil, err
+	}
+	// Recovery successful if we got here
+	if shard.state != nil {
+		atomic.AddUint64(&shard.state.RecoverySuccesses, 1)
 	}
 
 	c.shards[shardID] = shard
@@ -967,7 +975,15 @@ func (s *Shard) preCompressEntries(entries [][]byte, config *CometConfig) []Comp
 
 		if len(data) >= config.Compression.MinCompressSize && s.compressor != nil {
 			// Compress the data
+			compressionStart := time.Now()
 			compressedData := s.compressor.EncodeAll(data, nil)
+			compressionDuration := time.Since(compressionStart)
+			
+			// Track compression time
+			if s.state != nil {
+				atomic.AddInt64(&s.state.CompressionTimeNanos, compressionDuration.Nanoseconds())
+			}
+			
 			compressed[i] = CompressedEntry{
 				Data:           compressedData,
 				OriginalSize:   originalSize,
@@ -1377,6 +1393,8 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			if s.state != nil {
 				atomic.AddUint64(&s.state.ErrorCount, 1)
 				atomic.StoreInt64(&s.state.LastErrorNanos, time.Now().UnixNano())
+				// Track failed write batch
+				atomic.AddUint64(&s.state.FailedWrites, 1)
 			}
 
 			// Rollback index state
@@ -1412,12 +1430,20 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		atomic.AddUint64(&s.state.TotalCompressed, totalCompressedBytes)
 		atomic.AddUint64(&s.state.CompressedEntries, compressedCount)
 		atomic.AddUint64(&s.state.SkippedCompression, skippedCount)
+		
+		// Batch metrics
+		atomic.StoreUint64(&s.state.CurrentBatchSize, uint64(len(entries)))
+		atomic.AddUint64(&s.state.TotalBatches, 1)
 	}
 
 	// Update latency metrics using EMA
 	if totalOriginalBytes > 0 && totalCompressedBytes > 0 {
 		ratio := (totalOriginalBytes * 100) / totalCompressedBytes // x100 for fixed point
 		clientMetrics.CompressionRatio.Store(ratio)
+		// Also update in shard state
+		if s.state != nil {
+			atomic.StoreUint64(&s.state.CompressionRatio, ratio)
+		}
 	}
 
 	// Track write latency with min/max
@@ -2125,12 +2151,34 @@ func (s *Shard) cloneIndex() *ShardIndex {
 func (s *Shard) persistIndex() error {
 	// Clone the index - caller already holds lock
 	indexCopy := s.cloneIndex()
+	
+	// Calculate total file bytes while we have the index
+	if s.state != nil {
+		var totalBytes uint64
+		for _, file := range s.index.Files {
+			totalBytes += uint64(file.EndOffset - file.StartOffset)
+		}
+		atomic.StoreUint64(&s.state.TotalFileBytes, totalBytes)
+		// Also update current files count
+		atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
+	}
 
 	// Use binary format for efficiency
 	err := s.saveBinaryIndex(indexCopy)
 	if err == nil {
 		// Only update mmap state after successful persistence
 		s.updateMmapState()
+		
+		// Track successful index persistence
+		if s.state != nil {
+			atomic.AddUint64(&s.state.IndexPersistCount, 1)
+			atomic.StoreInt64(&s.state.LastIndexUpdate, time.Now().UnixNano())
+			// Update binary index node count
+			atomic.StoreUint64(&s.state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
+		}
+	} else if s.state != nil {
+		// Track failed index persistence
+		atomic.AddUint64(&s.state.IndexPersistErrors, 1)
 	}
 	return err
 }
@@ -2221,6 +2269,10 @@ func (s *Shard) loadIndex() error {
 
 		// Try to rebuild index from existing data files
 		shardDir := filepath.Dir(s.indexPath)
+		// Track recovery attempt
+		if s.state != nil {
+			atomic.AddUint64(&s.state.RecoveryAttempts, 1)
+		}
 		if err := s.rebuildIndexFromDataFiles(shardDir); err != nil {
 			// Log the error but don't fail - empty index is better than nothing
 			// This allows new shards to start fresh
@@ -2234,6 +2286,10 @@ func (s *Shard) loadIndex() error {
 		if len(s.index.Files) > 0 {
 			if err := s.persistIndex(); err != nil {
 				return fmt.Errorf("failed to persist rebuilt index: %w", err)
+			}
+			// Track recovery success if we successfully rebuilt from files
+			if s.state != nil {
+				atomic.AddUint64(&s.state.RecoverySuccesses, 1)
 			}
 		}
 
@@ -2349,6 +2405,11 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 		s.index.CurrentEntryNumber = lastFile.StartEntry + lastFile.Entries
 	}
 
+	// Track recovery success
+	if s.state != nil {
+		atomic.AddUint64(&s.state.RecoverySuccesses, 1)
+	}
+
 	return nil
 }
 
@@ -2399,6 +2460,10 @@ func (s *Shard) scanDataFile(filePath string) (*FileInfo, error) {
 
 		// Validate entry
 		if length > 100*1024*1024 { // 100MB max
+			// Track corruption detection
+			if s.state != nil {
+				atomic.AddUint64(&s.state.CorruptionDetected, 1)
+			}
 			break // Corrupted entry
 		}
 
@@ -2467,6 +2532,18 @@ func (s *Shard) openDataFileWithConfig(shardDir string, config *CometConfig) err
 	}
 
 	s.dataFile = file
+	
+	// Track file creation if this is a new file
+	if s.state != nil {
+		// Check if file was newly created
+		fileInfo, err := file.Stat()
+		if err == nil && fileInfo.Size() == 0 {
+			// New file created
+			atomic.AddUint64(&s.state.FilesCreated, 1)
+		}
+		// Update current file count
+		atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
+	}
 
 	// Create buffered writer
 	// In multi-process mode, use smaller buffer to reduce conflicts
@@ -2503,6 +2580,7 @@ func (s *Shard) recoverFromCrash() error {
 	offset := s.index.CurrentWriteOffset
 	validEntries := int64(0)
 	var lastEntryOffset int64
+	partialWriteDetected := false
 
 	// Open file for reading
 	f, err := os.Open(s.index.CurrentFile)
@@ -2514,6 +2592,7 @@ func (s *Shard) recoverFromCrash() error {
 	// Scan entries until EOF or corruption
 	for offset < actualSize {
 		if offset+headerSize > actualSize {
+			partialWriteDetected = true
 			break // Incomplete header
 		}
 
@@ -2524,6 +2603,7 @@ func (s *Shard) recoverFromCrash() error {
 
 		length := binary.LittleEndian.Uint32(header[0:4])
 		if offset+headerSize+int64(length) > actualSize {
+			partialWriteDetected = true
 			break // Incomplete entry
 		}
 
@@ -2558,6 +2638,11 @@ func (s *Shard) recoverFromCrash() error {
 			FileIndex:  len(s.index.Files) - 1,
 			ByteOffset: lastEntryOffset,
 		})
+	}
+
+	// Track partial write if detected
+	if partialWriteDetected && s.state != nil {
+		atomic.AddUint64(&s.state.PartialWrites, 1)
 	}
 
 	return nil
@@ -2604,6 +2689,25 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 		// Track file rotation
 		clientMetrics.FileRotations.Add(1)
 		clientMetrics.TotalFiles.Add(1)
+		if s.state != nil {
+			atomic.AddUint64(&s.state.FileRotations, 1)
+		}
+		
+		// Don't persist index on every rotation - it will be persisted during checkpoints
+		// This avoids performance issues with frequent rotations
+		
+		// But update the metrics that would have been updated by persistIndex
+		if s.state != nil {
+			// Update file count metric
+			atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
+			
+			// Calculate and update total file size
+			var totalBytes uint64
+			for _, file := range s.index.Files {
+				totalBytes += uint64(file.EndOffset - file.StartOffset)
+			}
+			atomic.StoreUint64(&s.state.TotalFileBytes, totalBytes)
+		}
 
 		return nil
 	}
@@ -2660,6 +2764,9 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 	// Track file rotation
 	clientMetrics.FileRotations.Add(1)
 	clientMetrics.TotalFiles.Add(1)
+	if s.state != nil {
+		atomic.AddUint64(&s.state.FileRotations, 1)
+	}
 
 	// Ensure the shard directory exists before trying to create the new file
 	if err := os.MkdirAll(shardDir, 0755); err != nil {
@@ -2667,7 +2774,27 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 	}
 
 	// Open with preallocation and setup
-	return s.openDataFileWithConfig(shardDir, config)
+	if err := s.openDataFileWithConfig(shardDir, config); err != nil {
+		return err
+	}
+	
+	// Don't persist index on every rotation - it will be persisted during checkpoints
+	// This avoids performance issues with frequent rotations
+	
+	// But update the metrics that would have been updated by persistIndex
+	if s.state != nil {
+		// Update file count metric
+		atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
+		
+		// Calculate and update total file size
+		var totalBytes uint64
+		for _, file := range s.index.Files {
+			totalBytes += uint64(file.EndOffset - file.StartOffset)
+		}
+		atomic.StoreUint64(&s.state.TotalFileBytes, totalBytes)
+	}
+	
+	return nil
 }
 
 // parseShardFromStream extracts shard ID from stream name

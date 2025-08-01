@@ -331,6 +331,55 @@ func (s *CometState) UpdateWriteLatency(nanos uint64) {
 			break
 		}
 	}
+
+	// Update approximate percentiles using exponential weighted moving average
+	// This is a simple approximation - for accurate percentiles, use a histogram
+	// Note: This uses integer arithmetic to avoid floating point in atomic operations
+
+	// Update P50 (median approximation)
+	currentP50 := atomic.LoadUint64(&s.P50WriteLatency)
+	if currentP50 == 0 {
+		// Initialize with first value
+		atomic.StoreUint64(&s.P50WriteLatency, nanos)
+	} else {
+		// EWMA with alpha=0.05: new = 0.05 * current + 0.95 * old
+		// Using integer math: new = (5 * current + 95 * old) / 100
+		newP50 := (5*nanos + 95*currentP50) / 100
+		atomic.StoreUint64(&s.P50WriteLatency, newP50)
+	}
+
+	// Update P99 (99th percentile approximation)
+	// For P99, we maintain a high watermark that decays slowly
+	currentP99 := atomic.LoadUint64(&s.P99WriteLatency)
+	if currentP99 == 0 {
+		// Initialize with first value, but higher than P50
+		initialP99 := nanos * 2 // Start with 2x the first value
+		if initialP99 < nanos {
+			initialP99 = nanos // Handle overflow
+		}
+		atomic.StoreUint64(&s.P99WriteLatency, initialP99)
+	} else {
+		// Always ensure P99 >= P50
+		currentP50Again := atomic.LoadUint64(&s.P50WriteLatency)
+		
+		if nanos > currentP99 {
+			// New high value - this becomes our new P99
+			atomic.StoreUint64(&s.P99WriteLatency, nanos)
+		} else {
+			// Decay P99 very slowly (0.999 factor)
+			newP99 := (currentP99 * 999) / 1000
+			
+			// But ensure P99 never goes below P50
+			if newP99 < currentP50Again {
+				newP99 = currentP50Again * 2 // Keep P99 at least 2x P50
+				if newP99 < currentP50Again { // Handle overflow
+					newP99 = currentP50Again
+				}
+			}
+			
+			atomic.StoreUint64(&s.P99WriteLatency, newP99)
+		}
+	}
 }
 
 // Constants for the unified state

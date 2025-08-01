@@ -131,6 +131,16 @@ func (w *MmapWriter) openCurrentFile() error {
 				StartTime:   time.Now(),
 				Entries:     0,
 			})
+			
+			// Track file creation metric
+			if fileSize == 0 || createNew {
+				w.state.AddFilesCreated(1)
+			}
+			
+			// If this is the first file (no other files exist), set OldestEntryNanos
+			if len(w.index.Files) == 1 && atomic.LoadInt64(&w.state.OldestEntryNanos) == 0 {
+				atomic.StoreInt64(&w.state.OldestEntryNanos, time.Now().UnixNano())
+			}
 		}
 	}
 
@@ -282,6 +292,11 @@ func (w *MmapWriter) Write(entries [][]byte, entryNumbers []uint64) error {
 
 	w.state.AddTotalEntries(int64(len(entries)))
 	w.state.AddTotalBytes(uint64(totalBytes))
+	
+	// If this is the first write ever (OldestEntryNanos not set), set it
+	if atomic.LoadInt64(&w.state.OldestEntryNanos) == 0 {
+		atomic.StoreInt64(&w.state.OldestEntryNanos, now)
+	}
 
 	// Note: Index updates are handled by the caller (shard) which holds the appropriate locks
 	// We only update the coordination state here
