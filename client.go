@@ -154,6 +154,21 @@ type CometStats struct {
 	CompressionWaitNano uint64 `json:"compression_wait_nano"`
 }
 
+// Health represents the health status of the Comet client
+type Health struct {
+	Status        string    `json:"status"`    // "healthy", "degraded", "unhealthy"
+	Healthy       bool      `json:"healthy"`   // Simple boolean for quick checks
+	WritesOK      bool      `json:"writes_ok"` // Can we write data?
+	ReadsOK       bool      `json:"reads_ok"`  // Can we read data?
+	LastWriteTime time.Time `json:"last_write_time"`
+	LastErrorTime time.Time `json:"last_error_time"`
+	ErrorCount    uint64    `json:"error_count"`
+	ActiveShards  int       `json:"active_shards"`
+	TotalFiles    uint64    `json:"total_files"`
+	Uptime        string    `json:"uptime"`
+	Details       string    `json:"details,omitempty"` // Optional details about issues
+}
+
 // ClientMetrics holds atomic counters for thread-safe metrics tracking
 type ClientMetrics struct {
 	TotalEntries       atomic.Uint64
@@ -364,6 +379,7 @@ type Client struct {
 	closed      bool
 	retentionWg sync.WaitGroup
 	stopCh      chan struct{}
+	startTime   time.Time
 }
 
 // Shard represents a single stream shard with its own files
@@ -603,11 +619,12 @@ func NewClientWithConfig(dataDir string, config CometConfig) (*Client, error) {
 	}
 
 	c := &Client{
-		dataDir: dataDir,
-		config:  config,
-		logger:  logger,
-		shards:  make(map[uint32]*Shard),
-		stopCh:  make(chan struct{}),
+		dataDir:   dataDir,
+		config:    config,
+		logger:    logger,
+		shards:    make(map[uint32]*Shard),
+		stopCh:    make(chan struct{}),
+		startTime: time.Now(),
 	}
 
 	// Start retention manager if configured
@@ -3017,6 +3034,122 @@ func (c *Client) GetStats() CometStats {
 		IndexPersistErrors:  c.metrics.IndexPersistErrors.Load(),
 		CompressionWaitNano: c.metrics.CompressionWait.Load(),
 	}
+}
+
+// Health returns the current health status of the Comet client
+func (c *Client) Health() Health {
+	c.mu.RLock()
+	shardCount := len(c.shards)
+	c.mu.RUnlock()
+
+	// Get current stats
+	stats := c.GetStats()
+
+	// Calculate uptime
+	uptime := time.Since(c.startTime)
+	uptimeStr := uptime.Truncate(time.Second).String()
+
+	// Determine health status
+	health := Health{
+		Healthy:      true,
+		Status:       "healthy",
+		WritesOK:     true,
+		ReadsOK:      true,
+		ActiveShards: shardCount,
+		TotalFiles:   stats.TotalFiles,
+		ErrorCount:   stats.ErrorCount,
+		Uptime:       uptimeStr,
+	}
+
+	// Check last write time across all shards
+	var lastWriteNano int64
+	c.mu.RLock()
+	for _, shard := range c.shards {
+		if shard.state != nil {
+			shardLastWrite := atomic.LoadInt64(&shard.state.LastWriteNanos)
+			if shardLastWrite > lastWriteNano {
+				lastWriteNano = shardLastWrite
+			}
+		}
+	}
+	c.mu.RUnlock()
+
+	if lastWriteNano > 0 {
+		health.LastWriteTime = time.Unix(0, lastWriteNano)
+	}
+
+	// Check last error time
+	if stats.LastErrorNano > 0 {
+		health.LastErrorTime = time.Unix(0, int64(stats.LastErrorNano))
+
+		// If error was recent (within 1 minute), mark as degraded
+		if time.Since(health.LastErrorTime) < time.Minute {
+			health.Status = "degraded"
+			health.Details = "Recent errors detected"
+		}
+	}
+
+	// Check for high error rate
+	if stats.TotalEntries > 0 && stats.ErrorCount > 0 {
+		errorRate := float64(stats.ErrorCount) / float64(stats.TotalEntries)
+		if errorRate > 0.01 { // More than 1% error rate
+			health.Status = "degraded"
+			health.Healthy = false
+			health.WritesOK = false
+			if health.Details != "" {
+				health.Details += "; "
+			}
+			health.Details += fmt.Sprintf("High error rate: %.2f%%", errorRate*100)
+		}
+	}
+
+	// Check if we've written recently (within 5 minutes)
+	if health.LastWriteTime.IsZero() || time.Since(health.LastWriteTime) > 5*time.Minute {
+		// No recent writes, but this might be normal for low-traffic systems
+		// Don't mark as unhealthy, just note it
+		if stats.TotalEntries == 0 {
+			if health.Details != "" {
+				health.Details += "; "
+			}
+			health.Details += "No data written yet"
+		}
+	}
+
+	// Check for index persist errors
+	if stats.IndexPersistErrors > 0 {
+		health.Status = "degraded"
+		if health.Details != "" {
+			health.Details += "; "
+		}
+		health.Details += fmt.Sprintf("Index persist errors: %d", stats.IndexPersistErrors)
+	}
+
+	// Simple ping test - try to access a shard
+	if shardCount > 0 {
+		// Try to get any shard to verify basic functionality
+		c.mu.RLock()
+		for _, shard := range c.shards {
+			// Just accessing the shard and checking if we can read its state
+			if shard.state == nil {
+				health.ReadsOK = false
+				health.Status = "unhealthy"
+				health.Healthy = false
+				if health.Details != "" {
+					health.Details += "; "
+				}
+				health.Details += "Shard state unavailable"
+			}
+			break // Just check one shard
+		}
+		c.mu.RUnlock()
+	}
+
+	// Set final health status
+	if health.Status == "unhealthy" {
+		health.Healthy = false
+	}
+
+	return health
 }
 
 // initCometState initializes the unified state for metrics and coordination

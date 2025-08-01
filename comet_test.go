@@ -761,6 +761,85 @@ func TestClient_LoggingOptimization(t *testing.T) {
 	}
 }
 
+func TestHealth(t *testing.T) {
+	dir := t.TempDir()
+	client, err := NewClient(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// Test initial health - no data written
+	health := client.Health()
+	if !health.Healthy {
+		t.Error("Expected healthy status for new client")
+	}
+	if health.Status != "healthy" {
+		t.Errorf("Expected status 'healthy', got %s", health.Status)
+	}
+	if health.ActiveShards != 0 {
+		t.Errorf("Expected 0 active shards, got %d", health.ActiveShards)
+	}
+	if health.Details != "No data written yet" {
+		t.Errorf("Expected 'No data written yet' details, got %s", health.Details)
+	}
+
+	// Write some data
+	ctx := context.Background()
+	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check health after writing
+	health = client.Health()
+	if !health.Healthy {
+		t.Error("Expected healthy status after write")
+	}
+	if health.ActiveShards != 1 {
+		t.Errorf("Expected 1 active shard, got %d", health.ActiveShards)
+	}
+	if !health.WritesOK || !health.ReadsOK {
+		t.Error("Expected writes and reads to be OK")
+	}
+	if health.LastWriteTime.IsZero() {
+		t.Error("Expected non-zero last write time")
+	}
+	if health.ErrorCount != 0 {
+		t.Errorf("Expected 0 errors, got %d", health.ErrorCount)
+	}
+
+	// Simulate errors by incrementing error counter
+	client.metrics.ErrorCount.Add(10)
+	client.metrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
+
+	// Check health with recent errors
+	health = client.Health()
+	if health.Status != "degraded" {
+		t.Errorf("Expected degraded status with recent errors, got %s", health.Status)
+	}
+	if !strings.Contains(health.Details, "Recent errors detected") {
+		t.Errorf("Expected error details, got %s", health.Details)
+	}
+
+	// Test high error rate
+	client.metrics.TotalEntries.Store(100)
+	client.metrics.ErrorCount.Store(5) // 5% error rate
+
+	health = client.Health()
+	if health.Healthy {
+		t.Error("Expected unhealthy with high error rate")
+	}
+	if !strings.Contains(health.Details, "High error rate") {
+		t.Errorf("Expected high error rate details, got %s", health.Details)
+	}
+
+	// Test uptime
+	if !strings.Contains(health.Uptime, "s") {
+		t.Errorf("Expected uptime to contain seconds, got %s", health.Uptime)
+	}
+}
+
 func TestDebugLogging(t *testing.T) {
 	// Enable debug mode
 	originalDebug := Debug

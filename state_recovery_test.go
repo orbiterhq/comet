@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TestValidateAndRecoverState tests state validation logic
@@ -838,6 +839,164 @@ func TestStateWithInvalidFilename(t *testing.T) {
 	// ActiveFileIndex should remain unchanged when filename is invalid
 	fileIndex := atomic.LoadUint64(&shard.state.ActiveFileIndex)
 	t.Logf("ActiveFileIndex after invalid filename: %d", fileIndex)
+}
+
+// TestCorruptedFileRecovery tests recovery from corrupted data files
+func TestCorruptedFileRecovery(t *testing.T) {
+	dir := t.TempDir()
+	config := DefaultCometConfig()
+
+	client, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Write some data
+	testData := [][]byte{
+		[]byte("entry 1"),
+		[]byte("entry 2"),
+		[]byte("entry 3"),
+	}
+
+	ids, err := client.Append(ctx, "test:v1:shard:0001", testData)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Force sync to ensure data is on disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the data file path
+	shard, _ := client.getOrCreateShard(1)
+	shard.mu.RLock()
+	dataFile := shard.index.CurrentFile
+	shard.mu.RUnlock()
+
+	client.Close()
+
+	// Corrupt the data file by writing garbage in the middle
+	file, err := os.OpenFile(dataFile, os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seek to middle of file and write garbage
+	stat, _ := file.Stat()
+	file.Seek(stat.Size()/2, 0)
+	file.Write([]byte("CORRUPTED_DATA_HERE"))
+	file.Close()
+
+	// Reopen client
+	client2, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client2.Close()
+
+	// Try to read - should handle corruption gracefully
+	consumer := NewConsumer(client2, ConsumerOptions{Group: "test"})
+	defer consumer.Close()
+
+	messages, err := consumer.Read(ctx, []uint32{1}, 10)
+	// We expect some entries might be unreadable due to corruption
+	// But the system should not crash
+	if err != nil {
+		t.Logf("Read error (expected): %v", err)
+	}
+
+	t.Logf("Read %d messages out of %d after corruption", len(messages), len(ids))
+
+	// Verify we can still write new data
+	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("new entry after corruption")})
+	if err != nil {
+		t.Errorf("Failed to write after corruption: %v", err)
+	}
+}
+
+// TestKillProcessMidWrite tests recovery from process death during write
+func TestKillProcessMidWrite(t *testing.T) {
+	dir := t.TempDir()
+	config := DefaultCometConfig()
+
+	client, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// Write some initial data
+	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("initial data")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Prepare large batch that will take time to write
+	largeBatch := make([][]byte, 1000)
+	for i := range largeBatch {
+		largeBatch[i] = make([]byte, 1000) // 1KB each
+		for j := range largeBatch[i] {
+			largeBatch[i][j] = byte(i % 256)
+		}
+	}
+
+	// Start write in background
+	writeCtx, cancel := context.WithCancel(ctx)
+	writeDone := make(chan error)
+	var writeCount int
+
+	go func() {
+		for i := 0; i < 10; i++ {
+			_, err := client.Append(writeCtx, "test:v1:shard:0001", largeBatch)
+			if err != nil {
+				writeDone <- err
+				return
+			}
+			writeCount = i + 1
+		}
+		writeDone <- nil
+	}()
+
+	// Kill the write mid-operation
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// Wait for write to finish (should error due to context cancellation)
+	err = <-writeDone
+	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+		// Write might have completed before cancel, which is fine
+		t.Logf("Write result: %v (completed %d batches)", err, writeCount)
+	}
+
+	client.Close()
+
+	// Simulate process restart by creating new client
+	client2, err := NewClientWithConfig(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client2.Close()
+
+	// Verify we can read what was written
+	consumer := NewConsumer(client2, ConsumerOptions{Group: "test"})
+	defer consumer.Close()
+
+	messages, err := consumer.Read(ctx, []uint32{1}, 100000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("Successfully read %d messages after simulated crash", len(messages))
+
+	// Verify we can continue writing
+	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("data after restart")})
+	if err != nil {
+		t.Errorf("Failed to write after restart: %v", err)
+	}
 }
 
 // BenchmarkStateValidation benchmarks the validation overhead
