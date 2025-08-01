@@ -1033,9 +1033,15 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			if currentTimestamp != s.lastMmapCheck {
 				// Index changed - reload it with retry for EOF errors
 				if err := s.loadIndexWithRetry(); err != nil {
-					panic(fmt.Errorf("failed to reload index after detecting mmap change: %w", err))
+					// Try to handle missing directory gracefully
+					if s.handleMissingShardDirectory(err) {
+						s.lastMmapCheck = currentTimestamp
+					} else {
+						panic(fmt.Errorf("failed to reload index after detecting mmap change: %w", err))
+					}
+				} else {
+					s.lastMmapCheck = currentTimestamp
 				}
-				s.lastMmapCheck = currentTimestamp
 			}
 		}
 
@@ -1290,6 +1296,20 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			writeErr = s.mmapWriter.Write(rawEntries, entryNumbers)
 		}
 
+		// Handle missing directory errors in mmap mode
+		if writeErr != nil && s.handleMissingShardDirectory(writeErr) {
+			// Directory was recovered, need to reinitialize the mmap writer
+			s.mu.Lock()
+			if err := s.initializeMmapWriter(config); err != nil {
+				s.mu.Unlock()
+				return nil, fmt.Errorf("failed to reinitialize mmap writer after recovery: %w", err)
+			}
+			s.mu.Unlock()
+
+			// Retry the write operation once after recovery
+			writeErr = s.mmapWriter.Write(rawEntries, entryNumbers)
+		}
+
 		// Update index after successful mmap write - must be protected by mutex
 		if writeErr == nil {
 			s.mu.Lock()
@@ -1325,16 +1345,48 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 
 	// Handle write error
 	if writeErr != nil {
-		// Track error
-		clientMetrics.ErrorCount.Add(1)
-		clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
+		// Check if this is a missing directory error that we can recover from
+		if s.handleMissingShardDirectory(writeErr) {
+			// Directory was recovered, need to reinitialize the writer
+			s.mu.Lock()
+			if err := s.ensureWriter(config); err != nil {
+				s.mu.Unlock()
+				return nil, fmt.Errorf("failed to reinitialize writer after recovery: %w", err)
+			}
+			s.mu.Unlock()
 
-		// Rollback index state
-		if writeReq.UpdateFunc != nil {
-			writeReq.UpdateFunc()
+			// Retry the write operation once after recovery
+			s.writeMu.Lock()
+			writeErr = nil // Reset error
+			for _, buf := range writeReq.WriteBuffers {
+				if _, err := s.writer.Write(buf); err != nil {
+					writeErr = err
+					break
+				}
+			}
+			if writeErr == nil {
+				writeErr = s.writer.Flush()
+				// In multi-process mode, sync to ensure data hits disk before releasing lock
+				if writeErr == nil && config.Concurrency.EnableMultiProcessMode && s.dataFile != nil {
+					writeErr = s.dataFile.Sync()
+				}
+			}
+			s.writeMu.Unlock()
 		}
 
-		return nil, fmt.Errorf("failed write: %w", writeErr)
+		// If write still failed after recovery attempt, return error
+		if writeErr != nil {
+			// Track error
+			clientMetrics.ErrorCount.Add(1)
+			clientMetrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
+
+			// Rollback index state
+			if writeReq.UpdateFunc != nil {
+				writeReq.UpdateFunc()
+			}
+
+			return nil, fmt.Errorf("failed write: %w", writeErr)
+		}
 	}
 
 	// Apply deferred updates for multi-process mode BEFORE post-write operations
@@ -1535,6 +1587,93 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 			clientMetrics.LastCheckpoint.Store(uint64(time.Now().UnixNano()))
 		}
 	}
+}
+
+// handleMissingShardDirectory handles the case where a shard directory was manually deleted
+// Returns true if the error was handled, false if it should be propagated
+func (s *Shard) handleMissingShardDirectory(err error) bool {
+	// Check if this is a missing directory error
+	if strings.Contains(err.Error(), "no such file or directory") ||
+		strings.Contains(err.Error(), "failed to read shard directory") {
+		// Shard directory was deleted - recreate it and reset state
+		shardDir := filepath.Dir(s.indexPath)
+		if mkdirErr := os.MkdirAll(shardDir, 0755); mkdirErr != nil {
+			// If we can't recreate the directory, this is a serious error
+			return false
+		}
+		// Reset shard state to empty - it will be rebuilt as needed
+		s.index.Files = nil
+		s.index.CurrentFile = ""
+		s.index.CurrentEntryNumber = 0
+		s.index.CurrentWriteOffset = 0
+		return true
+	}
+	return false
+}
+
+// loadIndexWithRecovery loads the index and handles missing directory gracefully
+// Returns nil if the index was loaded or missing directory was recovered
+func (s *Shard) loadIndexWithRecovery() error {
+	if err := s.loadIndexWithRetry(); err != nil {
+		if s.handleMissingShardDirectory(err) {
+			return nil // Successfully recovered from missing directory
+		}
+		return err // Other error, propagate it
+	}
+	return nil
+}
+
+// ensureWriter ensures the writer is properly initialized after recovery
+// This function should be called with the shard mutex held
+func (s *Shard) ensureWriter(config *CometConfig) error {
+	// Get the shard directory from the index path
+	shardDir := filepath.Dir(s.indexPath)
+
+	// Make sure the shard directory exists
+	if err := os.MkdirAll(shardDir, 0755); err != nil {
+		return fmt.Errorf("failed to create shard directory during recovery: %w", err)
+	}
+
+	// Close existing writer and data file if they exist
+	if s.writer != nil {
+		s.writer.Flush() // Ignore error since we're recovering
+		s.writer = nil
+	}
+	if s.dataFile != nil {
+		s.dataFile.Close() // Ignore error since we're recovering
+		s.dataFile = nil
+	}
+
+	// Reinitialize the data file and writer
+	return s.openDataFileWithConfig(shardDir, config)
+}
+
+// initializeMmapWriter initializes the memory-mapped writer after recovery
+// This function should be called with the shard mutex held
+func (s *Shard) initializeMmapWriter(config *CometConfig) error {
+	// Get the shard directory from the index path
+	shardDir := filepath.Dir(s.indexPath)
+
+	// Make sure the shard directory exists
+	if err := os.MkdirAll(shardDir, 0755); err != nil {
+		return fmt.Errorf("failed to create shard directory during mmap recovery: %w", err)
+	}
+
+	// Close existing mmap writer if it exists
+	if s.mmapWriter != nil {
+		s.mmapWriter.Close() // Ignore error since we're recovering
+		s.mmapWriter = nil
+	}
+
+	// Create new mmap writer - this will need metrics from somewhere
+	// For recovery, we'll use nil metrics since we don't have access to client metrics here
+	mmapWriter, err := NewMmapWriter(shardDir, config.Storage.MaxFileSize, s.index, nil, s.rotationLockFile)
+	if err != nil {
+		return fmt.Errorf("failed to create mmap writer: %w", err)
+	}
+
+	s.mmapWriter = mmapWriter
+	return nil
 }
 
 // loadIndexWithRetry loads the index with retry logic for EOF errors
@@ -2477,6 +2616,12 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 			current.EndTime = time.Now()
 		}
 
+		// Ensure the shard directory exists before rotation
+		shardDir := filepath.Dir(s.index.CurrentFile)
+		if err := os.MkdirAll(shardDir, 0755); err != nil {
+			return fmt.Errorf("failed to create shard directory during mmap rotation: %w", err)
+		}
+
 		// Let mmap writer handle its own file rotation
 		if err := s.mmapWriter.rotateFile(); err != nil {
 			return fmt.Errorf("failed to rotate mmap file: %w", err)
@@ -2484,7 +2629,6 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 
 		// Update index to reflect new file from mmap writer
 		// The mmap writer will have updated its internal path
-		shardDir := filepath.Dir(s.index.CurrentFile)
 		seqNum := s.getNextSequence()
 		newPath := filepath.Join(shardDir, fmt.Sprintf("log-%016d.comet", seqNum))
 		s.index.CurrentFile = newPath
@@ -2558,6 +2702,11 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 	clientMetrics.FileRotations.Add(1)
 	clientMetrics.TotalFiles.Add(1)
 
+	// Ensure the shard directory exists before trying to create the new file
+	if err := os.MkdirAll(shardDir, 0755); err != nil {
+		return fmt.Errorf("failed to create shard directory during rotation: %w", err)
+	}
+
 	// Open with preallocation and setup
 	return s.openDataFileWithConfig(shardDir, config)
 }
@@ -2600,19 +2749,29 @@ func parseShardFromStream(stream string) (uint32, error) {
 // Close gracefully shuts down the client
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closed {
+		c.mu.Unlock()
 		return nil
 	}
-
 	c.closed = true
 
-	// Stop retention manager
+	// Stop retention manager - close the channel while holding lock to prevent races
+	var shouldWait bool
 	if c.stopCh != nil {
 		close(c.stopCh)
+		shouldWait = true
+	}
+	c.mu.Unlock()
+
+	// Wait for retention manager to finish AFTER releasing the lock
+	// This prevents deadlock where retention goroutine needs RLock while we hold Lock
+	if shouldWait {
 		c.retentionWg.Wait()
 	}
+
+	// Re-acquire lock for shard cleanup
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// Close all shards
 	for _, shard := range c.shards {

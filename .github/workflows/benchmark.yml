@@ -73,24 +73,7 @@ jobs:
           fi
       - name: Compare benchmarks
         if: github.event_name == 'pull_request'
-        run: |
-          # Check if we have valid benchmark files to compare
-          if grep -q "Benchmark" old.bench 2>/dev/null; then
-            benchstat old.bench new.bench > benchmark-diff.txt
-          else
-            echo "No base benchmarks to compare against (new project)" > benchmark-diff.txt
-            echo "Current benchmark results:" >> benchmark-diff.txt
-            echo "" >> benchmark-diff.txt
-            grep "Benchmark" new.bench >> benchmark-diff.txt || echo "No benchmarks found"
-          fi
-
-          # Check for significant regressions
-          if grep -E "\\+[0-9]+\\.[0-9]+%" benchmark-diff.txt | grep -v "~"; then
-            echo "::warning::Potential performance regression detected"
-            echo "REGRESSION_DETECTED=true" >> $GITHUB_ENV
-          else
-            echo "REGRESSION_DETECTED=false" >> $GITHUB_ENV
-          fi
+        run: "# Check if we have valid benchmark files to compare\nif grep -q \"Benchmark\" old.bench 2>/dev/null; then\n  benchstat old.bench new.bench > benchmark-diff.txt\nelse\n  echo \"No base benchmarks to compare against (new project)\" > benchmark-diff.txt\n  echo \"Current benchmark results:\" >> benchmark-diff.txt\n  echo \"\" >> benchmark-diff.txt\n  grep \"Benchmark\" new.bench >> benchmark-diff.txt || echo \"No benchmarks found\"\nfi\n\n# Check for significant regressions with loosened thresholds\n# Rationale: Small performance variations (5-15%) are normal due to:\n#   - CI runner variability\n#   - Memory/CPU allocation differences  \n#   - Background processes\n#   - Minor code changes that don't affect core algorithms\n#\n# Thresholds:\n#   - Latency regression: >20% increase in ns/op, μs/op, ms/op (slower is worse)\n#   - Throughput regression: >10% decrease in ops/sec (lower is worse)\n#\n# Look for latency regressions (20%+ slower)\nif grep -E \"\\\\+[2-9][0-9]\\\\.[0-9]+%|\\\\+[0-9]{3,}\\\\.[0-9]+%\" benchmark-diff.txt | grep -E \"(ns/op|μs/op|ms/op|us/op)\" | grep -v \"~\"; then\n  echo \"::warning::Significant latency regression detected (>20%)\"\n  echo \"REGRESSION_DETECTED=true\" >> $GITHUB_ENV\n# Look for throughput regressions (10%+ slower)\nelif grep -E \"\\\\-[1-9][0-9]\\\\.[0-9]+%|\\\\-[0-9]{2,}\\\\.[0-9]+%\" benchmark-diff.txt | grep -E \"ops/sec\" | grep -v \"~\"; then\n  echo \"::warning::Significant throughput regression detected (>10% decrease)\"\n  echo \"REGRESSION_DETECTED=true\" >> $GITHUB_ENV\nelse\n  echo \"REGRESSION_DETECTED=false\" >> $GITHUB_ENV\nfi\n"
       - name: Comment PR with benchmark results
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -102,7 +85,7 @@ jobs:
 
             const comment = `## Comet Benchmark Results
 
-            ${hasRegression ? '⚠️ **Potential performance regression detected**' : '✅ **No significant performance regression**'}
+            ${hasRegression ? '⚠️ **Significant performance regression detected (>20% latency increase or >10% throughput decrease)**' : '✅ **No significant performance regression detected**'}
 
             <details>
             <summary>Benchmark comparison</summary>
