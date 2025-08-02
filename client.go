@@ -539,38 +539,6 @@ func (bi *BinarySearchableIndex) FindEntry(entryNumber int64) (EntryPosition, bo
 	return bi.Nodes[idx-1].Position, true
 }
 
-// GetScanStartPosition returns the best starting position for scanning to find an entry
-func (bi *BinarySearchableIndex) GetScanStartPosition(entryNumber int64) (EntryPosition, int64, bool) {
-	if len(bi.Nodes) == 0 {
-		return EntryPosition{}, 0, false
-	}
-
-	// Find the largest indexed entry <= target
-	target := EntryIndexNode{EntryNumber: entryNumber}
-	idx, found := slices.BinarySearchFunc(bi.Nodes, target, func(a, b EntryIndexNode) int {
-		if a.EntryNumber < b.EntryNumber {
-			return -1
-		}
-		if a.EntryNumber > b.EntryNumber {
-			return 1
-		}
-		return 0
-	})
-
-	if found {
-		// Exact match
-		return bi.Nodes[idx].Position, bi.Nodes[idx].EntryNumber, true
-	}
-
-	if idx == 0 {
-		// Target is before the first indexed entry, start from beginning
-		return EntryPosition{FileIndex: 0, ByteOffset: 0}, 0, true
-	}
-
-	// Return the position of the largest indexed entry before target
-	node := bi.Nodes[idx-1]
-	return node.Position, node.EntryNumber, true
-}
 
 // EntryPosition tracks where an entry is located
 // Fields ordered for optimal memory alignment

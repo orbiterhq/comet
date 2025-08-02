@@ -1026,7 +1026,7 @@ func BenchmarkBinarySearchableIndex_DirectOperation(b *testing.B) {
 	// Benchmark lookups
 	for i := 0; i < b.N; i++ {
 		entryNum := int64(i % (numNodes * 100))
-		_, _, _ = bi.GetScanStartPosition(entryNum)
+		_, _ = bi.FindEntry(entryNum)
 	}
 
 	b.ReportMetric(float64(numNodes), "index_nodes")

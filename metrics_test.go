@@ -815,3 +815,107 @@ func TestMultiProcessMetrics(t *testing.T) {
 	t.Logf("  Process count: %d", processCount)
 	t.Logf("  MMAP remap count: %d", mmapRemapCount)
 }
+
+// TestAtomicMetricsInterface tests the atomicMetrics implementation directly
+func TestAtomicMetricsInterface(t *testing.T) {
+	metrics := newAtomicMetrics()
+
+	// Test all methods that were previously untested (0% coverage)
+	metrics.IncrementEntries(5)
+	metrics.IncrementEntries(3)
+	
+	metrics.AddBytes(1024)
+	metrics.AddBytes(512)
+	
+	metrics.AddCompressedBytes(256)
+	metrics.AddCompressedBytes(128)
+	
+	metrics.RecordWriteLatency(1000)
+	metrics.RecordMinWriteLatency(500)
+	metrics.RecordMinWriteLatency(800) // Should not update (higher)
+	metrics.RecordMinWriteLatency(300) // Should update (lower)
+	
+	metrics.RecordMaxWriteLatency(2000)
+	metrics.RecordMaxWriteLatency(1500) // Should not update (lower)
+	metrics.RecordMaxWriteLatency(2500) // Should update (higher)
+	
+	metrics.SetCompressionRatio(7550) // 75.5% as basis points
+	metrics.IncrementCompressedEntries(1)
+	metrics.IncrementCompressedEntries(1)
+	metrics.IncrementSkippedCompression(1)
+	
+	metrics.AddCompressionWait(1500)
+	metrics.AddCompressionWait(800)
+	
+	metrics.IncrementFilesCreated(1)
+	metrics.IncrementFilesCreated(1)
+	metrics.IncrementFilesDeleted(1)
+	metrics.IncrementFileRotations(1)
+	metrics.IncrementCheckpoints(1)
+	
+	checkpointTime := uint64(time.Now().UnixNano())
+	metrics.SetLastCheckpoint(checkpointTime)
+	
+	metrics.SetActiveReaders(3)
+	metrics.SetMaxConsumerLag(42)
+	
+	metrics.IncrementErrors(1)
+	metrics.IncrementErrors(1)
+	
+	errorTime := uint64(time.Now().UnixNano())
+	metrics.SetLastError(errorTime)
+	
+	metrics.IncrementIndexPersistErrors(1)
+
+	// Test GetStats to verify all operations worked
+	stats := metrics.GetStats()
+	
+	// Verify the stats contain expected values
+	if stats.TotalEntries != 8 {
+		t.Errorf("Stats.TotalEntries = %d, want 8", stats.TotalEntries)
+	}
+	if stats.TotalBytes != 1536 {
+		t.Errorf("Stats.TotalBytes = %d, want 1536", stats.TotalBytes)
+	}
+	if stats.TotalCompressed != 384 {
+		t.Errorf("Stats.TotalCompressed = %d, want 384", stats.TotalCompressed)
+	}
+	if stats.CompressedEntries != 2 {
+		t.Errorf("Stats.CompressedEntries = %d, want 2", stats.CompressedEntries)
+	}
+	if stats.CompressionRatio != 7550 {
+		t.Errorf("Stats.CompressionRatio = %d, want 7550", stats.CompressionRatio)
+	}
+	if stats.MinWriteLatency != 300 {
+		t.Errorf("Stats.MinWriteLatency = %d, want 300", stats.MinWriteLatency)
+	}
+	if stats.MaxWriteLatency != 2500 {
+		t.Errorf("Stats.MaxWriteLatency = %d, want 2500", stats.MaxWriteLatency)
+	}
+	if stats.FilesCreated != 2 {
+		t.Errorf("Stats.FilesCreated = %d, want 2", stats.FilesCreated)
+	}
+	if stats.FilesDeleted != 1 {
+		t.Errorf("Stats.FilesDeleted = %d, want 1", stats.FilesDeleted)
+	}
+	if stats.FileRotations != 1 {
+		t.Errorf("Stats.FileRotations = %d, want 1", stats.FileRotations)
+	}
+	if stats.CheckpointCount != 1 {
+		t.Errorf("Stats.CheckpointCount = %d, want 1", stats.CheckpointCount)
+	}
+	if stats.ActiveReaders != 3 {
+		t.Errorf("Stats.ActiveReaders = %d, want 3", stats.ActiveReaders)
+	}
+	if stats.ConsumerLag != 42 {
+		t.Errorf("Stats.ConsumerLag = %d, want 42", stats.ConsumerLag)
+	}
+	if stats.ErrorCount != 2 {
+		t.Errorf("Stats.ErrorCount = %d, want 2", stats.ErrorCount)
+	}
+	if stats.IndexPersistErrors != 1 {
+		t.Errorf("Stats.IndexPersistErrors = %d, want 1", stats.IndexPersistErrors)
+	}
+
+	t.Logf("All atomic metrics interface methods tested successfully")
+}
