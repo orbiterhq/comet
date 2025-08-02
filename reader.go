@@ -1,34 +1,16 @@
 package comet
 
 import (
+	"container/list"
 	"encoding/binary"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 
 	"github.com/klauspost/compress/zstd"
 )
-
-// Reader provides memory-mapped read access to a shard
-// Fields ordered for optimal memory alignment
-type Reader struct {
-	// Pointers first (8 bytes on 64-bit)
-	decompressor *zstd.Decoder
-	bufferPool   *sync.Pool
-
-	// Slices (24 bytes: ptr + len + cap)
-	files []*MappedFile
-
-	// Mutex (platform-specific size)
-	mu sync.RWMutex
-
-	// Smaller fields last
-	shardID uint32 // 4 bytes
-	// 4 bytes padding
-}
 
 // AtomicSlice provides atomic access to a byte slice using atomic.Value
 type AtomicSlice struct {
@@ -48,28 +30,125 @@ func (a *AtomicSlice) Store(data []byte) {
 	a.value.Store(data)
 }
 
-// MappedFile represents a memory-mapped data file with atomic data updates
-// Fields ordered for optimal memory alignment (embedded struct first)
-type MappedFile struct {
-	FileInfo             // Embedded struct (already aligned)
-	data     AtomicSlice // Atomic slice for lock-free updates
-	file     *os.File    // Pointer (8 bytes)
-	remapMu  sync.Mutex  // Mutex for remapping operations only
-	lastSize int64       // Last known size for growth detection
+// ReaderConfig configures the bounded reader behavior
+type ReaderConfig struct {
+	MaxMappedFiles    int   // Maximum number of files to keep mapped (default: 10)
+	MaxMemoryBytes    int64 // Maximum memory to use for mapping (default: 1GB)
+	CleanupIntervalMs int   // How often to run cleanup in milliseconds (default: 5000)
 }
 
-// NewReader creates a new reader for a shard
+// DefaultReaderConfig returns the default configuration for Reader
+func DefaultReaderConfig() ReaderConfig {
+	return ReaderConfig{
+		MaxMappedFiles:    10,                 // Reasonable default
+		MaxMemoryBytes:    1024 * 1024 * 1024, // 1GB default
+		CleanupIntervalMs: 5000,               // 5 second cleanup
+	}
+}
+
+// MappedFile represents a memory-mapped file with atomic data access
+type MappedFile struct {
+	FileInfo
+	file     *os.File
+	data     atomic.Value // Stores []byte, accessed atomically
+	lastSize int64        // Last known file size for remapping
+}
+
+// recentFileCache implements an LRU cache for recently accessed files
+type recentFileCache struct {
+	mu       sync.RWMutex
+	items    map[int]*list.Element
+	order    *list.List
+	capacity int
+}
+
+type cacheItem struct {
+	fileIndex int
+}
+
+func newRecentFileCache(capacity int) *recentFileCache {
+	if capacity <= 0 {
+		capacity = 5 // Reasonable minimum
+	}
+	return &recentFileCache{
+		items:    make(map[int]*list.Element),
+		order:    list.New(),
+		capacity: capacity,
+	}
+}
+
+func (c *recentFileCache) access(fileIndex int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if elem, exists := c.items[fileIndex]; exists {
+		// Move to front
+		c.order.MoveToFront(elem)
+		return
+	}
+
+	// Add new item
+	if c.order.Len() >= c.capacity {
+		// Remove oldest
+		oldest := c.order.Back()
+		if oldest != nil {
+			oldItem := oldest.Value.(*cacheItem)
+			delete(c.items, oldItem.fileIndex)
+			c.order.Remove(oldest)
+		}
+	}
+
+	item := &cacheItem{fileIndex: fileIndex}
+	elem := c.order.PushFront(item)
+	c.items[fileIndex] = elem
+}
+
+// contains checks if a file index is in the recent cache (protected from eviction)
+func (c *recentFileCache) contains(fileIndex int) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, exists := c.items[fileIndex]
+	return exists
+}
+
+// Reader provides bounded memory-mapped read access to a shard with intelligent file management
+type Reader struct {
+	shardID      uint32
+	index        *ShardIndex
+	config       ReaderConfig
+	fileInfos    []FileInfo          // All file metadata (not necessarily mapped)
+	mappedFiles  map[int]*MappedFile // Currently mapped files
+	mappingMu    sync.RWMutex        // Protects mappedFiles
+	localMemory  int64               // Atomic counter for local memory usage
+	recentCache  *recentFileCache
+	decompressor *zstd.Decoder
+	bufferPool   *sync.Pool
+}
+
+// NewReader creates a new bounded reader for a shard with smart file mapping
 func NewReader(shardID uint32, index *ShardIndex) (*Reader, error) {
+	if index == nil {
+		return nil, fmt.Errorf("index cannot be nil")
+	}
+
+	config := DefaultReaderConfig()
+
 	r := &Reader{
-		shardID: shardID,
-		files:   make([]*MappedFile, 0, len(index.Files)),
+		shardID:     shardID,
+		index:       index,
+		config:      config,
+		fileInfos:   make([]FileInfo, len(index.Files)),
+		mappedFiles: make(map[int]*MappedFile),
+		recentCache: newRecentFileCache(config.MaxMappedFiles / 2), // Half capacity for recent files
 		bufferPool: &sync.Pool{
 			New: func() any {
-				// Start with 64KB buffer, will grow as needed
 				return make([]byte, 0, 64*1024)
 			},
 		},
 	}
+
+	// Copy file infos
+	copy(r.fileInfos, index.Files)
 
 	// Create decompressor
 	dec, err := zstd.NewReader(nil)
@@ -78,22 +157,20 @@ func NewReader(shardID uint32, index *ShardIndex) (*Reader, error) {
 	}
 	r.decompressor = dec
 
-	// Memory map all files
-	for _, fileInfo := range index.Files {
-		mapped, err := r.mapFile(fileInfo)
-		if err != nil {
-			// Clean up already mapped files
-			r.Close()
-			return nil, fmt.Errorf("failed to map file %s: %w", fileInfo.Path, err)
+	// In smart mapping mode, just map the most recent file to get started
+	if len(r.fileInfos) > 0 {
+		lastIndex := len(r.fileInfos) - 1
+		mapped, err := r.mapFile(lastIndex, r.fileInfos[lastIndex])
+		if err == nil {
+			r.mappedFiles[lastIndex] = mapped
 		}
-		r.files = append(r.files, mapped)
 	}
 
 	return r, nil
 }
 
-// mapFile memory maps a single data file
-func (r *Reader) mapFile(info FileInfo) (*MappedFile, error) {
+// mapFile maps a single file into memory
+func (r *Reader) mapFile(fileIndex int, info FileInfo) (*MappedFile, error) {
 	file, err := os.Open(info.Path)
 	if err != nil {
 		return nil, err
@@ -118,6 +195,13 @@ func (r *Reader) mapFile(info FileInfo) (*MappedFile, error) {
 		return mappedFile, nil
 	}
 
+	// Check memory limits before mapping
+	if atomic.LoadInt64(&r.localMemory)+size > r.config.MaxMemoryBytes {
+		file.Close()
+		return nil, fmt.Errorf("mapping would exceed memory limit: current=%d + new=%d > limit=%d",
+			atomic.LoadInt64(&r.localMemory), size, r.config.MaxMemoryBytes)
+	}
+
 	// Memory map the file
 	data, err := syscall.Mmap(int(file.Fd()), 0, int(size), syscall.PROT_READ, syscall.MAP_PRIVATE)
 	if err != nil {
@@ -128,159 +212,219 @@ func (r *Reader) mapFile(info FileInfo) (*MappedFile, error) {
 	// Store data atomically
 	mappedFile.data.Store(data)
 
+	// Update memory tracking
+	atomic.AddInt64(&r.localMemory, size)
+
 	return mappedFile, nil
 }
 
-// remapFile remaps a file that has grown - now lock-free for readers!
-func (r *Reader) remapFile(fileIndex int) error {
-	// Only validate file index under read lock
-	r.mu.RLock()
-	if fileIndex < 0 || fileIndex >= len(r.files) {
-		r.mu.RUnlock()
-		return fmt.Errorf("invalid file index %d", fileIndex)
-	}
-	mappedFile := r.files[fileIndex]
-	r.mu.RUnlock()
+// ReadEntryAtPosition reads a single entry at the given position
+func (r *Reader) ReadEntryAtPosition(pos EntryPosition) ([]byte, error) {
+	// Check if closed
+	r.mappingMu.RLock()
+	closed := r.decompressor == nil
+	mapped, isMapped := r.mappedFiles[pos.FileIndex]
+	validIndex := pos.FileIndex >= 0 && pos.FileIndex < len(r.fileInfos)
+	r.mappingMu.RUnlock()
 
-	// Use per-file mutex to prevent concurrent remaps of the same file
-	// This doesn't block readers of other files or readers using the current mapping
-	mappedFile.remapMu.Lock()
-	defer mappedFile.remapMu.Unlock()
+	if closed {
+		return nil, fmt.Errorf("reader is closed")
+	}
+
+	if !validIndex {
+		return nil, fmt.Errorf("file index %d out of range", pos.FileIndex)
+	}
+
+	if !isMapped {
+		// In smart mapping mode, temporarily map the file if we have capacity
+		if err := r.ensureFileMapped(pos.FileIndex); err != nil {
+			return nil, fmt.Errorf("failed to map file for read: %w", err)
+		}
+
+		// Get the mapped file again
+		r.mappingMu.RLock()
+		mapped = r.mappedFiles[pos.FileIndex]
+		r.mappingMu.RUnlock()
+	}
+
+	if mapped == nil {
+		return nil, fmt.Errorf("file %d could not be mapped", pos.FileIndex)
+	}
+
+	// Check if file has grown since last mapping
+	if err := r.checkAndRemapIfGrown(pos.FileIndex, mapped); err != nil {
+		return nil, fmt.Errorf("failed to check file growth: %w", err)
+	}
+
+	// Update recent cache
+	r.recentCache.access(pos.FileIndex)
+
+	// Read from the mapped data
+	data := mapped.data.Load().([]byte)
+	return r.readEntryFromFileData(data, pos.ByteOffset)
+}
+
+// checkAndRemapIfGrown checks if a file has grown and remaps it if necessary
+func (r *Reader) checkAndRemapIfGrown(fileIndex int, mapped *MappedFile) error {
+	if mapped.file == nil {
+		return nil // Can't check growth without file handle
+	}
 
 	// Get current file size
-	stat, err := mappedFile.file.Stat()
+	stat, err := mapped.file.Stat()
 	if err != nil {
-		return fmt.Errorf("failed to stat file: %w", err)
+		return err
 	}
 
-	newSize := stat.Size()
+	currentSize := stat.Size()
 
-	// Check if we've already been remapped by another goroutine
-	if newSize <= mappedFile.lastSize {
-		return nil // No growth or already remapped
-	}
+	// If file has grown, we need to remap it
+	if currentSize > mapped.lastSize {
+		r.mappingMu.Lock()
+		defer r.mappingMu.Unlock()
 
-	// Get current data atomically
-	oldData := mappedFile.data.Load()
-	if oldData != nil && int64(len(oldData)) >= newSize {
-		return nil // Already remapped by another goroutine
-	}
+		// Double-check under lock
+		if currentSize > mapped.lastSize {
+			// Unmap old mapping
+			if data := mapped.data.Load(); data != nil {
+				if dataBytes, ok := data.([]byte); ok && len(dataBytes) > 0 {
+					if err := syscall.Munmap(dataBytes); err != nil {
+						return fmt.Errorf("failed to unmap old data: %w", err)
+					}
+					// Update memory tracking
+					atomic.AddInt64(&r.localMemory, -int64(len(dataBytes)))
+				}
+			}
 
-	// Create new mapping with the current file size
-	newData, err := syscall.Mmap(int(mappedFile.file.Fd()), 0, int(newSize), syscall.PROT_READ, syscall.MAP_PRIVATE)
-	if err != nil {
-		return fmt.Errorf("failed to remap file: %w", err)
-	}
+			// Check memory limits for new mapping
+			newSize := currentSize
+			if atomic.LoadInt64(&r.localMemory)+newSize > r.config.MaxMemoryBytes {
+				// Try to evict something first
+				if err := r.evictOldestFile(); err != nil {
+					return fmt.Errorf("cannot remap file: would exceed memory limit and cannot evict: %w", err)
+				}
+			}
 
-	// Atomically update the data pointer - readers will see either old or new mapping
-	mappedFile.data.Store(newData)
-	mappedFile.lastSize = newSize
+			// Create new mapping
+			if currentSize == 0 {
+				// For empty files, store an empty byte slice
+				mapped.data.Store([]byte{})
+				mapped.lastSize = 0
+				return nil
+			}
 
-	// Unmap old data if it exists
-	// Safe to unmap immediately because:
-	// 1. We use MAP_PRIVATE (copy-on-write) which protects active readers
-	// 2. The atomic.Value ensures readers see either old or new mapping
-	// 3. Any active readers have their own memory pages via COW
-	if oldData != nil {
-		go func() {
-			// Defer unmapping to avoid blocking the current operation
-			syscall.Munmap(oldData)
-		}()
+			// Memory map the grown file
+			data, err := syscall.Mmap(int(mapped.file.Fd()), 0, int(currentSize), syscall.PROT_READ, syscall.MAP_PRIVATE)
+			if err != nil {
+				return fmt.Errorf("failed to remap grown file: %w", err)
+			}
+
+			// Store new data atomically
+			mapped.data.Store(data)
+			mapped.lastSize = currentSize
+
+			// Update memory tracking
+			atomic.AddInt64(&r.localMemory, newSize)
+		}
 	}
 
 	return nil
 }
 
-// ReadEntryAtPosition reads a single entry at the given position
-func (r *Reader) ReadEntryAtPosition(pos EntryPosition) ([]byte, error) {
-	r.mu.RLock()
-
-	// Validate file index
-	if pos.FileIndex < 0 || pos.FileIndex >= len(r.files) {
-		r.mu.RUnlock()
-		return nil, fmt.Errorf("invalid file index %d", pos.FileIndex)
+// ensureFileMapped ensures a file is mapped, respecting memory limits
+func (r *Reader) ensureFileMapped(fileIndex int) error {
+	if fileIndex < 0 || fileIndex >= len(r.fileInfos) {
+		return fmt.Errorf("file index %d out of range", fileIndex)
 	}
 
-	targetFile := r.files[pos.FileIndex]
-	r.mu.RUnlock() // Release read lock early - we'll use atomic operations
+	r.mappingMu.Lock()
+	defer r.mappingMu.Unlock()
 
-	// Check if we need to remap the file due to growth
-	currentData := targetFile.data.Load()
-	if targetFile.file != nil {
-		stat, err := targetFile.file.Stat()
-		if err == nil && (currentData == nil || stat.Size() > int64(len(currentData))) {
-			// Remap the file with the new size (lock-free!)
-			if err := r.remapFile(pos.FileIndex); err != nil {
-				return nil, fmt.Errorf("failed to remap grown file: %w", err)
-			}
-			// Get the potentially updated mapping
-			currentData = targetFile.data.Load()
+	// Check if already mapped
+	if _, exists := r.mappedFiles[fileIndex]; exists {
+		return nil
+	}
+
+	// Check if we have room for another file
+	if len(r.mappedFiles) >= r.config.MaxMappedFiles {
+		// Need to evict something
+		if err := r.evictOldestFile(); err != nil {
+			return fmt.Errorf("failed to evict file for mapping: %w", err)
 		}
 	}
 
-	// Read from the current mapping (no locks needed!)
-	if currentData == nil {
-		// File was never mapped or is empty, try to remap
-		if err := r.remapFile(pos.FileIndex); err != nil {
-			return nil, fmt.Errorf("failed to map file: %w", err)
-		}
-		currentData = targetFile.data.Load()
+	// Check memory limits
+	if r.config.MaxMemoryBytes <= 0 {
+		return fmt.Errorf("memory limit too restrictive: %d bytes", r.config.MaxMemoryBytes)
 	}
-	data, err := r.readEntryFromFileData(currentData, pos.ByteOffset)
-	if err != nil && strings.Contains(err.Error(), "extends beyond file") {
-		// Handle the case where index was updated but data hasn't been flushed yet
-		// This can occur during active writes - remap and retry once
-		if targetFile.file != nil {
-			if stat, statErr := targetFile.file.Stat(); statErr == nil {
-				currentSize := stat.Size()
-				if currentSize > int64(len(currentData)) {
-					// File has grown, remap and retry
-					if remapErr := r.remapFile(pos.FileIndex); remapErr == nil {
-						currentData = targetFile.data.Load()
-						return r.readEntryFromFileData(currentData, pos.ByteOffset)
-					}
-				}
-			}
+
+	if atomic.LoadInt64(&r.localMemory) >= r.config.MaxMemoryBytes {
+		// Try to free some memory
+		if err := r.evictOldestFile(); err != nil {
+			return fmt.Errorf("at memory limit and cannot evict: %w", err)
 		}
 	}
-	return data, err
+
+	// Map the file
+	if fileIndex >= len(r.fileInfos) {
+		return fmt.Errorf("file index %d out of range", fileIndex)
+	}
+
+	mapped, err := r.mapFile(fileIndex, r.fileInfos[fileIndex])
+	if err != nil {
+		return err
+	}
+
+	r.mappedFiles[fileIndex] = mapped
+	return nil
 }
 
-// Close unmaps all files and cleans up resources
-func (r *Reader) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// evictOldestFile evicts the oldest non-recent file
+func (r *Reader) evictOldestFile() error {
+	// Find a file to evict (not in recent cache)
+	for fileIndex, mapped := range r.mappedFiles {
+		if !r.recentCache.contains(fileIndex) {
+			// Evict this file
+			delete(r.mappedFiles, fileIndex)
 
-	var firstErr error
-	for i := range r.files {
-		file := r.files[i]
-
-		// Unmap if mapped
-		data := file.data.Load()
-		if data != nil {
-			if err := syscall.Munmap(data); err != nil && firstErr == nil {
-				firstErr = err
+			// Unmap the file
+			if data := mapped.data.Load(); data != nil {
+				if dataBytes, ok := data.([]byte); ok && len(dataBytes) > 0 {
+					if err := syscall.Munmap(dataBytes); err != nil {
+						return fmt.Errorf("failed to munmap file %d: %w", fileIndex, err)
+					}
+					// Update memory tracking
+					atomic.AddInt64(&r.localMemory, -int64(len(dataBytes)))
+				}
 			}
-		}
 
-		// Close file
-		if file.file != nil {
-			if err := file.file.Close(); err != nil && firstErr == nil {
-				firstErr = err
+			// Close file descriptor
+			if mapped.file != nil {
+				mapped.file.Close()
 			}
+
+			return nil
 		}
 	}
 
-	return firstErr
+	return fmt.Errorf("no files to evict")
 }
 
 // readEntryFromFileData reads a single entry from memory-mapped data at a byte offset
 func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, error) {
 	if len(data) == 0 {
-		return nil, fmt.Errorf("file not memory mapped (data length: %d, offset: %d)", len(data), byteOffset)
+		return nil, fmt.Errorf("file not memory mapped")
 	}
 
-	if byteOffset+headerSize > int64(len(data)) {
+	if byteOffset < 0 {
+		return nil, fmt.Errorf("invalid byte offset: %d", byteOffset)
+	}
+
+	headerSize := int64(12)
+	fileSize := int64(len(data))
+
+	// Check for overflow and bounds
+	if byteOffset >= fileSize || byteOffset > fileSize-headerSize {
 		return nil, fmt.Errorf("invalid offset: header extends beyond file")
 	}
 
@@ -295,19 +439,174 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 		return nil, fmt.Errorf("invalid entry: data extends beyond file")
 	}
 
-	// Read entry data
+	// Extract entry data
 	entryData := data[dataStart:dataEnd]
 
-	// Check if data is compressed by looking for zstd magic number
-	if len(entryData) >= 4 && binary.LittleEndian.Uint32(entryData[0:4]) == 0xFD2FB528 {
-		// Data is compressed - decompress it
-		decompressed, err := r.decompressor.DecodeAll(entryData, nil)
+	// Check if data is compressed by looking for zstd magic bytes
+	// zstd magic number is 0xFD2FB528 (little-endian: 28 B5 2F FD)
+	if len(entryData) >= 4 &&
+		entryData[0] == 0x28 && entryData[1] == 0xB5 &&
+		entryData[2] == 0x2F && entryData[3] == 0xFD {
+		// Data is compressed with zstd, decompress it
+
+		// Get buffer from pool
+		buf := r.bufferPool.Get().([]byte)
+		defer r.bufferPool.Put(buf[:0])
+
+		// Decompress the entire data (no compression flag prefix)
+		decompressed, err := r.decompressor.DecodeAll(entryData, buf)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decompress: %w", err)
+			return nil, fmt.Errorf("decompression failed: %w", err)
 		}
-		return decompressed, nil
+
+		// Return a copy since we're returning the buffer to the pool
+		result := make([]byte, len(decompressed))
+		copy(result, decompressed)
+		return result, nil
 	}
 
 	// Data is not compressed - return as is
 	return entryData, nil
+}
+
+// UpdateFiles updates the reader with new file information
+func (r *Reader) UpdateFiles(newFiles *[]FileInfo) error {
+	r.mappingMu.Lock()
+	defer r.mappingMu.Unlock()
+
+	// Update file infos
+	r.fileInfos = make([]FileInfo, len(*newFiles))
+	copy(r.fileInfos, *newFiles)
+
+	// Optionally re-map recent files if they still exist
+	if len(*newFiles) > 0 {
+		// Try to map the most recent file
+		lastIndex := len(*newFiles) - 1
+		if _, exists := r.mappedFiles[lastIndex]; !exists {
+			if mapped, err := r.mapFile(lastIndex, (*newFiles)[lastIndex]); err == nil {
+				r.mappedFiles[lastIndex] = mapped
+			}
+		}
+	}
+
+	return nil
+}
+
+// Close unmaps all files and cleans up resources
+func (r *Reader) Close() error {
+	r.mappingMu.Lock()
+	defer r.mappingMu.Unlock()
+
+	var firstErr error
+	for _, mapped := range r.mappedFiles {
+		// Unmap if mapped
+		if data := mapped.data.Load(); data != nil {
+			if dataBytes, ok := data.([]byte); ok && len(dataBytes) > 0 {
+				if err := syscall.Munmap(dataBytes); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+
+		// Close file
+		if mapped.file != nil {
+			if err := mapped.file.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+
+	r.mappedFiles = make(map[int]*MappedFile)
+
+	// Reset memory tracking
+	atomic.StoreInt64(&r.localMemory, 0)
+
+	// Close decompressor
+	if r.decompressor != nil {
+		r.decompressor.Close()
+		r.decompressor = nil
+	}
+
+	return firstErr
+}
+
+// GetMemoryUsage returns current memory usage statistics
+func (r *Reader) GetMemoryUsage() (int64, int) {
+	r.mappingMu.RLock()
+	defer r.mappingMu.RUnlock()
+
+	return atomic.LoadInt64(&r.localMemory), len(r.mappedFiles)
+}
+
+// ReadEntryByNumber reads an entry by its sequential entry number, using the file metadata to locate it
+func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
+	// Find which file contains this entry
+	for fileIndex, fileInfo := range r.fileInfos {
+		if fileInfo.StartEntry <= entryNumber && entryNumber < fileInfo.StartEntry+fileInfo.Entries {
+			// Found the file - now we need to find the exact position within the file
+			relativeEntryNum := entryNumber - fileInfo.StartEntry
+
+			if relativeEntryNum == 0 {
+				// First entry in file - starts at offset 0
+				pos := EntryPosition{FileIndex: fileIndex, ByteOffset: 0}
+				return r.ReadEntryAtPosition(pos)
+			}
+
+			// For non-first entries, we need to scan from the beginning
+			// This is inefficient but correct for now
+			return r.readEntryByScanning(fileIndex, relativeEntryNum)
+		}
+	}
+
+	return nil, fmt.Errorf("entry %d not found in any file", entryNumber)
+}
+
+// readEntryByScanning scans through a file to find the Nth entry (0-indexed within file)
+func (r *Reader) readEntryByScanning(fileIndex int, relativeEntryNum int64) ([]byte, error) {
+	// Ensure file is mapped
+	if err := r.ensureFileMapped(fileIndex); err != nil {
+		return nil, err
+	}
+
+	r.mappingMu.RLock()
+	mapped, exists := r.mappedFiles[fileIndex]
+	r.mappingMu.RUnlock()
+
+	if !exists || mapped == nil {
+		return nil, fmt.Errorf("file %d not mapped", fileIndex)
+	}
+
+	// Check if file has grown since last mapping
+	if err := r.checkAndRemapIfGrown(fileIndex, mapped); err != nil {
+		return nil, fmt.Errorf("failed to check file growth: %w", err)
+	}
+
+	data := mapped.data.Load().([]byte)
+	if len(data) == 0 {
+		return nil, fmt.Errorf("file %d is empty", fileIndex)
+	}
+
+	// Scan through entries to find the target
+	currentOffset := int64(0)
+	for entryIdx := int64(0); entryIdx < relativeEntryNum; entryIdx++ {
+		// Read entry header to get length
+		if currentOffset+12 > int64(len(data)) {
+			return nil, fmt.Errorf("insufficient data for entry %d header at offset %d", entryIdx, currentOffset)
+		}
+
+		// Extract length from header (first 4 bytes)
+		length := binary.LittleEndian.Uint32(data[currentOffset : currentOffset+4])
+
+		// Skip to next entry: header (12 bytes) + data length
+		entrySize := int64(12 + length)
+		currentOffset += entrySize
+
+		// Safety check
+		if currentOffset > int64(len(data)) {
+			return nil, fmt.Errorf("entry %d extends beyond file", entryIdx)
+		}
+	}
+
+	// Now read the target entry at currentOffset
+	return r.readEntryFromFileData(data, currentOffset)
 }
