@@ -1516,7 +1516,7 @@ func TestConsumerGroupSplitBrain(t *testing.T) {
 	ctx1, cancel1 := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel1()
 
-	go consumer1.Process(ctx1, func(messages []StreamMessage) error {
+	go consumer1.Process(ctx1, func(ctx context.Context, messages []StreamMessage) error {
 		mu.Lock()
 		processedCount += len(messages)
 		mu.Unlock()
@@ -1533,7 +1533,7 @@ func TestConsumerGroupSplitBrain(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel2()
 
-	go consumer2.Process(ctx2, func(messages []StreamMessage) error {
+	go consumer2.Process(ctx2, func(ctx context.Context, messages []StreamMessage) error {
 		mu.Lock()
 		secondProcessed += len(messages)
 		mu.Unlock()

@@ -60,7 +60,7 @@ type ConsumerOptions struct {
 }
 
 // ProcessFunc handles a batch of messages, returning error to trigger retry
-type ProcessFunc func(messages []StreamMessage) error
+type ProcessFunc func(ctx context.Context, messages []StreamMessage) error
 
 // ProcessOption configures the Process method
 type ProcessOption func(*processConfig)
@@ -319,7 +319,7 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 		// Process batch with retries
 		var processErr error
 		for retry := 0; retry <= cfg.maxRetries; retry++ {
-			processErr = cfg.handler(messages)
+			processErr = cfg.handler(ctx, messages)
 			if processErr == nil {
 				break
 			}

@@ -465,7 +465,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 					"data":   fmt.Sprintf("test-data-%d-%d", writerID, j),
 				}
 				jsonData, _ := json.Marshal(data)
-				
+
 				_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
 				if err != nil {
 					errorCount.Add(1)
@@ -473,7 +473,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 				} else {
 					writeCount.Add(1)
 				}
-				
+
 				// Small random delay
 				time.Sleep(time.Duration(rand.Intn(10)) * time.Microsecond)
 			}
@@ -512,7 +512,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 				for _, msg := range messages {
 					// Add delay to increase chance of memory being unmapped
 					time.Sleep(time.Duration(rand.Intn(100)) * time.Microsecond)
-					
+
 					// This should not segfault even if the underlying memory was unmapped
 					var decoded map[string]interface{}
 					if err := json.Unmarshal(msg.Data, &decoded); err != nil {
@@ -520,7 +520,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 						t.Logf("Failed to unmarshal data: %v", err)
 					} else {
 						readCount.Add(1)
-						
+
 						// Verify data integrity
 						if _, ok := decoded["writer"]; !ok {
 							t.Errorf("Missing writer field in decoded data")
@@ -529,11 +529,11 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 							t.Errorf("Missing seq field in decoded data")
 						}
 					}
-					
+
 					// Ack the message
 					consumer.Ack(ctx, msg.ID)
 				}
-				
+
 				// Force GC occasionally to stress memory management
 				if rand.Intn(100) < 5 {
 					runtime.GC()
@@ -544,21 +544,21 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 
 	// Let it run for the test duration
 	<-ctx.Done()
-	
+
 	// Wait for writers to finish
 	writerWg.Wait()
-	
+
 	// Give readers a bit more time to process remaining messages
 	time.Sleep(100 * time.Millisecond)
 	cancel() // Cancel context to stop readers
 	readerWg.Wait()
 
 	t.Logf("Writes: %d, Reads: %d, Errors: %d", writeCount.Load(), readCount.Load(), errorCount.Load())
-	
+
 	if errorCount.Load() > 0 {
 		t.Errorf("Encountered %d errors during concurrent test", errorCount.Load())
 	}
-	
+
 	if readCount.Load() == 0 {
 		t.Error("No successful reads completed")
 	}
@@ -587,7 +587,7 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 			"data": fmt.Sprintf("test-entry-%d", i),
 		}
 		storedData = append(storedData, data)
-		
+
 		jsonData, _ := json.Marshal(data)
 		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
 		if err != nil {
@@ -634,7 +634,7 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 func TestReaderMemoryPressure(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Storage.MaxFileSize = 1024      // 1KB files
+	config.Storage.MaxFileSize = 1024 // 1KB files
 	// Reader will manage memory internally
 
 	client, err := NewClientWithConfig(dir, config)
@@ -651,12 +651,12 @@ func TestReaderMemoryPressure(t *testing.T) {
 		// Create varying sizes of data
 		dataSize := 50 + rand.Intn(100)
 		data := map[string]interface{}{
-			"id":     i,
-			"data":   string(make([]byte, dataSize)),
-			"size":   dataSize,
+			"id":   i,
+			"data": string(make([]byte, dataSize)),
+			"size": dataSize,
 		}
 		jsonData, _ := json.Marshal(data)
-		
+
 		_, err := client.Append(ctx, fmt.Sprintf("test:v1:shard:%04d", i%4), [][]byte{jsonData})
 		if err != nil {
 			t.Fatalf("Failed to write: %v", err)
@@ -669,7 +669,7 @@ func TestReaderMemoryPressure(t *testing.T) {
 		wg.Add(1)
 		go func(shardID uint32) {
 			defer wg.Done()
-			
+
 			consumer := NewConsumer(client, ConsumerOptions{
 				Group: fmt.Sprintf("consumer-%d", shardID),
 			})
@@ -745,7 +745,7 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 			id   MessageID
 		}
 		var delayedMessages []delayedMessage
-		
+
 		for _, msg := range messages {
 			// Store a reference to the data
 			delayedMessages = append(delayedMessages, delayedMessage{
@@ -756,7 +756,7 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 
 		// Add significant delay
 		time.Sleep(50 * time.Millisecond)
-		
+
 		// Force some file operations to potentially trigger remapping
 		client.Append(ctx, "test:v1:shard:0002", [][]byte{[]byte("trigger-remap")})
 
@@ -802,11 +802,11 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 			// Large data - will be compressed
 			data = map[string]interface{}{
 				"id":   i,
-				"type": "large", 
+				"type": "large",
 				"data": string(make([]byte, 200)),
 			}
 		}
-		
+
 		jsonData, _ := json.Marshal(data)
 		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
 		if err != nil {
@@ -820,7 +820,7 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 		wg.Add(1)
 		go func(consumerID int) {
 			defer wg.Done()
-			
+
 			consumer := NewConsumer(client, ConsumerOptions{
 				Group: fmt.Sprintf("mixed-%d", consumerID),
 			})
@@ -849,7 +849,7 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 						expectedType = "large"
 					}
 					if decoded["type"] != expectedType {
-						t.Errorf("Wrong type for entry %d: got %v, want %v", 
+						t.Errorf("Wrong type for entry %d: got %v, want %v",
 							id, decoded["type"], expectedType)
 					}
 				}

@@ -31,7 +31,7 @@ Edge deployments need local observability buffering, but other solutions fall sh
 - **Predictable performance**: No compaction stalls or write amplification like LSM-trees
 - **True multi-process support**: Hybrid coordination (mmap + file locks), crash-safe rotation, real OS processes
 - **O(log n) lookups**: Binary searchable index with bounded memory usage
-- **Lock-free reads**: Atomic pointers, zero-copy via mmap
+- **Lock-free reads**: Atomic pointers, zero-copy via mmap with memory safety
 - **Automatic retention**: Time and size-based cleanup, protects unconsumed data
 - **Production ready**: Crash recovery, built-in metrics, extensive testing
 - **Smart sharding**: Consistent hashing, automatic discovery, batch optimizations
@@ -94,7 +94,7 @@ consumer := comet.NewConsumer(client, comet.ConsumerOptions{
 
 // Process() is the main API - it handles everything for you!
 // By default, it discovers and processes ALL shards automatically
-err = consumer.Process(ctx, func(messages []comet.StreamMessage) error {
+err = consumer.Process(ctx, func(ctx context.Context, messages []comet.StreamMessage) error {
     for _, msg := range messages {
         processEvent(msg.Data)  // Your logic here
     }
@@ -126,6 +126,21 @@ err = consumer.Process(ctx, processEvents,
 ### Production-Ready Example
 
 ```go
+// Define your processing function with context support
+processEvents := func(ctx context.Context, messages []comet.StreamMessage) error {
+    for _, msg := range messages {
+        // Check for cancellation
+        if ctx.Err() != nil {
+            return ctx.Err()
+        }
+        // Process each message
+        if err := handleEvent(msg.Data); err != nil {
+            return err // Will trigger retry
+        }
+    }
+    return nil
+}
+
 err = consumer.Process(ctx, processEvents,
     comet.WithStream("events:v1:shard:*"),
     comet.WithBatchSize(1000),
@@ -197,7 +212,7 @@ type CometConfig struct {
 
 Comet achieves microsecond-level latency through careful optimization:
 
-1. **Lock-Free Reads**: Memory-mapped files with atomic pointers enable concurrent reads without locks
+1. **Lock-Free Reads**: Memory-mapped files with atomic pointers and defensive copying for memory safety
 2. **I/O Outside Locks**: Compression and disk writes happen outside critical sections
 3. **Binary Searchable Index**: O(log n) entry lookups instead of linear scans
 4. **Vectored I/O**: Batches multiple writes into single syscalls

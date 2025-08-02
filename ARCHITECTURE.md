@@ -240,6 +240,26 @@ Careful management:
 - **Memory Limits**: Hard limits prevent system memory exhaustion
 - **Graceful Fallback**: System degrades gracefully under memory pressure
 
+### Memory Safety in Readers
+
+The reader implementation ensures memory safety when accessing memory-mapped files:
+
+#### Defensive Copying
+
+All data returned from memory-mapped regions is defensively copied before being returned to callers. This prevents segmentation faults when:
+
+- Memory-mapped regions are unmapped while data is still being accessed
+- Files are rotated and old mappings become invalid
+- Multiple readers access data concurrently during remapping
+
+#### Race Condition Prevention
+
+The reader system prevents race conditions through:
+
+- **Atomic file list updates**: File lists are copied while holding locks before being passed to readers
+- **Safe data access**: All data is copied before locks are released
+- **Graceful unmapping**: Old mappings are retained until no active reads
+
 ## Compression Strategy
 
 ### Adaptive Compression
@@ -454,6 +474,23 @@ Kafka-style consumer groups with offset tracking. Each consumer group maintains 
 
 Optimized for throughput. The consumer reads messages in batches, processes them, and acknowledges them as a group. This amortizes the cost of offset updates and maximizes throughput.
 
+### Context-Aware Processing
+
+The `Process` method provides context propagation to message handlers:
+
+```go
+type ProcessFunc func(ctx context.Context, messages []StreamMessage) error
+```
+
+This enables handlers to:
+
+- Respect cancellation signals for graceful shutdown
+- Propagate request-scoped values and deadlines
+- Implement timeouts for individual message processing
+- Coordinate with other context-aware operations
+
+The context flows through the entire processing pipeline, ensuring proper cleanup and cancellation support.
+
 ### Functional Options Pattern
 
 Clean, extensible API using functional options. This pattern allows users to configure only what they need while maintaining backward compatibility as new options are added.
@@ -648,6 +685,24 @@ The bounded reader cache implementation includes extensive test coverage across 
 - Index synchronization and rebuilding
 
 This multi-layered testing approach ensures the bounded reader cache works correctly under all conditions, from normal operation to extreme edge cases and multi-process coordination scenarios.
+
+### Memory Safety Testing
+
+Comprehensive test coverage ensures memory safety in the reader implementation:
+
+#### Race Condition Tests
+
+- **Concurrent Reader/Writer Stress**: Multiple goroutines reading while files are remapped
+- **Memory Pressure Scenarios**: Limited mapped files force frequent unmapping
+- **Data Validity Verification**: Ensures data remains valid after memory unmapping
+
+#### Defensive Copy Validation
+
+- **Delayed Data Access**: Tests accessing data after significant delays
+- **Cross-File Boundary Reads**: Validates safety when reading across file transitions
+- **Mixed Compression**: Tests both compressed and uncompressed data paths
+
+These tests use Go's race detector to ensure thread safety and prevent data races that could lead to segmentation faults in production.
 
 ### Fuzz Testing Potential
 
