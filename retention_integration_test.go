@@ -213,11 +213,33 @@ func TestIndexRebuildIntegration(t *testing.T) {
 		t.Error("Index file was not recreated by worker process")
 	}
 
+	// Give a moment for any async operations to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Force a sync to ensure index is up to date
+	if err := client2.Sync(ctx); err != nil {
+		t.Logf("Warning: sync failed: %v", err)
+	}
+
 	// Verify we can read data (proving the index rebuild worked)
 	// Use a unique group name to avoid collision with other tests
 	groupName := fmt.Sprintf("verify-rebuild-%d", time.Now().UnixNano())
 	consumer := NewConsumer(client2, ConsumerOptions{Group: groupName})
 	defer consumer.Close()
+
+	// Check the shard state before reading
+	shard2, err2 := client2.getOrCreateShard(1)
+	if err2 != nil {
+		t.Fatalf("failed to get shard: %v", err2)
+	}
+	shard2.mu.RLock()
+	t.Logf("Before read - Shard state: CurrentEntryNumber=%d, Files=%d",
+		shard2.index.CurrentEntryNumber, len(shard2.index.Files))
+	if len(shard2.index.Files) > 0 {
+		t.Logf("First file: entries=%d, path=%s",
+			shard2.index.Files[0].Entries, shard2.index.Files[0].Path)
+	}
+	shard2.mu.RUnlock()
 
 	messages, err := consumer.Read(ctx, []uint32{1}, 50)
 	if err != nil {

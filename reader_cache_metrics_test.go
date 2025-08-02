@@ -209,7 +209,7 @@ func TestReaderCacheEviction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	
+
 	reader.SetState(shard.state)
 
 	// Get initial metrics

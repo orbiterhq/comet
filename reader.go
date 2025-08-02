@@ -123,7 +123,7 @@ type Reader struct {
 	recentCache  *recentFileCache
 	decompressor *zstd.Decoder
 	bufferPool   *sync.Pool
-	state        *CometState         // Shared state for metrics (optional)
+	state        *CometState // Shared state for metrics (optional)
 }
 
 // NewReader creates a new bounded reader for a shard with smart file mapping
@@ -174,13 +174,13 @@ func NewReader(shardID uint32, index *ShardIndex) (*Reader, error) {
 // SetState sets the shared state for metrics tracking
 func (r *Reader) SetState(state *CometState) {
 	r.state = state
-	
+
 	// Update current metrics now that we have state
 	if state != nil {
 		r.mappingMu.RLock()
 		mappedCount := len(r.mappedFiles)
 		r.mappingMu.RUnlock()
-		
+
 		atomic.StoreUint64(&state.ReaderMappedFiles, uint64(mappedCount))
 		atomic.StoreUint64(&state.ReaderCacheBytes, uint64(atomic.LoadInt64(&r.localMemory)))
 		// If we already have mapped files, update the file maps counter
@@ -499,7 +499,7 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 
 		// Get buffer from pool
 		buf := r.bufferPool.Get().([]byte)
-		//nolint:staticcheck // SA6002: Buffer pool pattern - resetting slice length is intentional
+		//lint:ignore SA6002 Buffer pool pattern - resetting slice length is intentional
 		defer r.bufferPool.Put(buf[:0])
 
 		// Decompress the entire data (no compression flag prefix)

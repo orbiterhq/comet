@@ -2351,7 +2351,7 @@ func (s *Shard) loadIndex() error {
 				// Single-process mode: just persist
 				persistErr = s.persistIndex()
 			}
-			
+
 			if persistErr != nil {
 				return fmt.Errorf("failed to persist rebuilt index: %w", persistErr)
 			}
