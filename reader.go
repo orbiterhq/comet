@@ -514,8 +514,11 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 		return result, nil
 	}
 
-	// Data is not compressed - return as is
-	return entryData, nil
+	// Data is not compressed - return a copy to avoid segfaults
+	// when the memory-mapped region is unmapped
+	result := make([]byte, len(entryData))
+	copy(result, entryData)
+	return result, nil
 }
 
 // UpdateFiles updates the reader with new file information
