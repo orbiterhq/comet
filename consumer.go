@@ -362,7 +362,9 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 
 		// Update the reader with current files - the new Reader handles this efficiently
 		shard.mu.RLock()
-		currentFiles := shard.index.Files
+		// Make a copy to avoid race conditions
+		currentFiles := make([]FileInfo, len(shard.index.Files))
+		copy(currentFiles, shard.index.Files)
 		shard.mu.RUnlock()
 
 		if err := reader.UpdateFiles(&currentFiles); err != nil {
