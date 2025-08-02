@@ -205,9 +205,9 @@ func TestScanAll(t *testing.T) {
 		t.Logf("Scanned %d entries before cancellation", count)
 	})
 
-	// Test empty stream
+	// Test empty stream - use a different shard to ensure it's truly empty
 	t.Run("EmptyStream", func(t *testing.T) {
-		emptyStream := "empty:v1:shard:0001"
+		emptyStream := "empty:v1:shard:0999"
 		var called bool
 
 		err := client.ScanAll(ctx, emptyStream, func(ctx context.Context, msg StreamMessage) bool {
@@ -557,12 +557,13 @@ func TestBrowseDoesNotAffectConsumers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Should get messages starting from entry 5 (after the 5 we already read)
+	// Should get messages starting from entry 3 (first unACKed message)
+	// We ACKed entries 0,1,2 so offset is now 3. Next read should start from entry 3.
 	if len(moreMessages) != 5 {
 		t.Errorf("Expected 5 more messages, got %d", len(moreMessages))
 	}
 
-	expectedStart := int64(5)
+	expectedStart := int64(3)
 	if moreMessages[0].ID.EntryNumber != expectedStart {
 		t.Errorf("Expected first message to be entry %d, got %d", expectedStart, moreMessages[0].ID.EntryNumber)
 	}
