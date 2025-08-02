@@ -214,7 +214,9 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	}
 
 	// Verify we can read data (proving the index rebuild worked)
-	consumer := NewConsumer(client2, ConsumerOptions{Group: "verify-rebuild"})
+	// Use a unique group name to avoid collision with other tests
+	groupName := fmt.Sprintf("verify-rebuild-%d", time.Now().UnixNano())
+	consumer := NewConsumer(client2, ConsumerOptions{Group: groupName})
 	defer consumer.Close()
 
 	messages, err := consumer.Read(ctx, []uint32{1}, 50)
@@ -222,8 +224,21 @@ func TestIndexRebuildIntegration(t *testing.T) {
 		t.Fatalf("failed to read after index rebuild: %v", err)
 	}
 
-	if len(messages) < 20 {
-		t.Errorf("Expected to read at least 20 messages after rebuild, got %d", len(messages))
+	// Verify we got the expected number of messages
+	// The worker process reported reading 50 messages, but we should be able to read
+	// at least the original 20 messages that were written initially
+	if int64(len(messages)) < initialEntries {
+		t.Errorf("Expected to read at least %d messages (initial count), got %d", initialEntries, len(messages))
+
+		// Debug: Check if there's a state synchronization issue
+		shard2, _ := client2.getOrCreateShard(1)
+		shard2.mu.RLock()
+		currentEntries := shard2.index.CurrentEntryNumber
+		currentFiles := len(shard2.index.Files)
+		shard2.mu.RUnlock()
+
+		t.Logf("Debug: Current index state: %d files, %d entries", currentFiles, currentEntries)
+		t.Logf("Debug: Expected at least %d entries, got %d messages", initialEntries, len(messages))
 	}
 
 	t.Logf("Successfully verified index rebuild across processes: read %d messages", len(messages))

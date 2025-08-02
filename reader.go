@@ -123,6 +123,7 @@ type Reader struct {
 	recentCache  *recentFileCache
 	decompressor *zstd.Decoder
 	bufferPool   *sync.Pool
+	state        *CometState         // Shared state for metrics (optional)
 }
 
 // NewReader creates a new bounded reader for a shard with smart file mapping
@@ -157,16 +158,32 @@ func NewReader(shardID uint32, index *ShardIndex) (*Reader, error) {
 	}
 	r.decompressor = dec
 
-	// In smart mapping mode, just map the most recent file to get started
-	if len(r.fileInfos) > 0 {
-		lastIndex := len(r.fileInfos) - 1
-		mapped, err := r.mapFile(lastIndex, r.fileInfos[lastIndex])
-		if err == nil {
-			r.mappedFiles[lastIndex] = mapped
-		}
-	}
-
+	// Don't map files here - wait until state is set so metrics are tracked
 	return r, nil
+}
+
+// SetState sets the shared state for metrics tracking
+func (r *Reader) SetState(state *CometState) {
+	r.state = state
+	
+	// Map the most recent file now that we have state for metrics
+	if state != nil && len(r.fileInfos) > 0 {
+		r.mappingMu.Lock()
+		// Only map if we haven't already mapped any files
+		if len(r.mappedFiles) == 0 {
+			lastIndex := len(r.fileInfos) - 1
+			mapped, err := r.mapFile(lastIndex, r.fileInfos[lastIndex])
+			if err == nil {
+				r.mappedFiles[lastIndex] = mapped
+			}
+		}
+		mappedCount := len(r.mappedFiles)
+		r.mappingMu.Unlock()
+		
+		// Update metrics with current state
+		atomic.StoreUint64(&state.ReaderMappedFiles, uint64(mappedCount))
+		atomic.StoreUint64(&state.ReaderCacheBytes, uint64(atomic.LoadInt64(&r.localMemory)))
+	}
 }
 
 // mapFile maps a single file into memory
@@ -214,6 +231,13 @@ func (r *Reader) mapFile(fileIndex int, info FileInfo) (*MappedFile, error) {
 
 	// Update memory tracking
 	atomic.AddInt64(&r.localMemory, size)
+
+	// Update metrics
+	if r.state != nil {
+		atomic.AddUint64(&r.state.ReaderFileMaps, 1)
+		atomic.StoreUint64(&r.state.ReaderCacheBytes, uint64(atomic.LoadInt64(&r.localMemory)))
+		// Note: ReaderMappedFiles is updated by the caller after adding to mappedFiles map
+	}
 
 	return mappedFile, nil
 }
@@ -325,6 +349,12 @@ func (r *Reader) checkAndRemapIfGrown(fileIndex int, mapped *MappedFile) error {
 
 			// Update memory tracking
 			atomic.AddInt64(&r.localMemory, newSize)
+
+			// Update metrics
+			if r.state != nil {
+				atomic.AddUint64(&r.state.ReaderFileRemaps, 1)
+				atomic.StoreUint64(&r.state.ReaderCacheBytes, uint64(atomic.LoadInt64(&r.localMemory)))
+			}
 		}
 	}
 
@@ -376,6 +406,12 @@ func (r *Reader) ensureFileMapped(fileIndex int) error {
 	}
 
 	r.mappedFiles[fileIndex] = mapped
+
+	// Update mapped files count metric
+	if r.state != nil {
+		atomic.StoreUint64(&r.state.ReaderMappedFiles, uint64(len(r.mappedFiles)))
+	}
+
 	return nil
 }
 
@@ -401,6 +437,14 @@ func (r *Reader) evictOldestFile() error {
 			// Close file descriptor
 			if mapped.file != nil {
 				mapped.file.Close()
+			}
+
+			// Update metrics
+			if r.state != nil {
+				atomic.AddUint64(&r.state.ReaderFileUnmaps, 1)
+				atomic.AddUint64(&r.state.ReaderCacheEvicts, 1)
+				atomic.StoreUint64(&r.state.ReaderCacheBytes, uint64(atomic.LoadInt64(&r.localMemory)))
+				atomic.StoreUint64(&r.state.ReaderMappedFiles, uint64(len(r.mappedFiles)))
 			}
 
 			return nil
@@ -451,6 +495,7 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 
 		// Get buffer from pool
 		buf := r.bufferPool.Get().([]byte)
+		//nolint:staticcheck // SA6002: Buffer pool pattern - resetting slice length is intentional
 		defer r.bufferPool.Put(buf[:0])
 
 		// Decompress the entire data (no compression flag prefix)
@@ -497,6 +542,9 @@ func (r *Reader) Close() error {
 	r.mappingMu.Lock()
 	defer r.mappingMu.Unlock()
 
+	// Track how many files we're unmapping
+	unmapCount := len(r.mappedFiles)
+
 	var firstErr error
 	for _, mapped := range r.mappedFiles {
 		// Unmap if mapped
@@ -520,6 +568,13 @@ func (r *Reader) Close() error {
 
 	// Reset memory tracking
 	atomic.StoreInt64(&r.localMemory, 0)
+
+	// Update metrics for files unmapped during close
+	if r.state != nil && unmapCount > 0 {
+		atomic.AddUint64(&r.state.ReaderFileUnmaps, uint64(unmapCount))
+		atomic.StoreUint64(&r.state.ReaderCacheBytes, 0)
+		atomic.StoreUint64(&r.state.ReaderMappedFiles, 0)
+	}
 
 	// Close decompressor
 	if r.decompressor != nil {

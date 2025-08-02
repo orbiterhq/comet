@@ -407,6 +407,11 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 		return nil, err
 	}
 
+	// Set the state for metrics tracking
+	if shard.state != nil {
+		newReader.SetState(shard.state)
+	}
+
 	// Use LoadOrStore to handle race where multiple goroutines try to create
 	if actual, loaded := c.readers.LoadOrStore(shard.shardID, newReader); loaded {
 		// Another goroutine created a reader, close ours and use theirs
@@ -422,7 +427,6 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 
 	return newReader, nil
 }
-
 
 // readFromShard reads entries from a single shard using entry-based positioning
 func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int) ([]StreamMessage, error) {
