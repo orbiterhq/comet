@@ -43,10 +43,9 @@ Unlike other embedded solutions, Comet enables **true multi-process coordination
 Perfect for prefork web servers like Go Fiber.
 
 - **Hybrid coordination strategy** - Memory-mapped atomics for high-frequency operations, OS file locks for critical sections
-- **Lock-free writes** - Direct memory writes to mapped files with atomic space allocation
 - **Crash-safe rotation** - File locks provide automatic cleanup when processes crash
 - **Real process testing** - Spawns actual OS processes, not just goroutines
-- **33μs write latency** - Only 19x slower than single-process (vs 4,470x with traditional file locking)
+- **33μs write latency** - vs. 4,470x with traditional file locking
 
 ## How Does Comet Compare?
 
@@ -73,24 +72,28 @@ client, err := comet.NewClient("/var/lib/comet")
 defer client.Close()
 ```
 
-**Step 2: Write your events** (sharding handled automatically)
+**Step 2: Write your events**
 
 ```go
-// Comet automatically shards by user ID for optimal performance
-stream := comet.PickShardStream(event.UserID, "events", "v1", 16)
+// Pick which shard to write to based on a key (for consistent routing)
+// High cardinality keys (e.g. uuid) are recommended for consistent routing
+stream := comet.PickShardStream(event.ID, "events", "v1", 16)
+// This returns something like "events:v1:shard:0007" based on hash(userID) % 16
+
 ids, err := client.Append(ctx, stream, [][]byte{
     []byte(event.ToJSON()),
 })
 ```
 
-**Step 3: Process events** (everything automatic!)
+**Step 3: Process events**
 
 ```go
 consumer := comet.NewConsumer(client, comet.ConsumerOptions{
     Group: "my-processor",
 })
 
-// This is it! Auto-discovery, auto-retry, auto-ACK, auto-everything!
+// Process() is the main API - it handles everything for you!
+// By default, it discovers and processes ALL shards automatically
 err = consumer.Process(ctx, func(messages []comet.StreamMessage) error {
     for _, msg := range messages {
         processEvent(msg.Data)  // Your logic here
@@ -225,26 +228,35 @@ Example: 16 shards × 1GB/shard = 16GB max disk usage
 
 ## Sharding
 
-Comet uses deterministic sharding for load distribution:
+Comet uses deterministic sharding for load distribution. Here's how it works:
+
+### Writing
 
 ```go
-// Smart sharding by key (consistent distribution)
-stream := comet.PickShardStream("user-123", "events", "v1", 16)
+// The key (event ID, user ID, tenant, etc.) determines which shard gets the data
+stream := comet.PickShardStream(event.ID, "events", "v1", 16)
+// Returns "events:v1:shard:0007" (hash("user-123") % 16 = 7)
 
-// Read from all shards
-shards := comet.AllShardsRange(16)
-messages, err := consumer.Read(ctx, shards, 1000)
+// The key is ONLY used for routing - it's not stored anywhere!
+client.Append(ctx, stream, data)
+```
 
-for _, msg := range messages {
-    fmt.Printf("Shard: %d, Entry: %d\n", msg.ID.ShardID, msg.ID.EntryNumber)
-}
+### Reading
 
-// Batch acknowledgments (automatically grouped by shard)
-var messageIDs []comet.MessageID
-for _, msg := range messages {
-    messageIDs = append(messageIDs, msg.ID)
-}
-consumer.Ack(ctx, messageIDs...)
+```go
+// Process ALL shards (recommended)
+err = consumer.Process(ctx, handler,
+    comet.WithStream("events:v1:shard:*"))  // The * wildcard finds all shards
+
+// Process specific shards only
+err = consumer.Process(ctx, handler,
+    comet.WithShards(0, 1, 2))  // Only process shards 0, 1, and 2
+
+// Process with advanced options
+err = consumer.Process(ctx, handler,
+    comet.WithStream("events:v1:shard:*"),
+    comet.WithBatchSize(1000),
+    comet.WithConsumerAssignment(workerID, 3))  // This is worker 'workerID' of 3 total workers
 ```
 
 ## Use Cases
