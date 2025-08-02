@@ -1032,21 +1032,21 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		// Check mmap state for instant change detection (no lock needed for read)
+		// Check mmap state for instant change detection
 		if config.Concurrency.EnableMultiProcessMode && s.state != nil {
 			currentTimestamp := s.state.GetLastIndexUpdate()
-			if currentTimestamp != s.lastMmapCheck {
+			if currentTimestamp != atomic.LoadInt64(&s.lastMmapCheck) {
 				// Index changed - reload it with retry for EOF errors
 				if err := s.loadIndexWithRetry(); err != nil {
 					// Try to handle missing directory gracefully
 					if s.handleMissingShardDirectory(err) {
-						s.lastMmapCheck = currentTimestamp
+						atomic.StoreInt64(&s.lastMmapCheck, currentTimestamp)
 					} else {
 						criticalErr = fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 						return
 					}
 				} else {
-					s.lastMmapCheck = currentTimestamp
+					atomic.StoreInt64(&s.lastMmapCheck, currentTimestamp)
 				}
 			}
 		}
@@ -3388,12 +3388,14 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 		case <-ticker.C:
 			// Get current state
 			shard.mu.RLock()
-			currentIndex := shard.index
 			currentEntries := shard.index.CurrentEntryNumber
+			// Create a copy of the files to avoid race conditions
+			filesCopy := make([]FileInfo, len(shard.index.Files))
+			copy(filesCopy, shard.index.Files)
 			shard.mu.RUnlock()
 
 			// Update reader with latest index if needed
-			reader.UpdateFiles(&currentIndex.Files)
+			reader.UpdateFiles(&filesCopy)
 
 			// Read any new entries
 			for position < currentEntries {

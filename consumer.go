@@ -439,16 +439,16 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	// Check unified state for instant change detection
 	if shard.state != nil {
 		currentTimestamp := shard.state.GetLastIndexUpdate()
-		if currentTimestamp != shard.lastMmapCheck {
+		if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 			// Index changed - reload it under write lock
 			shard.mu.Lock()
 			// Double-check after acquiring lock
-			if currentTimestamp != shard.lastMmapCheck {
+			if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 				if err := shard.loadIndexWithRecovery(); err != nil {
 					shard.mu.Unlock()
 					return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 				}
-				shard.lastMmapCheck = currentTimestamp
+				atomic.StoreInt64(&shard.lastMmapCheck, currentTimestamp)
 
 				// In multi-process mode, check if we need to rebuild index from files
 				// We can tell we're in multi-process mode if mmapState exists
@@ -728,16 +728,16 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 	// Check unified state for instant change detection
 	if shard.state != nil {
 		currentTimestamp := shard.state.GetLastIndexUpdate()
-		if currentTimestamp != shard.lastMmapCheck {
+		if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 			// Index changed - reload it under write lock
 			shard.mu.Lock()
 			// Double-check after acquiring lock
-			if currentTimestamp != shard.lastMmapCheck {
+			if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 				if err := shard.loadIndexWithRecovery(); err != nil {
 					shard.mu.Unlock()
 					return 0, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 				}
-				shard.lastMmapCheck = currentTimestamp
+				atomic.StoreInt64(&shard.lastMmapCheck, currentTimestamp)
 			}
 			shard.mu.Unlock()
 		}
@@ -852,16 +852,16 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 	// Check unified state for instant change detection
 	if shard.state != nil {
 		currentTimestamp := shard.state.GetLastIndexUpdate()
-		if currentTimestamp != shard.lastMmapCheck {
+		if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 			// Index changed - reload it under write lock
 			shard.mu.Lock()
 			// Double-check after acquiring lock
-			if currentTimestamp != shard.lastMmapCheck {
+			if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 				if err := shard.loadIndexWithRecovery(); err != nil {
 					shard.mu.Unlock()
 					return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 				}
-				shard.lastMmapCheck = currentTimestamp
+				atomic.StoreInt64(&shard.lastMmapCheck, currentTimestamp)
 			}
 			shard.mu.Unlock()
 		}
