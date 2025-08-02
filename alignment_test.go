@@ -44,6 +44,10 @@ func TestStructAlignment(t *testing.T) {
 		{"StorageConfig", StorageConfig{}},
 		{"ConcurrencyConfig", ConcurrencyConfig{}},
 		{"ConsumerOptions", ConsumerOptions{}},
+		{"ReaderConfig", ReaderConfig{}},
+		// Reader internal structs
+		{"recentFileCache", recentFileCache{}},
+		{"cacheItem", cacheItem{}},
 	}
 
 	for _, tt := range tests {
@@ -198,6 +202,16 @@ func TestFieldAlignmentDetails(t *testing.T) {
 
 	t.Run("CometState", func(t *testing.T) {
 		typ := reflect.TypeOf(CometState{})
+		logStructLayout(t, typ)
+	})
+
+	t.Run("ReaderConfig", func(t *testing.T) {
+		typ := reflect.TypeOf(ReaderConfig{})
+		logStructLayout(t, typ)
+	})
+
+	t.Run("recentFileCache", func(t *testing.T) {
+		typ := reflect.TypeOf(recentFileCache{})
 		logStructLayout(t, typ)
 	})
 }
