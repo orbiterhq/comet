@@ -9,6 +9,7 @@
       "Bash(grep:*)",
       "Bash(go vet:*)",
       "Bash(go test:*)",
+      "Bash(COMET_DEBUG=1 go test:*)",
       "Bash(go tool pprof:*)",
       "Bash(go run:*)",
       "Bash(mise run test:*)",

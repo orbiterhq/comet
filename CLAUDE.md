@@ -88,7 +88,7 @@ deadcode -test ./...
 - Try to add tests to existing test files if possible. If it really doesn't fit or files are getting too big, then you can create a new one.
 - To avoid hanging tests/deadlocks, use the `-timeout` flag with a reasonable value, e.g. `go test -timeout 10s ./...`.
 - If you're writing Go code with structs that will be heavily used, make sure they are properly memory-aligned / padded. We have a test for this now.
-- Our philosophy is "minimum effective abstraction". Keep things simple and avoid unnecessary complexity. Justify your decisions _with benchmarks_ aka _dat_ and ensure that the code is easy to understand and maintain. Software should _elegant_.
+- Our philosophy is "minimum effective abstraction". Keep things simple and avoid unnecessary complexity. Justify your decisions _with benchmarks_ aka _data_ and ensure that the code is easy to understand and maintain. Software should _elegant_.
 
 ## Other Tips
 

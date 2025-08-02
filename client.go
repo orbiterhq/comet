@@ -539,39 +539,6 @@ func (bi *BinarySearchableIndex) FindEntry(entryNumber int64) (EntryPosition, bo
 	return bi.Nodes[idx-1].Position, true
 }
 
-// GetScanStartPosition returns the best starting position for scanning to find an entry
-func (bi *BinarySearchableIndex) GetScanStartPosition(entryNumber int64) (EntryPosition, int64, bool) {
-	if len(bi.Nodes) == 0 {
-		return EntryPosition{}, 0, false
-	}
-
-	// Find the largest indexed entry <= target
-	target := EntryIndexNode{EntryNumber: entryNumber}
-	idx, found := slices.BinarySearchFunc(bi.Nodes, target, func(a, b EntryIndexNode) int {
-		if a.EntryNumber < b.EntryNumber {
-			return -1
-		}
-		if a.EntryNumber > b.EntryNumber {
-			return 1
-		}
-		return 0
-	})
-
-	if found {
-		// Exact match
-		return bi.Nodes[idx].Position, bi.Nodes[idx].EntryNumber, true
-	}
-
-	if idx == 0 {
-		// Target is before the first indexed entry, start from beginning
-		return EntryPosition{FileIndex: 0, ByteOffset: 0}, 0, true
-	}
-
-	// Return the position of the largest indexed entry before target
-	node := bi.Nodes[idx-1]
-	return node.Position, node.EntryNumber, true
-}
-
 // EntryPosition tracks where an entry is located
 // Fields ordered for optimal memory alignment
 type EntryPosition struct {
@@ -2324,10 +2291,36 @@ func (s *Shard) loadIndex() error {
 			}
 		}
 
-		// Persist the rebuilt index
+		// Persist the rebuilt index with proper locking in multi-process mode
 		if len(s.index.Files) > 0 {
-			if err := s.persistIndex(); err != nil {
-				return fmt.Errorf("failed to persist rebuilt index: %w", err)
+			var persistErr error
+			if s.indexLockFile != nil {
+				// Multi-process mode: acquire index lock before persisting
+				if err := syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_EX); err != nil {
+					return fmt.Errorf("failed to acquire index lock for rebuild: %w", err)
+				}
+				// Check if another process already rebuilt and saved the index
+				if _, statErr := os.Stat(s.indexPath); statErr == nil {
+					// Index file exists now - another process beat us to it
+					// Release lock and reload the index
+					syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_UN)
+					// Load the index that was created by another process
+					newIndex, err := s.loadBinaryIndex()
+					if err != nil {
+						return fmt.Errorf("failed to load index created by another process: %w", err)
+					}
+					s.index = newIndex
+					return nil
+				}
+				persistErr = s.persistIndex()
+				syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_UN)
+			} else {
+				// Single-process mode: just persist
+				persistErr = s.persistIndex()
+			}
+
+			if persistErr != nil {
+				return fmt.Errorf("failed to persist rebuilt index: %w", persistErr)
 			}
 			// Track recovery success if we successfully rebuilt from files
 			if s.state != nil {

@@ -183,7 +183,7 @@ func TestConsumer_Process(t *testing.T) {
 		// Run processor in background
 		done := make(chan error)
 		go func() {
-			done <- consumer.Process(ctx, func(messages []StreamMessage) error {
+			done <- consumer.Process(ctx, func(ctx context.Context, messages []StreamMessage) error {
 				for _, msg := range messages {
 					processedMessages = append(processedMessages, string(msg.Data))
 					processedCount++
@@ -238,7 +238,7 @@ func TestConsumer_Process(t *testing.T) {
 
 		done := make(chan error)
 		go func() {
-			done <- consumer.Process(ctx, func(messages []StreamMessage) error {
+			done <- consumer.Process(ctx, func(ctx context.Context, messages []StreamMessage) error {
 				attempts++
 				// Fail first 2 attempts
 				if attempts <= 2 {

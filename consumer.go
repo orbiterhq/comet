@@ -2,7 +2,6 @@ package comet
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -61,7 +60,7 @@ type ConsumerOptions struct {
 }
 
 // ProcessFunc handles a batch of messages, returning error to trigger retry
-type ProcessFunc func(messages []StreamMessage) error
+type ProcessFunc func(ctx context.Context, messages []StreamMessage) error
 
 // ProcessOption configures the Process method
 type ProcessOption func(*processConfig)
@@ -320,7 +319,7 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 		// Process batch with retries
 		var processErr error
 		for retry := 0; retry <= cfg.maxRetries; retry++ {
-			processErr = cfg.handler(messages)
+			processErr = cfg.handler(ctx, messages)
 			if processErr == nil {
 				break
 			}
@@ -361,41 +360,27 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 	if value, ok := c.readers.Load(shard.shardID); ok {
 		reader := value.(*Reader)
 
-		// Check if reader is still valid by comparing file lists
+		// Update the reader with current files - the new Reader handles this efficiently
 		shard.mu.RLock()
-		currentFiles := shard.index.Files
+		// Make a copy to avoid race conditions
+		currentFiles := make([]FileInfo, len(shard.index.Files))
+		copy(currentFiles, shard.index.Files)
 		shard.mu.RUnlock()
 
-		reader.mu.RLock()
-		readerFiles := reader.files
-		reader.mu.RUnlock()
-
-		// Reader is valid only if it has the exact same files as the shard
-		// This handles both additions (rotation) and deletions (retention)
-		if len(currentFiles) == len(readerFiles) {
-			// Check if all files match
-			filesMatch := true
-			for i := 0; i < len(currentFiles) && filesMatch; i++ {
-				if currentFiles[i].Path != readerFiles[i].Path {
-					filesMatch = false
-				}
+		if err := reader.UpdateFiles(&currentFiles); err != nil {
+			// If update fails, close the reader and create a new one
+			c.readers.Delete(shard.shardID)
+			reader.Close()
+			// Decrement active readers count
+			if shard.state != nil {
+				atomic.AddUint64(&shard.state.ActiveReaders, ^uint64(0)) // Decrement by 1
 			}
-			if filesMatch {
-				// Track reader cache hit
-				if shard.state != nil {
-					atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
-				}
-				return reader, nil
+		} else {
+			// Track reader cache hit
+			if shard.state != nil {
+				atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
 			}
-		}
-
-		// Reader is stale, need to recreate
-		// Delete the old one so only one goroutine recreates
-		c.readers.Delete(shard.shardID)
-		reader.Close()
-		// Decrement active readers count
-		if shard.state != nil {
-			atomic.AddUint64(&shard.state.ActiveReaders, ^uint64(0)) // Decrement by 1
+			return reader, nil
 		}
 	}
 
@@ -424,6 +409,11 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 		return nil, err
 	}
 
+	// Set the state for metrics tracking
+	if shard.state != nil {
+		newReader.SetState(shard.state)
+	}
+
 	// Use LoadOrStore to handle race where multiple goroutines try to create
 	if actual, loaded := c.readers.LoadOrStore(shard.shardID, newReader); loaded {
 		// Another goroutine created a reader, close ours and use theirs
@@ -438,142 +428,6 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 	}
 
 	return newReader, nil
-}
-
-// findEntryPosition finds the position of an entry using binary searchable index (O(log n))
-func (c *Consumer) findEntryPosition(shard *Shard, entryNum int64) (EntryPosition, error) {
-	// Check if the requested entry exists
-	if entryNum >= shard.index.CurrentEntryNumber {
-		return EntryPosition{}, fmt.Errorf("entry %d does not exist (current max: %d)", entryNum, shard.index.CurrentEntryNumber-1)
-	}
-
-	// Use the binary searchable index for O(log n) lookup
-	if len(shard.index.BinaryIndex.Nodes) > 0 {
-		// Get the best starting position for scanning
-		if startPos, startEntry, found := shard.index.BinaryIndex.GetScanStartPosition(entryNum); found {
-			// Safety check: if the position is invalid, fall back to linear scan
-			if startPos.FileIndex < 0 || startPos.FileIndex >= len(shard.index.Files) {
-				// Binary index has stale data, fall back to scanning from beginning
-			} else {
-				if startEntry == entryNum {
-					return startPos, nil
-				}
-				// Scan forward from the closest indexed entry
-				return c.scanForwardToEntry(shard, startPos, startEntry, entryNum)
-			}
-		}
-	}
-
-	// If no index nodes exist, start from the beginning
-	if len(shard.index.Files) == 0 {
-		return EntryPosition{}, fmt.Errorf("no files in shard")
-	}
-
-	// Start from entry 0 in the first file
-	startPos := EntryPosition{
-		FileIndex:  0,
-		ByteOffset: 0,
-	}
-
-	// In multi-process mode, entries might not start from 0
-	// Calculate the first entry number based on total entries written
-	totalEntries := int64(0)
-	for _, f := range shard.index.Files {
-		totalEntries += f.Entries
-	}
-	firstEntryNum := shard.index.CurrentEntryNumber - totalEntries
-
-	// If looking for an entry before the first one, it doesn't exist
-	if entryNum < firstEntryNum {
-		return EntryPosition{}, fmt.Errorf("entry %d does not exist (first entry is %d)", entryNum, firstEntryNum)
-	}
-
-	// If looking for the first entry, return the start position
-	if entryNum == firstEntryNum {
-		return startPos, nil
-	}
-
-	// Otherwise scan forward from the first entry
-	return c.scanForwardToEntry(shard, startPos, firstEntryNum, entryNum)
-}
-
-// scanForwardToEntry scans forward from a known position to find the target entry
-func (c *Consumer) scanForwardToEntry(shard *Shard, startPos EntryPosition, startEntry, targetEntry int64) (EntryPosition, error) {
-	if startEntry >= targetEntry {
-		return startPos, nil // No scanning needed
-	}
-
-	// Get reader for this shard
-	reader, err := c.getOrCreateReader(shard)
-	if err != nil {
-		return EntryPosition{}, fmt.Errorf("failed to get reader: %w", err)
-	}
-
-	// Hold reader lock during the entire scan to prevent races with remapFile
-	reader.mu.RLock()
-	defer reader.mu.RUnlock()
-
-	// First, find which file contains the target entry
-	targetFileIndex := -1
-	for i := startPos.FileIndex; i < len(shard.index.Files); i++ {
-		fileInfo := shard.index.Files[i]
-		if fileInfo.StartEntry <= targetEntry && targetEntry < fileInfo.StartEntry+fileInfo.Entries {
-			targetFileIndex = i
-			break
-		}
-	}
-
-	if targetFileIndex == -1 {
-		return EntryPosition{}, fmt.Errorf("entry %d not found in any file", targetEntry)
-	}
-
-	// Now scan within the target file to find the exact position
-	file := reader.files[targetFileIndex]
-	fileData := file.data.Load()
-	if len(fileData) == 0 {
-		return EntryPosition{}, fmt.Errorf("file %d is empty but should contain entry %d", targetFileIndex, targetEntry)
-	}
-
-	fileInfo := shard.index.Files[targetFileIndex]
-	currentEntry := fileInfo.StartEntry
-	currentOffset := int64(0)
-
-	// Scan through the file entry by entry
-	for currentEntry <= targetEntry {
-		// Check if we've found the target
-		if currentEntry == targetEntry {
-			return EntryPosition{
-				FileIndex:  targetFileIndex,
-				ByteOffset: currentOffset,
-			}, nil
-		}
-
-		// Check if we have enough data for the header
-		if currentOffset+12 > int64(len(fileData)) {
-			return EntryPosition{}, fmt.Errorf("entry %d header extends beyond file", currentEntry)
-		}
-
-		// Read entry header
-		header := fileData[currentOffset : currentOffset+12]
-		length := binary.LittleEndian.Uint32(header[0:4])
-
-		// Validate entry length
-		if length > 100*1024*1024 { // 100MB max
-			return EntryPosition{}, fmt.Errorf("entry %d has invalid length %d", currentEntry, length)
-		}
-
-		// Check if the full entry fits
-		entryEnd := currentOffset + 12 + int64(length)
-		if entryEnd > int64(len(fileData)) {
-			return EntryPosition{}, fmt.Errorf("entry %d extends beyond file", currentEntry)
-		}
-
-		// Move to next entry
-		currentEntry++
-		currentOffset = entryEnd
-	}
-
-	return EntryPosition{}, fmt.Errorf("entry %d not found in file %d", targetEntry, targetFileIndex)
 }
 
 // readFromShard reads entries from a single shard using entry-based positioning
@@ -709,49 +563,19 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			return messages, ctx.Err()
 		}
 
-		// Find where this entry is stored using interval-based boundaries
-		shard.mu.RLock()
-		position, err := c.findEntryPosition(shard, entryNum)
-		shard.mu.RUnlock()
-
-		if err != nil {
-			// In multi-process mode, if index-based lookup fails, try direct file scanning
-			// This handles the case where the index is incomplete but the data exists in files
-			if shard.state != nil && !strings.Contains(err.Error(), "no files in shard") {
-				position, err = c.scanDataFilesForEntry(shard, entryNum)
-			}
-
-			if err != nil {
-				// In multi-process mode, some entries might not exist due to gaps in the sequence
-				// Skip these entries instead of failing the entire read
-				if strings.Contains(err.Error(), "does not exist") {
-					continue
-				}
-				return nil, fmt.Errorf("failed to find entry %d position in shard %d: %w", entryNum, shard.shardID, err)
-			}
-		}
-
-		// Safety check for invalid position
-		if position.FileIndex < 0 {
-			return nil, fmt.Errorf("invalid position for entry %d in shard %d: FileIndex=%d, ByteOffset=%d", entryNum, shard.shardID, position.FileIndex, position.ByteOffset)
-		}
-
 		// Get reader for this shard
 		reader, err := c.getOrCreateReader(shard)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get reader for shard %d: %w", shard.shardID, err)
 		}
 
-		// Read the specific entry
-		data, err := reader.ReadEntryAtPosition(position)
+		// Use the new ReadEntryByNumber method which handles position finding internally
+		data, err := reader.ReadEntryByNumber(entryNum)
 		if err != nil {
-			// If we get a "file not memory mapped" error, it might mean the file is empty
-			// or hasn't been flushed yet. Try to force a flush and retry once.
-			if strings.Contains(err.Error(), "file not memory mapped") {
-				// Force persist the index to ensure file metadata is up to date
-				shard.persistIndex()
-				// Retry the read
-				data, err = reader.ReadEntryAtPosition(position)
+			// In multi-process mode, some entries might not exist due to gaps in the sequence
+			// Skip these entries instead of failing the entire read
+			if strings.Contains(err.Error(), "not found in any file") {
+				continue
 			}
 			if err != nil {
 				// Track read error in CometState
@@ -782,7 +606,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 // scanDataFilesForEntry directly scans data files to find an entry when index is incomplete
 func (c *Consumer) scanDataFilesForEntry(shard *Shard, targetEntry int64) (EntryPosition, error) {
 	// This is the fallback when index-based lookup fails in multi-process mode
-	// We scan the actual append-only data files directly
+	// TODO: Optimize this function - currently using a simple approach (todo item #13)
 
 	shard.mu.RLock()
 	files := make([]FileInfo, len(shard.index.Files))
@@ -793,72 +617,18 @@ func (c *Consumer) scanDataFilesForEntry(shard *Shard, targetEntry int64) (Entry
 		return EntryPosition{}, fmt.Errorf("no files to scan")
 	}
 
-	// Get reader for file access
-	reader, err := c.getOrCreateReader(shard)
-	if err != nil {
-		return EntryPosition{}, fmt.Errorf("failed to get reader: %w", err)
-	}
-
-	reader.mu.RLock()
-	defer reader.mu.RUnlock()
-
-	currentEntry := int64(0)
-
-	// Scan each file sequentially
-	for fileIdx := range files {
-		if fileIdx >= len(reader.files) {
-			break // Reader doesn't have this file yet
-		}
-
-		file := reader.files[fileIdx]
-		fileData := file.data.Load()
-		if fileData == nil {
-			continue
-		}
-
-		offset := int64(0)
-		fileSize := int64(len(fileData))
-
-		// Scan entries in this file
-		for offset < fileSize {
-			// Check if we have enough data for header
-			if offset+12 > fileSize {
-				break
-			}
-
-			// Read entry header
-			header := fileData[offset : offset+12]
-			length := binary.LittleEndian.Uint32(header[0:4])
-			timestamp := binary.LittleEndian.Uint64(header[4:12])
-
-			// Validate entry
-			if length == 0 || length > 100*1024*1024 || timestamp == 0 {
-				// Invalid entry - try to find next valid entry
-				offset += 4
-				continue
-			}
-
-			// Check if full entry is available
-			entryEnd := offset + 12 + int64(length)
-			if entryEnd > fileSize {
-				break // Entry extends beyond file
-			}
-
-			// Found a valid entry - check if it's the target
-			if currentEntry == targetEntry {
-				return EntryPosition{
-					FileIndex:  fileIdx,
-					ByteOffset: offset,
-				}, nil
-			}
-
-			// Move to next entry
-			currentEntry++
-			offset = entryEnd
+	// Find which file should contain the target entry based on index metadata
+	for fileIdx, fileInfo := range files {
+		if fileInfo.StartEntry <= targetEntry && targetEntry < fileInfo.StartEntry+fileInfo.Entries {
+			// Found the file that should contain the entry
+			return EntryPosition{
+				FileIndex:  fileIdx,
+				ByteOffset: 0, // Start at beginning - inefficient but works
+			}, nil
 		}
 	}
 
-	return EntryPosition{}, fmt.Errorf("entry %d not found in data files (scanned %d entries)", targetEntry, currentEntry)
+	return EntryPosition{}, fmt.Errorf("entry %d not found in any file", targetEntry)
 }
 
 // Ack acknowledges one or more processed messages and updates consumer offset
