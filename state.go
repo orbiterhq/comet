@@ -118,12 +118,12 @@ type CometState struct {
 	_pad9                [80]byte // 688-767: Padding
 
 	// ======== Cache Lines 12 (768-831): Reader cache metrics ========
-	ReaderFileMaps    uint64  // 768-775: Files mapped into memory
-	ReaderFileUnmaps  uint64  // 776-783: Files unmapped from memory
-	ReaderCacheBytes  uint64  // 784-791: Current cache memory usage
-	ReaderMappedFiles uint64  // 792-799: Current number of mapped files
-	ReaderFileRemaps  uint64  // 800-807: File remappings due to growth
-	ReaderCacheEvicts uint64  // 808-815: Files evicted due to pressure
+	ReaderFileMaps    uint64   // 768-775: Files mapped into memory
+	ReaderFileUnmaps  uint64   // 776-783: Files unmapped from memory
+	ReaderCacheBytes  uint64   // 784-791: Current cache memory usage
+	ReaderMappedFiles uint64   // 792-799: Current number of mapped files
+	ReaderFileRemaps  uint64   // 800-807: File remappings due to growth
+	ReaderCacheEvicts uint64   // 808-815: Files evicted due to pressure
 	_pad10            [16]byte // 816-831: Padding
 
 	// ======== Cache Lines 13-15 (832-1023): Reserved for future ========

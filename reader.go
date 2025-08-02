@@ -158,7 +158,16 @@ func NewReader(shardID uint32, index *ShardIndex) (*Reader, error) {
 	}
 	r.decompressor = dec
 
-	// Don't map files here - wait until state is set so metrics are tracked
+	// In smart mapping mode, just map the most recent file to get started
+	if len(r.fileInfos) > 0 {
+		lastIndex := len(r.fileInfos) - 1
+		mapped, err := r.mapFile(lastIndex, r.fileInfos[lastIndex])
+		if err == nil {
+			r.mappedFiles[lastIndex] = mapped
+			// Note: Can't update ReaderMappedFiles here as state isn't set yet
+		}
+	}
+
 	return r, nil
 }
 
@@ -166,23 +175,18 @@ func NewReader(shardID uint32, index *ShardIndex) (*Reader, error) {
 func (r *Reader) SetState(state *CometState) {
 	r.state = state
 	
-	// Map the most recent file now that we have state for metrics
-	if state != nil && len(r.fileInfos) > 0 {
-		r.mappingMu.Lock()
-		// Only map if we haven't already mapped any files
-		if len(r.mappedFiles) == 0 {
-			lastIndex := len(r.fileInfos) - 1
-			mapped, err := r.mapFile(lastIndex, r.fileInfos[lastIndex])
-			if err == nil {
-				r.mappedFiles[lastIndex] = mapped
-			}
-		}
+	// Update current metrics now that we have state
+	if state != nil {
+		r.mappingMu.RLock()
 		mappedCount := len(r.mappedFiles)
-		r.mappingMu.Unlock()
+		r.mappingMu.RUnlock()
 		
-		// Update metrics with current state
 		atomic.StoreUint64(&state.ReaderMappedFiles, uint64(mappedCount))
 		atomic.StoreUint64(&state.ReaderCacheBytes, uint64(atomic.LoadInt64(&r.localMemory)))
+		// If we already have mapped files, update the file maps counter
+		if mappedCount > 0 {
+			atomic.StoreUint64(&state.ReaderFileMaps, uint64(mappedCount))
+		}
 	}
 }
 

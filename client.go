@@ -2324,10 +2324,36 @@ func (s *Shard) loadIndex() error {
 			}
 		}
 
-		// Persist the rebuilt index
+		// Persist the rebuilt index with proper locking in multi-process mode
 		if len(s.index.Files) > 0 {
-			if err := s.persistIndex(); err != nil {
-				return fmt.Errorf("failed to persist rebuilt index: %w", err)
+			var persistErr error
+			if s.indexLockFile != nil {
+				// Multi-process mode: acquire index lock before persisting
+				if err := syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_EX); err != nil {
+					return fmt.Errorf("failed to acquire index lock for rebuild: %w", err)
+				}
+				// Check if another process already rebuilt and saved the index
+				if _, statErr := os.Stat(s.indexPath); statErr == nil {
+					// Index file exists now - another process beat us to it
+					// Release lock and reload the index
+					syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_UN)
+					// Load the index that was created by another process
+					newIndex, err := s.loadBinaryIndex()
+					if err != nil {
+						return fmt.Errorf("failed to load index created by another process: %w", err)
+					}
+					s.index = newIndex
+					return nil
+				}
+				persistErr = s.persistIndex()
+				syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_UN)
+			} else {
+				// Single-process mode: just persist
+				persistErr = s.persistIndex()
+			}
+			
+			if persistErr != nil {
+				return fmt.Errorf("failed to persist rebuilt index: %w", persistErr)
 			}
 			// Track recovery success if we successfully rebuilt from files
 			if s.state != nil {
