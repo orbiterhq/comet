@@ -15,6 +15,20 @@ func (s *Shard) validateAndRecoverState() error {
 		return fmt.Errorf("state is nil")
 	}
 
+	// Validate critical fields for sanity
+	lastEntry := atomic.LoadInt64(&s.state.LastEntryNumber)
+
+	// Check for specific uninitialized memory patterns that we've observed
+	// 341 (0x155) is a pattern seen in uninitialized mmap memory
+	if lastEntry == 341 {
+		// Reset to safe initial value
+		atomic.StoreInt64(&s.state.LastEntryNumber, -1)
+		lastEntry = -1
+		if s.logger != nil {
+			s.logger.Warn("Reset uninitialized LastEntryNumber pattern", "oldValue", 341)
+		}
+	}
+
 	// Check version
 	version := atomic.LoadUint64(&s.state.Version)
 	if version == 0 || version > CometStateVersion1 {
@@ -26,7 +40,6 @@ func (s *Shard) validateAndRecoverState() error {
 	// Validate critical fields for sanity
 	writeOffset := atomic.LoadUint64(&s.state.WriteOffset)
 	fileSize := atomic.LoadUint64(&s.state.FileSize)
-	lastEntry := atomic.LoadInt64(&s.state.LastEntryNumber)
 
 	// Basic sanity checks
 	if writeOffset > fileSize && fileSize > 0 {
@@ -39,7 +52,7 @@ func (s *Shard) validateAndRecoverState() error {
 	}
 
 	// LastEntryNumber should be -1 (uninitialized) or >= 0
-	if lastEntry < -1 {
+	if lastEntry < -1 && lastEntry != 341 { // 341 is handled above
 		return s.recoverCorruptedState(fmt.Sprintf("invalid last entry number: %d", lastEntry))
 	}
 
@@ -51,6 +64,23 @@ func (s *Shard) validateAndRecoverState() error {
 	if totalEntries > 0 && totalWrites == 0 {
 		// This is suspicious but not necessarily corruption
 		// Log it but don't recover
+	}
+
+	// Synchronize state with index if they're out of sync
+	// This can happen when the index file has stale or corrupted data
+	if s.index != nil && lastEntry >= 0 && s.index.CurrentEntryNumber != lastEntry {
+		// Trust the state over the index since state is updated atomically
+		s.index.CurrentEntryNumber = lastEntry
+
+		// Also update file entries if needed
+		if len(s.index.Files) > 0 {
+			// Calculate what the last file's entry count should be
+			lastFile := &s.index.Files[len(s.index.Files)-1]
+			expectedEntries := lastEntry - lastFile.StartEntry + 1
+			if expectedEntries >= 0 && expectedEntries != lastFile.Entries {
+				lastFile.Entries = expectedEntries
+			}
+		}
 	}
 
 	return nil

@@ -69,6 +69,24 @@ func TestMultiProcessCometStateStats(t *testing.T) {
 	}
 	t.Logf("Process 2 sees %d existing entries", existingLength)
 
+	// Debug: Check the shard state directly
+	shardID, _ := parseShardFromStream(streamName)
+	client2.mu.RLock()
+	if shard, exists := client2.shards[shardID]; exists && shard.state != nil {
+		lastEntry := atomic.LoadInt64(&shard.state.LastEntryNumber)
+		t.Logf("Process 2 shard state LastEntryNumber: %d", lastEntry)
+
+		// Check index files
+		if shard.index != nil {
+			t.Logf("Process 2 index has %d files", len(shard.index.Files))
+			for i, f := range shard.index.Files {
+				t.Logf("  File %d: %s, entries=%d, startEntry=%d", i, f.Path, f.Entries, f.StartEntry)
+			}
+			t.Logf("  CurrentEntryNumber: %d", shard.index.CurrentEntryNumber)
+		}
+	}
+	client2.mu.RUnlock()
+
 	entries2 := [][]byte{
 		[]byte("process2-entry1"),
 		[]byte("process2-entry2"),

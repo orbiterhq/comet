@@ -847,11 +847,15 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		rotationLockPath:  filepath.Join(shardDir, "rotation.lock"),
 		statePath:         filepath.Join(shardDir, "comet.state"),
 		index: &ShardIndex{
-			BoundaryInterval: c.config.Indexing.BoundaryInterval,
-			ConsumerOffsets:  make(map[string]int64),
+			CurrentEntryNumber: 0, // Explicitly initialize to prevent garbage values
+			CurrentWriteOffset: 0, // Explicitly initialize to prevent garbage values
+			BoundaryInterval:   c.config.Indexing.BoundaryInterval,
+			ConsumerOffsets:    make(map[string]int64),
+			Files:              make([]FileInfo, 0),
 			BinaryIndex: BinarySearchableIndex{
 				IndexInterval: c.config.Indexing.BoundaryInterval,
 				MaxNodes:      c.config.Indexing.MaxIndexEntries, // Use full limit for binary index
+				Nodes:         make([]EntryIndexNode, 0),
 			},
 		},
 		lastCheckpoint: time.Now(),
@@ -2265,14 +2269,30 @@ func (s *Shard) loadIndex() error {
 		}
 	}
 
+	// In multi-process mode, acquire shared lock for reading index
+	if s.indexLockFile != nil {
+		if err := syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_SH); err != nil {
+			return fmt.Errorf("failed to acquire shared lock for index read: %w", err)
+		}
+		defer syscall.Flock(int(s.indexLockFile.Fd()), syscall.LOCK_UN)
+	}
+
 	// Check if index file exists
 	if _, err := os.Stat(s.indexPath); os.IsNotExist(err) {
 		// No index file - attempt to rebuild from data files
 		if s.index == nil {
-			// Create default index structure
+			// Create default index structure with properly initialized fields
 			s.index = &ShardIndex{
-				BoundaryInterval: defaultBoundaryInterval,
-				ConsumerOffsets:  make(map[string]int64),
+				CurrentEntryNumber: 0, // Explicitly initialize to prevent garbage values
+				CurrentWriteOffset: 0, // Explicitly initialize to prevent garbage values
+				BoundaryInterval:   defaultBoundaryInterval,
+				ConsumerOffsets:    make(map[string]int64),
+				Files:              make([]FileInfo, 0),
+				BinaryIndex: BinarySearchableIndex{
+					IndexInterval: defaultBoundaryInterval,
+					MaxNodes:      1000,
+					Nodes:         make([]EntryIndexNode, 0),
+				},
 			}
 		}
 
@@ -3153,6 +3173,252 @@ func (c *Client) Health() Health {
 	return health
 }
 
+// ListRecent returns the most recent N messages from a stream without affecting consumer state
+// It reads directly from the underlying files, bypassing consumer groups entirely
+func (c *Client) ListRecent(ctx context.Context, streamName string, limit int) ([]StreamMessage, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	shardID, err := parseShardFromStream(streamName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid stream name: %w", err)
+	}
+
+	shard, err := c.getOrCreateShard(shardID)
+	if err != nil {
+		return nil, err
+	}
+
+	// In multi-process mode, reload index to get latest state
+	if c.config.Concurrency.EnableMultiProcessMode {
+		shard.mu.Lock()
+		if err := shard.loadIndex(); err != nil {
+			shard.mu.Unlock()
+			return nil, fmt.Errorf("failed to reload index: %w", err)
+		}
+		// Debug log after loading
+		if c.logger != nil {
+			c.logger.WithFields(
+				"currentEntryNumber", shard.index.CurrentEntryNumber,
+				"numFiles", len(shard.index.Files),
+				"currentWriteOffset", shard.index.CurrentWriteOffset,
+			).Debug("ListRecent: Index loaded")
+		}
+		shard.mu.Unlock()
+	}
+
+	// Create a reader for direct access
+	shard.mu.RLock()
+	if shard.index == nil {
+		shard.mu.RUnlock()
+		return nil, fmt.Errorf("shard index not initialized")
+	}
+	indexCopy := shard.index // Index is immutable once assigned
+	totalEntries := shard.index.CurrentEntryNumber
+	shard.mu.RUnlock()
+
+	if totalEntries == 0 {
+		return nil, nil
+	}
+
+	// Debug log in multi-process mode
+	if c.config.Concurrency.EnableMultiProcessMode && c.logger != nil {
+		c.logger.WithFields("totalEntries", totalEntries, "limit", limit).Debug("ListRecent scanning entries")
+	}
+
+	reader, err := NewReader(shardID, indexCopy)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	// Calculate starting position
+	startFrom := totalEntries - int64(limit)
+	if startFrom < 0 {
+		startFrom = 0
+	}
+
+	var messages []StreamMessage
+	for i := startFrom; i < totalEntries && len(messages) < limit; i++ {
+		select {
+		case <-ctx.Done():
+			return messages, ctx.Err()
+		default:
+		}
+
+		entry, err := reader.ReadEntryByNumber(i)
+		if err != nil {
+			continue // Skip bad entries
+		}
+
+		messages = append(messages, StreamMessage{
+			Stream: streamName,
+			ID:     MessageID{ShardID: shardID, EntryNumber: i},
+			Data:   entry,
+		})
+	}
+
+	return messages, nil
+}
+
+// ScanAll scans all entries in a stream, calling fn for each message
+// Return false from fn to stop scanning early
+// This operation bypasses consumer groups and doesn't affect offsets
+func (c *Client) ScanAll(ctx context.Context, streamName string, fn func(context.Context, StreamMessage) bool) error {
+	shardID, err := parseShardFromStream(streamName)
+	if err != nil {
+		return fmt.Errorf("invalid stream name: %w", err)
+	}
+
+	shard, err := c.getOrCreateShard(shardID)
+	if err != nil {
+		return err
+	}
+
+	// In multi-process mode, reload index to get latest state
+	if c.config.Concurrency.EnableMultiProcessMode {
+		shard.mu.Lock()
+		if err := shard.loadIndex(); err != nil {
+			shard.mu.Unlock()
+			return fmt.Errorf("failed to reload index: %w", err)
+		}
+		shard.mu.Unlock()
+	}
+
+	// Create a reader for direct access
+	shard.mu.RLock()
+	if shard.index == nil {
+		shard.mu.RUnlock()
+		return fmt.Errorf("shard index not initialized")
+	}
+	indexCopy := shard.index
+	totalEntries := shard.index.CurrentEntryNumber
+	shard.mu.RUnlock()
+
+	if totalEntries == 0 {
+		return nil
+	}
+
+	// Debug log in multi-process mode
+	if c.config.Concurrency.EnableMultiProcessMode && c.logger != nil {
+		c.logger.WithFields("totalEntries", totalEntries, "numFiles", len(indexCopy.Files)).Debug("ScanAll starting")
+	}
+
+	reader, err := NewReader(shardID, indexCopy)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	for i := int64(0); i < totalEntries; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		entry, err := reader.ReadEntryByNumber(i)
+		if err != nil {
+			continue // Skip bad entries
+		}
+
+		msg := StreamMessage{
+			Stream: streamName,
+			ID:     MessageID{ShardID: shardID, EntryNumber: i},
+			Data:   entry,
+		}
+
+		if !fn(ctx, msg) {
+			return nil // User requested stop
+		}
+	}
+
+	return nil
+}
+
+// Tail follows new entries as they arrive in a stream, calling fn for each new message
+// This operation bypasses consumer groups and doesn't affect offsets
+// The function blocks until the context is cancelled
+func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Context, StreamMessage) error) error {
+	shardID, err := parseShardFromStream(streamName)
+	if err != nil {
+		return fmt.Errorf("invalid stream name: %w", err)
+	}
+
+	shard, err := c.getOrCreateShard(shardID)
+	if err != nil {
+		return err
+	}
+
+	// In multi-process mode, reload index to get latest state
+	if c.config.Concurrency.EnableMultiProcessMode {
+		shard.mu.Lock()
+		if err := shard.loadIndex(); err != nil {
+			shard.mu.Unlock()
+			return fmt.Errorf("failed to reload index: %w", err)
+		}
+		shard.mu.Unlock()
+	}
+
+	// Start from current position
+	shard.mu.RLock()
+	if shard.index == nil {
+		shard.mu.RUnlock()
+		return fmt.Errorf("shard index not initialized")
+	}
+	position := shard.index.CurrentEntryNumber
+	indexCopy := shard.index
+	shard.mu.RUnlock()
+
+	// Create reader
+	reader, err := NewReader(shardID, indexCopy)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			// Get current state
+			shard.mu.RLock()
+			currentIndex := shard.index
+			currentEntries := shard.index.CurrentEntryNumber
+			shard.mu.RUnlock()
+
+			// Update reader with latest index if needed
+			reader.UpdateFiles(&currentIndex.Files)
+
+			// Read any new entries
+			for position < currentEntries {
+				entry, err := reader.ReadEntryByNumber(position)
+				if err != nil {
+					position++
+					continue
+				}
+
+				msg := StreamMessage{
+					Stream: streamName,
+					ID:     MessageID{ShardID: shardID, EntryNumber: position},
+					Data:   entry,
+				}
+
+				if err := fn(ctx, msg); err != nil {
+					return err
+				}
+
+				position++
+			}
+		}
+	}
+}
+
 // initCometState initializes the unified state for metrics and coordination
 // In multi-process mode, it's memory-mapped to a file for sharing between processes
 // In single-process mode, it's allocated in regular memory
@@ -3192,10 +3458,19 @@ func (s *Shard) initCometStateMmap() error {
 		return fmt.Errorf("failed to stat unified state file: %w", err)
 	}
 
-	if stat.Size() == 0 {
-		// New file - initialize with zeros and set version
-		if err := file.Truncate(CometStateSize); err != nil {
-			return fmt.Errorf("failed to set unified state file size: %w", err)
+	isNewFile := stat.Size() == 0
+
+	if isNewFile {
+		// New file - write zeros to ensure clean initialization
+		// Note: We write zeros instead of using truncate because truncate may leave
+		// uninitialized memory on some filesystems
+		zeros := make([]byte, CometStateSize)
+		if _, err := file.Write(zeros); err != nil {
+			return fmt.Errorf("failed to initialize state file with zeros: %w", err)
+		}
+		// Sync to ensure zeros are written to disk
+		if err := file.Sync(); err != nil {
+			return fmt.Errorf("failed to sync state file: %w", err)
 		}
 	} else if stat.Size() != CometStateSize {
 		return fmt.Errorf("unified state file has wrong size: got %d, expected %d", stat.Size(), CometStateSize)
@@ -3212,10 +3487,17 @@ func (s *Shard) initCometStateMmap() error {
 	s.state = (*CometState)(unsafe.Pointer(&data[0]))
 
 	// Initialize version if this is a new file
-	if stat.Size() == 0 {
+	if isNewFile {
 		atomic.StoreUint64(&s.state.Version, CometStateVersion1)
 		// Initialize with -1 to indicate "not yet set" for LastEntryNumber
+		// NOTE: This -1 is different from index.CurrentEntryNumber which starts at 0.
+		// The synchronization code in getOrCreateShard handles this difference.
+		// -1 means "no entries allocated yet", while after first write it becomes 0, 1, 2...
 		atomic.StoreInt64(&s.state.LastEntryNumber, -1)
+		// Also run validation to catch any initialization issues
+		if err := s.validateAndRecoverState(); err != nil {
+			return fmt.Errorf("state validation failed: %w", err)
+		}
 	} else {
 		// Validate existing state file
 		if err := s.validateAndRecoverState(); err != nil {
