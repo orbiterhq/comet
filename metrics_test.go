@@ -823,53 +823,53 @@ func TestAtomicMetricsInterface(t *testing.T) {
 	// Test all methods that were previously untested (0% coverage)
 	metrics.IncrementEntries(5)
 	metrics.IncrementEntries(3)
-	
+
 	metrics.AddBytes(1024)
 	metrics.AddBytes(512)
-	
+
 	metrics.AddCompressedBytes(256)
 	metrics.AddCompressedBytes(128)
-	
+
 	metrics.RecordWriteLatency(1000)
 	metrics.RecordMinWriteLatency(500)
 	metrics.RecordMinWriteLatency(800) // Should not update (higher)
 	metrics.RecordMinWriteLatency(300) // Should update (lower)
-	
+
 	metrics.RecordMaxWriteLatency(2000)
 	metrics.RecordMaxWriteLatency(1500) // Should not update (lower)
 	metrics.RecordMaxWriteLatency(2500) // Should update (higher)
-	
+
 	metrics.SetCompressionRatio(7550) // 75.5% as basis points
 	metrics.IncrementCompressedEntries(1)
 	metrics.IncrementCompressedEntries(1)
 	metrics.IncrementSkippedCompression(1)
-	
+
 	metrics.AddCompressionWait(1500)
 	metrics.AddCompressionWait(800)
-	
+
 	metrics.IncrementFilesCreated(1)
 	metrics.IncrementFilesCreated(1)
 	metrics.IncrementFilesDeleted(1)
 	metrics.IncrementFileRotations(1)
 	metrics.IncrementCheckpoints(1)
-	
+
 	checkpointTime := uint64(time.Now().UnixNano())
 	metrics.SetLastCheckpoint(checkpointTime)
-	
+
 	metrics.SetActiveReaders(3)
 	metrics.SetMaxConsumerLag(42)
-	
+
 	metrics.IncrementErrors(1)
 	metrics.IncrementErrors(1)
-	
+
 	errorTime := uint64(time.Now().UnixNano())
 	metrics.SetLastError(errorTime)
-	
+
 	metrics.IncrementIndexPersistErrors(1)
 
 	// Test GetStats to verify all operations worked
 	stats := metrics.GetStats()
-	
+
 	// Verify the stats contain expected values
 	if stats.TotalEntries != 8 {
 		t.Errorf("Stats.TotalEntries = %d, want 8", stats.TotalEntries)

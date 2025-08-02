@@ -225,7 +225,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	// Note: The worker process already consumed messages, so we need to either:
 	// 1. Use a different approach to verify the index rebuild worked
 	// 2. Read messages that were written AFTER the worker consumed
-	
+
 	// Let's verify by checking that we can write and read new messages
 	// This proves the index is functional after rebuild
 	testData := []byte(fmt.Sprintf(`{"id": "verify-%d", "test": "index_verification"}`, time.Now().UnixNano()))
@@ -233,7 +233,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to write verification data: %v", err)
 	}
-	
+
 	consumer := NewConsumer(client2, ConsumerOptions{
 		Group: fmt.Sprintf("verify-rebuild-%d", time.Now().UnixNano()),
 	})

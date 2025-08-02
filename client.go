@@ -539,7 +539,6 @@ func (bi *BinarySearchableIndex) FindEntry(entryNumber int64) (EntryPosition, bo
 	return bi.Nodes[idx-1].Position, true
 }
 
-
 // EntryPosition tracks where an entry is located
 // Fields ordered for optimal memory alignment
 type EntryPosition struct {
