@@ -16,6 +16,7 @@
       "Bash(mise run test:*)",
       "Bash(mise run lint:*)",
       "Bash(git stash:*)",
+      "Bash(git diff:*)",
       "Bash(dprint fmt:*)",
       "Bash(DEBUG=true go test -run TestIndexMetrics -v)"
     ],

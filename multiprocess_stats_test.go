@@ -2,9 +2,6 @@ package comet
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,11 +123,6 @@ func TestMultiProcessCometStateStats(t *testing.T) {
 
 	t.Logf("Multi-process test passed: %d total entries across processes", totalLength)
 }
-
-// REMOVED: TestConcurrentMultiProcessWrites / TestMultiClientCoordination
-// This test was fundamentally misleading - it tested multiple clients in the same process,
-// not actual multi-process coordination. File locks don't work properly within the same process.
-// For real multi-process tests, see multiprocess_integration_test.go which spawns actual OS processes.
 
 // TestCometStateDirectAccess tests direct access to CometState metrics
 func TestCometStateDirectAccess(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -381,10 +382,6 @@ func TestTail(t *testing.T) {
 			}
 		}
 		mu.Unlock()
-
-		// Cancel and wait for goroutine
-		cancel()
-		wg.Wait()
 	})
 
 	t.Run("TailErrorHandling", func(t *testing.T) {
