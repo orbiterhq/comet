@@ -790,29 +790,110 @@ func (c *Client) Sync(ctx context.Context) error {
 						// Always use the disk version as it represents the actual files
 						indexCopy.Files = diskIndex.Files
 
+						// Fix any corrupted file entry counts from authoritative state
+						if state := shard.loadState(); state != nil {
+							currentEntryNumberFromState := atomic.LoadInt64(&state.LastEntryNumber) + 1
+							totalEntriesFromFiles := int64(0)
+							
+							// First pass: sum up entries from files that have valid counts
+							for i := 0; i < len(indexCopy.Files); i++ {
+								if indexCopy.Files[i].Entries >= 0 {
+									totalEntriesFromFiles += indexCopy.Files[i].Entries
+								}
+							}
+							
+							// If total from files doesn't match state, fix the files
+							if currentEntryNumberFromState > 0 && totalEntriesFromFiles != currentEntryNumberFromState {
+								// Simple fix: if we have 1 file, set its entries to match the total
+								if len(indexCopy.Files) == 1 {
+									indexCopy.Files[0].Entries = currentEntryNumberFromState
+								}
+							}
+							
+							// Also fix any files with explicitly negative entry counts
+							for i := 0; i < len(indexCopy.Files); i++ {
+								if indexCopy.Files[i].Entries < 0 {
+									oldEntries := indexCopy.Files[i].Entries
+									// For negative entries, use total entries if single file, otherwise 0
+									if len(indexCopy.Files) == 1 {
+										indexCopy.Files[i].Entries = currentEntryNumberFromState
+									} else {
+										indexCopy.Files[i].Entries = 0
+									}
+									// Always log this fix since it's critical
+									if shard.logger != nil {
+										shard.logger.Warn("Fixed negative file entry count",
+											"shardID", shard.shardID,
+											"fileIndex", i,
+											"oldEntries", oldEntries,
+											"newEntries", indexCopy.Files[i].Entries,
+											"totalFromState", currentEntryNumberFromState)
+									}
+								}
+							}
+						}
+
 						// Update the current file info if we have one
 						if len(indexCopy.Files) > 0 && indexCopy.CurrentFile != "" {
 							lastFile := &indexCopy.Files[len(indexCopy.Files)-1]
 							// Update the last file's end offset and entry count based on our writes
 							if lastFile.Path == indexCopy.CurrentFile {
 								lastFile.EndOffset = indexCopy.CurrentWriteOffset
-								// Calculate actual entries in the file
-								if diskIndex.CurrentEntryNumber > 0 {
+								// In multi-process mode, file entry counts can become inconsistent due to 
+								// concurrent updates. Calculate the correct entry count from authoritative state.
+								if state := shard.loadState(); state != nil {
+									currentEntryNumberFromState := atomic.LoadInt64(&state.LastEntryNumber) + 1
+									
+									// Debug: Log current calculation
+									if shard.logger != nil && currentEntryNumberFromState > 0 {
+										shard.logger.Debug("loadIndex: calculating file entries",
+											"shardID", shard.shardID,
+											"totalEntries", currentEntryNumberFromState,
+											"numFiles", len(indexCopy.Files),
+											"lastFileEntries", lastFile.Entries)
+									}
+									
+									// Calculate entries in other files 
 									entriesInOtherFiles := int64(0)
 									for i := 0; i < len(indexCopy.Files)-1; i++ {
-										// Skip files with corrupted entry counts
 										if indexCopy.Files[i].Entries >= 0 {
 											entriesInOtherFiles += indexCopy.Files[i].Entries
+											if shard.logger != nil {
+												shard.logger.Debug("loadIndex: other file",
+													"fileIndex", i,
+													"entries", indexCopy.Files[i].Entries,
+													"cumulativeEntries", entriesInOtherFiles)
+											}
 										}
 									}
-									calculatedEntries := indexCopy.CurrentEntryNumber - entriesInOtherFiles
-
-									// Prevent negative entry counts which cause corruption
-									if calculatedEntries >= 0 {
-										lastFile.Entries = calculatedEntries
+									
+									// Calculate entries for this file based on total entries minus other files
+									calculatedEntries := currentEntryNumberFromState - entriesInOtherFiles
+									
+									if shard.logger != nil {
+										shard.logger.Debug("loadIndex: calculation result",
+											"entriesInOtherFiles", entriesInOtherFiles,
+											"calculatedEntries", calculatedEntries,
+											"previousEntries", lastFile.Entries)
 									}
-									// If calculation would be negative, keep the existing value
-									// This prevents the uint64 overflow issue during serialization
+									
+									// Only update if the calculation makes sense
+									if calculatedEntries >= 0 && calculatedEntries != lastFile.Entries {
+										lastFile.Entries = calculatedEntries
+										if shard.logger != nil {
+											shard.logger.Debug("loadIndex: updated file entries",
+												"newEntries", calculatedEntries)
+										}
+									} else if calculatedEntries < 0 {
+										// Negative calculation - this shouldn't happen, log it
+										if shard.logger != nil {
+											shard.logger.Warn("loadIndex: negative calculation detected, keeping existing value",
+												"totalEntries", currentEntryNumberFromState,
+												"entriesInOtherFiles", entriesInOtherFiles,
+												"calculatedEntries", calculatedEntries,
+												"keepingEntries", lastFile.Entries)
+										}
+									}
 								}
 							}
 						}
@@ -1656,9 +1737,11 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				s.index.CurrentWriteOffset = finalWriteOffset
 				s.writesSinceCheckpoint = initialWritesSinceCheckpoint + len(entries)
 
-				// Update the current file's entry count and end offset
+				// Update the current file's end offset
+				// Note: Don't increment file entry counts here in multi-process mode
+				// as this causes race conditions. Entry counts are calculated accurately
+				// during index reloads from the authoritative state.
 				if len(s.index.Files) > 0 {
-					s.index.Files[len(s.index.Files)-1].Entries += int64(len(entries))
 					s.index.Files[len(s.index.Files)-1].EndOffset = finalWriteOffset
 				}
 
@@ -2197,6 +2280,34 @@ func (s *Shard) loadIndexWithRecovery() error {
 		if s.handleMissingShardDirectory(err) {
 			return nil // Successfully recovered from missing directory
 		}
+		
+		// If index loading failed due to corruption, attempt rebuild
+		if strings.Contains(err.Error(), "index file too small") || 
+		   strings.Contains(err.Error(), "unexpected EOF") ||
+		   strings.Contains(err.Error(), "invalid header") {
+			
+			// Get shard directory for rebuild
+			shardDir := filepath.Dir(s.indexPath)
+			
+			if s.logger != nil {
+				s.logger.Warn("Index corrupted, attempting rebuild", 
+					"error", err, "shardDir", shardDir)
+			}
+			
+			// Attempt to rebuild from data files
+			if rebuildErr := s.rebuildIndexFromDataFiles(shardDir); rebuildErr != nil {
+				if s.logger != nil {
+					s.logger.Error("Index rebuild failed", "rebuildError", rebuildErr, "originalError", err)
+				}
+				return fmt.Errorf("index corrupt and rebuild failed: original=%w, rebuild=%w", err, rebuildErr)
+			}
+			
+			if s.logger != nil {
+				s.logger.Info("Successfully rebuilt index after corruption")
+			}
+			return nil // Rebuild succeeded
+		}
+		
 		return err // Other error, propagate it
 	}
 	return nil
@@ -2439,6 +2550,24 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 			totalEntries += scanResult.entryCount
 			currentEntryNum += scanResult.entryCount
 		}
+	}
+
+	// Remove files with 0 entries from the index - they shouldn't be tracked
+	// This prevents consumer offset adjustment logic from seeing fake files
+	validFiles := make([]FileInfo, 0, len(s.index.Files))
+	for _, file := range s.index.Files {
+		if file.Entries > 0 {
+			validFiles = append(validFiles, file)
+		}
+	}
+	s.index.Files = validFiles
+
+	// Recalculate StartEntry values for remaining files to ensure they're correct
+	// This is critical for consumer offset logic to work properly
+	runningEntryCount := int64(0)
+	for i := range s.index.Files {
+		s.index.Files[i].StartEntry = runningEntryCount
+		runningEntryCount += s.index.Files[i].Entries
 	}
 
 	// Update index state
@@ -2961,19 +3090,40 @@ func (s *Shard) loadIndex() error {
 			"loadedIndex", index.CurrentEntryNumber)
 	}
 	
-	// Preserve binary index nodes from the current index before replacing
-	// In multi-process mode, binary index nodes are created in memory and should be preserved
+	// Preserve important data from the current index before replacing
+	// In multi-process mode, some data is created in memory and should be preserved
 	var existingNodes []EntryIndexNode
-	if s.index != nil && len(s.index.BinaryIndex.Nodes) > 0 {
-		// Copy existing nodes
-		existingNodes = make([]EntryIndexNode, len(s.index.BinaryIndex.Nodes))
-		copy(existingNodes, s.index.BinaryIndex.Nodes)
+	var existingFiles []FileInfo
+	var existingCurrentEntryNumber int64
+	var existingCurrentWriteOffset int64
+	var existingCurrentFile string
+	
+	if s.index != nil {
+		// Preserve binary index nodes
+		if len(s.index.BinaryIndex.Nodes) > 0 {
+			existingNodes = make([]EntryIndexNode, len(s.index.BinaryIndex.Nodes))
+			copy(existingNodes, s.index.BinaryIndex.Nodes)
+		}
+		
+		// Preserve file information that might be more recent than persisted index
+		if len(s.index.Files) > 0 {
+			existingFiles = make([]FileInfo, len(s.index.Files))
+			copy(existingFiles, s.index.Files)
+		}
+		
+		// Preserve current state
+		existingCurrentEntryNumber = s.index.CurrentEntryNumber
+		existingCurrentWriteOffset = s.index.CurrentWriteOffset
+		existingCurrentFile = s.index.CurrentFile
 	}
 	
 	// Note: Assignment to s.index requires caller to hold s.mu
 	s.index = index
 	
-	// Restore binary index nodes if we had any
+	// Restore preserved data by merging with loaded index
+	// Use the most recent data (existing vs loaded)
+	
+	// 1. Restore binary index nodes
 	if len(existingNodes) > 0 {
 		// Merge existing nodes with any nodes from the loaded index
 		nodeMap := make(map[int64]EntryIndexNode)
@@ -2993,18 +3143,84 @@ func (s *Shard) loadIndex() error {
 		for _, node := range nodeMap {
 			s.index.BinaryIndex.Nodes = append(s.index.BinaryIndex.Nodes, node)
 		}
+	}
+	
+	// 2. Use the most recent entry/offset information
+	if existingCurrentEntryNumber > s.index.CurrentEntryNumber {
+		s.index.CurrentEntryNumber = existingCurrentEntryNumber
+	}
+	if existingCurrentWriteOffset > s.index.CurrentWriteOffset {
+		s.index.CurrentWriteOffset = existingCurrentWriteOffset
+	}
+	if existingCurrentFile != "" && (s.index.CurrentFile == "" || existingCurrentWriteOffset > s.index.CurrentWriteOffset) {
+		s.index.CurrentFile = existingCurrentFile
+	}
+	
+	// 3. Merge file lists - preserve files from both sources
+	if len(existingFiles) > 0 {
+		// Create a map of files from loaded index
+		fileMap := make(map[string]FileInfo)
+		for _, file := range s.index.Files {
+			fileMap[file.Path] = file
+		}
 		
-		if Debug && s.logger != nil {
-			s.logger.Debug("Preserved binary index nodes after index reload",
-				"shardID", s.shardID,
-				"preservedNodes", len(existingNodes),
-				"finalNodes", len(s.index.BinaryIndex.Nodes))
+		// Add existing files, using more recent info if available
+		for _, file := range existingFiles {
+			if existing, exists := fileMap[file.Path]; exists {
+				// Keep the file with more entries (more recent)
+				if file.Entries > existing.Entries {
+					fileMap[file.Path] = file
+				}
+			} else {
+				// New file not in loaded index
+				fileMap[file.Path] = file
+			}
+		}
+		
+		// Convert back to slice
+		s.index.Files = make([]FileInfo, 0, len(fileMap))
+		for _, file := range fileMap {
+			s.index.Files = append(s.index.Files, file)
 		}
 	}
+	
+	// Fix any corrupted negative entry counts from disk using authoritative state
+	if s.lockFile != nil && s.loadState() != nil { // Multi-process mode
+		state := s.loadState()
+		currentEntryNumberFromState := atomic.LoadInt64(&state.LastEntryNumber) + 1
+		
+		if currentEntryNumberFromState > 0 {
+			totalEntriesFromFiles := int64(0)
+			
+			// Check for negative entry counts and fix them
+			for i := 0; i < len(s.index.Files); i++ {
+				if s.index.Files[i].Entries < 0 {
+					// Fix negative entry count
+					if len(s.index.Files) == 1 {
+						s.index.Files[i].Entries = currentEntryNumberFromState
+					} else {
+						s.index.Files[i].Entries = 0
+					}
+				} else {
+					totalEntriesFromFiles += s.index.Files[i].Entries
+				}
+			}
+			
+			// If total from files doesn't match state, fix single-file case
+			if len(s.index.Files) == 1 && totalEntriesFromFiles != currentEntryNumberFromState {
+				s.index.Files[0].Entries = currentEntryNumberFromState
+			}
+		}
+	}
+	
 	if Debug && s.logger != nil {
-		s.logger.Debug("loadIndex: after assigning loaded index",
+		s.logger.Debug("Preserved index data after reload",
 			"shardID", s.shardID,
-			"afterAssign", s.index.CurrentEntryNumber)
+			"preservedNodes", len(existingNodes),
+			"preservedFiles", len(existingFiles),
+			"finalNodes", len(s.index.BinaryIndex.Nodes),
+			"finalFiles", len(s.index.Files),
+			"finalCurrentEntryNumber", s.index.CurrentEntryNumber)
 	}
 	// Restore config values
 	s.index.BoundaryInterval = boundaryInterval
@@ -3098,6 +3314,9 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 	s.index.BinaryIndex.Nodes = make([]EntryIndexNode, 0)
 	s.index.CurrentEntryNumber = 0
 	s.index.CurrentWriteOffset = 0
+	// CRITICAL: Reset consumer offsets during index rebuild
+	// This ensures consumers start from the beginning after rebuild
+	s.index.ConsumerOffsets = make(map[string]int64)
 
 	// Scan each file to rebuild the index
 	currentEntryNum := int64(0)
@@ -3108,15 +3327,26 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 			continue
 		}
 
-		// Add to index
-		s.index.Files = append(s.index.Files, *fileInfo)
-		currentEntryNum = fileInfo.StartEntry + fileInfo.Entries
+		// Only add files that have entries to the index
+		// Empty files should not be included as they create conflicts
+		if fileInfo.Entries > 0 {
+			s.index.Files = append(s.index.Files, *fileInfo)
+			currentEntryNum = fileInfo.StartEntry + fileInfo.Entries
+		}
 
 		// Update current file if this is the last one
 		if filePath == dataFiles[len(dataFiles)-1] {
 			s.index.CurrentFile = filePath
 			s.index.CurrentWriteOffset = fileInfo.EndOffset
 		}
+	}
+
+	// Sort files by StartEntry to ensure correct ordering after rebuild
+	// This is critical for consumer logic that assumes Files[0] has the earliest entries
+	if len(s.index.Files) > 1 {
+		sort.Slice(s.index.Files, func(i, j int) bool {
+			return s.index.Files[i].StartEntry < s.index.Files[j].StartEntry
+		})
 	}
 
 	// Update total entry count - always trust state over file scan results
@@ -3181,6 +3411,15 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 	// Track recovery success
 	if state := s.loadState(); state != nil {
 		atomic.AddUint64(&state.RecoverySuccesses, 1)
+	}
+
+	// CRITICAL: Persist the rebuilt and sorted index to disk
+	// This ensures subsequent loadIndex() calls get the correct sorted order
+	if err := s.persistIndex(); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("Failed to persist rebuilt index", "error", err)
+		}
+		// Don't fail the rebuild, but log the issue
 	}
 
 	return nil
@@ -3336,6 +3575,7 @@ func (s *Shard) scanDataFileForRebuild(filePath string, startEntry int64) (*File
 		// Parse header
 		length := binary.LittleEndian.Uint32(buffer[0:4])
 		timestamp := binary.LittleEndian.Uint64(buffer[4:12])
+
 
 		// Check for uninitialized memory (all zeros) - this indicates end of valid data
 		allZeros := true

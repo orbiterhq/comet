@@ -96,14 +96,12 @@ func (s *Shard) validateAndRecoverState() error {
 					"pid", processID)
 			}
 
-			// Try to reload the index from disk
-			// Note: loadIndex requires s.mu to be held
-			s.mu.Lock()
-			err := s.loadIndex()
-			s.mu.Unlock()
+			// Try to reload the index from disk with recovery
+			// Note: loadIndexWithRecovery handles mutex internally and can rebuild if needed
+			err := s.loadIndexWithRecovery()
 			if err != nil {
 				if s.logger != nil {
-					s.logger.Warn("Failed to reload index",
+					s.logger.Warn("Failed to reload index even with recovery",
 						"error", err,
 						"shard", s.shardID)
 				}

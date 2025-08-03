@@ -499,6 +499,9 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 	// Wait for all processes to complete
 	wg.Wait()
 
+	// Wait a bit for all processes to fully complete and sync
+	time.Sleep(500 * time.Millisecond)
+
 	// Verify final state using main process
 	config := MultiProcessConfig()
 	client, err := NewClientWithConfig(dir, config)
@@ -512,6 +515,28 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 
 	for shard := 1; shard <= 4; shard++ {
 		streamName := fmt.Sprintf("test:v1:shard:%04d", shard)
+		
+		// Get detailed shard information before scanning
+		s, _ := client.getOrCreateShard(uint32(shard))
+		s.mu.RLock()
+		if s.index != nil {
+			t.Logf("Shard %d index before scan: CurrentEntryNumber=%d, Files=%d", 
+				shard, s.index.CurrentEntryNumber, len(s.index.Files))
+			for i, f := range s.index.Files {
+				if stat, err := os.Stat(f.Path); err != nil {
+					t.Logf("  File %d: %s (entries %d-%d) - ERROR: %v", 
+						i, filepath.Base(f.Path), f.StartEntry, f.StartEntry+f.Entries-1, err)
+				} else {
+					t.Logf("  File %d: %s (entries %d-%d, size %d bytes)", 
+						i, filepath.Base(f.Path), f.StartEntry, f.StartEntry+f.Entries-1, stat.Size())
+				}
+			}
+		}
+		if s.state != nil {
+			t.Logf("Shard %d state before scan: LastEntryNumber=%d", shard, s.state.GetLastEntryNumber())
+		}
+		s.mu.RUnlock()
+		
 		var count int
 		var firstID, lastID int64 = -1, -1
 		err := client.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {

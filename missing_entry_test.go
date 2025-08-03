@@ -4,6 +4,7 @@ package comet
 
 import (
 	"context"
+	"os"
 	"testing"
 )
 
@@ -151,9 +152,45 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 		}
 		shard.mu.RUnlock()
 		
-		// Count entries
+		// Count entries with detailed debugging
 		var count int
 		var ids []int64
+		
+		// Also manually create a reader to test direct access
+		shard2, _ := client.getOrCreateShard(1)
+		shard2.mu.RLock()
+		if shard2.index != nil && len(shard2.index.Files) > 0 {
+			t.Logf("Process 2: Index has %d files:", len(shard2.index.Files))
+			for i, f := range shard2.index.Files {
+				t.Logf("  File %d: %s (entries %d-%d, bytes %d-%d)", 
+					i, f.Path, f.StartEntry, f.StartEntry+f.Entries-1, f.StartOffset, f.EndOffset)
+				
+				// Check if file exists and is readable
+				if stat, err := os.Stat(f.Path); err != nil {
+					t.Logf("    ERROR: File not accessible: %v", err)
+				} else {
+					t.Logf("    File exists, size: %d bytes", stat.Size())
+				}
+			}
+		}
+		indexCopy := shard2.cloneIndex()
+		shard2.mu.RUnlock()
+		
+		// Try to create a reader manually
+		reader, err := NewReader(1, indexCopy)
+		if err != nil {
+			t.Logf("Process 2: Failed to create reader: %v", err)
+		} else {
+			t.Logf("Process 2: Successfully created reader")
+			// Try to read first entry manually
+			if entry, err := reader.ReadEntryByNumber(0); err != nil {
+				t.Logf("Process 2: Failed to read entry 0: %v", err)
+			} else {
+				t.Logf("Process 2: Successfully read entry 0: %d bytes", len(entry))
+			}
+			reader.Close()
+		}
+		
 		err = client.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {
 			ids = append(ids, msg.ID.EntryNumber)
 			count++
