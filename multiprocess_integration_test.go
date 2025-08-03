@@ -332,15 +332,19 @@ func TestMultiProcessIntegration(t *testing.T) {
 		client.Sync(context.Background())
 		client.Close()
 
-		// Start writer process
-		writerCmd := exec.Command(executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
+		// Start writer process with timeout
+		writerCtx, writerCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer writerCancel()
+		writerCmd := exec.CommandContext(writerCtx, executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
 		writerCmd.Env = append(os.Environ(),
 			"COMET_MP_TEST_ROLE=mmap-writer",
 			fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),
 		)
 
-		// Start reader process that monitors mmap changes
-		readerCmd := exec.Command(executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
+		// Start reader process that monitors mmap changes with timeout
+		readerCtx, readerCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer readerCancel()
+		readerCmd := exec.CommandContext(readerCtx, executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
 		readerCmd.Env = append(os.Environ(),
 			"COMET_MP_TEST_ROLE=mmap-reader",
 			fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),
@@ -454,7 +458,9 @@ func TestMultiProcessIntegration(t *testing.T) {
 			wg.Add(1)
 			go func(id int) {
 				defer wg.Done()
-				cmd := exec.Command(executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
 				cmd.Env = append(os.Environ(),
 					fmt.Sprintf("COMET_MP_TEST_ROLE=contention-writer-%d", id),
 					fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),

@@ -21,9 +21,11 @@ func TestMultiProcessRetention(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Build test worker
+	// Build test worker with timeout
 	workerBinary := filepath.Join(dir, "test_worker")
-	cmd := exec.Command("go", "build", "-o", workerBinary, "./cmd/test_worker")
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer buildCancel()
+	cmd := exec.CommandContext(buildCtx, "go", "build", "-o", workerBinary, "./cmd/test_worker")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to build test worker: %v", err)
 	}
@@ -96,7 +98,9 @@ func TestMultiProcessRetention(t *testing.T) {
 		"--stream", streamName,
 	}
 
-	cmd = exec.Command(workerBinary, args...)
+	workerCtx, workerCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer workerCancel()
+	cmd = exec.CommandContext(workerCtx, workerBinary, args...)
 	output, err := cmd.CombinedOutput()
 	t.Logf("Worker output: %s", string(output))
 	if err != nil {
@@ -133,9 +137,11 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
 
-	// Build the test worker binary
+	// Build the test worker binary with timeout
 	workerBinary := filepath.Join(dir, "test_worker")
-	cmd := exec.Command("go", "build", "-o", workerBinary, "./cmd/test_worker")
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer buildCancel()
+	cmd := exec.CommandContext(buildCtx, "go", "build", "-o", workerBinary, "./cmd/test_worker")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to build test worker: %v", err)
 	}
@@ -193,7 +199,9 @@ func TestIndexRebuildIntegration(t *testing.T) {
 		"--initial-entries", fmt.Sprintf("%d", initialEntries),
 	}
 
-	cmd = exec.Command(workerBinary, args...)
+	rebuildCtx, rebuildCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer rebuildCancel()
+	cmd = exec.CommandContext(rebuildCtx, workerBinary, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Worker process failed: %v\nOutput: %s", err, output)

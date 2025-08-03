@@ -3269,6 +3269,17 @@ func (s *Shard) loadIndex() error {
 		// For mmap files, the file size doesn't reflect the actual data written
 	}
 
+	// Update state metrics after loading index
+	if state := s.loadState(); state != nil {
+		// Calculate total file bytes from loaded index
+		var totalBytes uint64
+		for _, file := range s.index.Files {
+			totalBytes += uint64(file.EndOffset - file.StartOffset)
+		}
+		atomic.StoreUint64(&state.TotalFileBytes, totalBytes)
+		atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
+	}
+
 	return nil
 }
 
