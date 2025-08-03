@@ -6,6 +6,7 @@ package comet
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -145,7 +146,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 	shard2.mu.RLock()
 	finalFiles := len(shard2.index.Files)
 	t.Logf("Final files: %d (started with %d)", finalFiles, initialFiles)
-	
+
 	// Check which files actually exist on disk vs what's in the index
 	existingFiles := 0
 	missingFiles := 0
@@ -160,7 +161,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 		}
 	}
 	shard2.mu.RUnlock()
-	
+
 	t.Logf("Index shows %d files: %d exist on disk, %d were deleted", finalFiles, existingFiles, missingFiles)
 
 	// Verify retention worked (some files should be deleted)
@@ -177,7 +178,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 			shard2.mu.Lock()
 			shard2.loadIndexWithRetry()
 			shard2.mu.Unlock()
-			
+
 			// Recount after reload
 			shard2.mu.RLock()
 			existingAfterReload := 0
