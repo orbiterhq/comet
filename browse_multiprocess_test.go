@@ -122,51 +122,6 @@ func TestBrowseMultiProcessReal(t *testing.T) {
 	})
 
 	// Test 2: Concurrent processes with tail
-	t.Run("ConcurrentTail", func(t *testing.T) {
-		testDir := filepath.Join(dir, "tail")
-		os.RemoveAll(testDir) // Clean up any previous test data
-		os.MkdirAll(testDir, 0755)
-
-		// Start a tail process
-		tailCmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessReal$", "-test.v")
-		tailCmd.Env = append(os.Environ(),
-			"COMET_BROWSE_TEST_ROLE=tail",
-			fmt.Sprintf("COMET_BROWSE_TEST_DIR=%s", testDir),
-			"COMET_BROWSE_TEST_DURATION=3s",
-		)
-
-		tailOutput := make(chan []byte, 1)
-		go func() {
-			output, _ := tailCmd.CombinedOutput()
-			tailOutput <- output
-		}()
-
-		// Give tail time to start
-		time.Sleep(500 * time.Millisecond)
-
-		// Write more entries from another process
-		writeCmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessReal$", "-test.v")
-		writeCmd.Env = append(os.Environ(),
-			"COMET_BROWSE_TEST_ROLE=writer",
-			fmt.Sprintf("COMET_BROWSE_TEST_DIR=%s", testDir),
-			"COMET_BROWSE_TEST_START=20",
-			"COMET_BROWSE_TEST_COUNT=5",
-		)
-		writeOutput, err := writeCmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("Write process failed: %v\nOutput: %s", err, writeOutput)
-		}
-		t.Logf("Write process: %s", writeOutput)
-
-		// Wait for tail to complete
-		output := <-tailOutput
-		t.Logf("Tail process: %s", output)
-
-		// Verify tail received messages
-		if !contains(string(output), "Tailed") && !contains(string(output), "message") {
-			t.Error("Expected tail to receive messages")
-		}
-	})
 
 	// Test 3: Browse operations don't affect consumers
 	t.Run("BrowseDoesNotAffectConsumers", func(t *testing.T) {
@@ -357,30 +312,6 @@ func runBrowseTestWorker(t *testing.T, role string) {
 		}
 		fmt.Printf("Scanned %d total entries (IDs %d-%d)\n", count, firstID, lastID)
 
-	case "tail":
-		// Tail for new entries
-		duration, _ := time.ParseDuration(os.Getenv("COMET_BROWSE_TEST_DURATION"))
-		if duration == 0 {
-			duration = 2 * time.Second
-		}
-
-		ctx, cancel := context.WithTimeout(ctx, duration)
-		defer cancel()
-
-		count := 0
-		err := client.Tail(ctx, streamName, func(ctx context.Context, msg StreamMessage) error {
-			count++
-			var data map[string]interface{}
-			if err := json.Unmarshal(msg.Data, &data); err == nil {
-				fmt.Printf("Tailed message: %v\n", data)
-			}
-			return nil
-		})
-
-		if err != nil && err != context.DeadlineExceeded {
-			t.Fatalf("Tail failed: %v", err)
-		}
-		fmt.Printf("Tailed %d messages\n", count)
 
 	case "consumer-read":
 		// Consumer read operation
@@ -655,25 +586,6 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 		}
 		fmt.Printf("Browser %d found %d total entries\n", browseID, totalFound)
 
-	case "continuous-tail":
-		// Tail a specific shard continuously
-		shardID, _ := strconv.Atoi(os.Getenv("COMET_BROWSE_CONCURRENT_SHARD"))
-		duration := 3 * time.Second
-
-		streamName := fmt.Sprintf("test:v1:shard:%04d", shardID)
-		ctx, cancel := context.WithTimeout(ctx, duration)
-		defer cancel()
-
-		count := 0
-		err := client.Tail(ctx, streamName, func(ctx context.Context, msg StreamMessage) error {
-			count++
-			return nil
-		})
-
-		if err != nil && err != context.DeadlineExceeded {
-			fmt.Fprintf(os.Stderr, "Tail failed: %v\n", err)
-		}
-		fmt.Printf("Tailer for shard %d received %d messages\n", shardID, count)
 	}
 }
 

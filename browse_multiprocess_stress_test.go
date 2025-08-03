@@ -328,8 +328,8 @@ func runBrowseStressWorker(t *testing.T, role string) {
 		duration, _ := time.ParseDuration(os.Getenv("COMET_BROWSE_STRESS_DURATION"))
 		numShards, _ := strconv.Atoi(os.Getenv("COMET_BROWSE_STRESS_NUM_SHARDS"))
 
-		var listOps, scanOps, tailOps int64
-		var listErrors, scanErrors, tailErrors int64
+		var listOps, scanOps int64
+		var listErrors, scanErrors int64
 		var totalBrowsed int64
 
 		start := time.Now()
@@ -381,45 +381,12 @@ func runBrowseStressWorker(t *testing.T, role string) {
 			}()
 		}
 
-		// Tail storm
-		for i := 0; i < 4; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for time.Since(start) < duration {
-					shardID := rand.Intn(numShards) + 1
-					streamName := fmt.Sprintf("test:v1:shard:%04d", shardID)
-
-					tailDur := time.Duration(rand.Intn(100)+10) * time.Millisecond
-					tctx, cancel := context.WithTimeout(ctx, tailDur)
-
-					count := 0
-					err := client.Tail(tctx, streamName, func(ctx context.Context, msg StreamMessage) error {
-						count++
-						atomic.AddInt64(&totalBrowsed, 1)
-
-						// Occasionally return error to test error paths
-						if rand.Float32() < 0.01 {
-							return fmt.Errorf("simulated error")
-						}
-						return nil
-					})
-					cancel()
-
-					if err != nil && err != context.DeadlineExceeded {
-						atomic.AddInt64(&tailErrors, 1)
-					} else {
-						atomic.AddInt64(&tailOps, 1)
-					}
-				}
-			}()
-		}
 
 		wg.Wait()
 
 		elapsed := time.Since(start)
-		fmt.Printf("Browser %s: list=%d/%d scan=%d/%d tail=%d/%d total=%d rate=%.0f/sec\n",
-			workerID, listOps, listErrors, scanOps, scanErrors, tailOps, tailErrors,
+		fmt.Printf("Browser %s: list=%d/%d scan=%d/%d total=%d rate=%.0f/sec\n",
+			workerID, listOps, listErrors, scanOps, scanErrors,
 			totalBrowsed, float64(totalBrowsed)/elapsed.Seconds())
 
 	case "chaos-actor":

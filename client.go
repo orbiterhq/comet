@@ -1542,12 +1542,6 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		if state != nil {
 			for i := range entries {
 				entryNumbers[i] = state.IncrementLastEntryNumber()
-				if Debug && s.logger != nil {
-					s.logger.Debug("Allocated entry number",
-						"shard", s.shardID,
-						"entryNumber", entryNumbers[i],
-						"mode", "unified")
-				}
 			}
 		} else {
 			// Fallback if state not available (shouldn't happen in normal operation)
@@ -1609,25 +1603,11 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				// Update metric if state is available
 				if state := s.loadState(); state != nil {
 					atomic.StoreUint64(&state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
-					if Debug && s.logger != nil {
-						s.logger.Debug("Updated BinaryIndexNodes metric after AddIndexNode",
-							"shardID", s.shardID,
-							"entryNumber", entryNumber,
-							"nodeCount", len(s.index.BinaryIndex.Nodes))
-					}
 				}
 
 				// Generate ID for this entry
 				writeReq.IDs[i] = MessageID{EntryNumber: entryNumber, ShardID: s.shardID}
 
-				// Update index state to match allocated numbers (will be rolled back if write fails)
-				if Debug && s.logger != nil {
-					s.logger.Debug("TRACE: Setting CurrentEntryNumber after allocation",
-						"location", "client.go:1429",
-						"oldValue", s.index.CurrentEntryNumber,
-						"newValue", entryNumber+1,
-						"shardID", s.shardID)
-				}
 				s.index.CurrentEntryNumber = entryNumber + 1
 				s.index.CurrentWriteOffset += entrySize
 				s.writesSinceCheckpoint++
@@ -1795,12 +1775,6 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 
 	// Perform I/O OUTSIDE the lock
 	var writeErr error
-	if Debug && s.logger != nil {
-		s.logger.Debug("About to perform write",
-			"shard", s.shardID,
-			"entryCount", len(entries),
-			"writeBufferCount", len(writeReq.WriteBuffers))
-	}
 
 	// Use memory-mapped writer for ultra-fast multi-process writes if available
 	if config.Concurrency.EnableMultiProcessMode && s.mmapWriter != nil {
@@ -4429,147 +4403,6 @@ func (c *Client) ScanAll(ctx context.Context, streamName string, fn func(context
 	}
 
 	return nil
-}
-
-// Tail follows new entries as they arrive in a stream, calling fn for each new message
-// This operation bypasses consumer groups and doesn't affect offsets
-// The function blocks until the context is cancelled
-func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Context, StreamMessage) error) error {
-	shardID, err := parseShardFromStream(streamName)
-	if err != nil {
-		return fmt.Errorf("invalid stream name: %w", err)
-	}
-
-	shard, err := c.getOrCreateShard(shardID)
-	if err != nil {
-		return err
-	}
-
-	// In multi-process mode, reload index to get latest state
-	if c.config.Concurrency.EnableMultiProcessMode {
-		shard.mu.Lock()
-
-		// CRITICAL: Sync mmap writer first to ensure data is visible to other processes
-		if shard.mmapWriter != nil {
-			if err := shard.mmapWriter.Sync(); err != nil {
-				// Log but don't fail - data might still be visible
-				if shard.logger != nil {
-					shard.logger.Warn("Failed to sync mmap writer before tail", "error", err)
-				}
-			}
-		}
-
-		if err := shard.loadIndex(); err != nil {
-			shard.mu.Unlock()
-			return fmt.Errorf("failed to reload index: %w", err)
-		}
-		// CRITICAL: Check if we need to rebuild index to see files created by other processes
-		shardDir := filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shardID))
-		shard.lazyRebuildIndexIfNeeded(c.config, shardDir)
-
-		// Initialize lastIndexUpdateSeen to current timestamp
-		if state := shard.loadState(); state != nil {
-			shard.lastIndexUpdateSeen = state.GetLastIndexUpdate()
-		}
-		shard.mu.Unlock()
-	}
-
-	// Start from current position
-	shard.mu.RLock()
-	if shard.index == nil {
-		shard.mu.RUnlock()
-		return fmt.Errorf("shard index not initialized")
-	}
-	position := shard.index.CurrentEntryNumber
-	indexCopy := shard.cloneIndex() // Create proper deep copy to avoid race conditions
-	shard.mu.RUnlock()
-
-	// Create reader
-	reader, err := NewReader(shardID, indexCopy)
-	if err != nil {
-		return err
-	}
-	defer reader.Close()
-
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			// In multi-process mode, need to sync and reload to see updates from other processes
-			if c.config.Concurrency.EnableMultiProcessMode {
-				shard.mu.Lock()
-
-				// Check if index has been updated since last check
-				needsReload := false
-				if state := shard.loadState(); state != nil {
-					lastUpdate := state.GetLastIndexUpdate()
-					if shard.lastIndexUpdateSeen < lastUpdate {
-						needsReload = true
-						shard.lastIndexUpdateSeen = lastUpdate
-					}
-				}
-
-				if needsReload {
-					// Sync mmap writer to ensure data visibility
-					if shard.mmapWriter != nil {
-						if err := shard.mmapWriter.Sync(); err != nil {
-							if shard.logger != nil {
-								shard.logger.Warn("Failed to sync mmap writer during tail", "error", err)
-							}
-						}
-					}
-
-					// Reload index to get latest state from other processes
-					if err := shard.loadIndex(); err != nil {
-						if shard.logger != nil {
-							shard.logger.Warn("Failed to reload index during tail", "error", err)
-						}
-					}
-
-					// Check if we need to rebuild to see new files
-					shardDir := filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shardID))
-					shard.lazyRebuildIndexIfNeeded(c.config, shardDir)
-				}
-				shard.mu.Unlock()
-			}
-
-			// Get current state
-			shard.mu.RLock()
-			currentEntries := shard.index.CurrentEntryNumber
-			// Create a copy of the files to avoid race conditions
-			filesCopy := make([]FileInfo, len(shard.index.Files))
-			copy(filesCopy, shard.index.Files)
-			shard.mu.RUnlock()
-
-			// Update reader with latest index if needed
-			reader.UpdateFiles(&filesCopy)
-
-			// Read any new entries
-			for position < currentEntries {
-				entry, err := reader.ReadEntryByNumber(position)
-				if err != nil {
-					position++
-					continue
-				}
-
-				msg := StreamMessage{
-					Stream: streamName,
-					ID:     MessageID{ShardID: shardID, EntryNumber: position},
-					Data:   entry,
-				}
-
-				if err := fn(ctx, msg); err != nil {
-					return err
-				}
-
-				position++
-			}
-		}
-	}
 }
 
 // initCometState initializes the unified state for metrics and coordination
