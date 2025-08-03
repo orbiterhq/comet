@@ -138,7 +138,8 @@ func TestUbuntuTailDebug(t *testing.T) {
 	}
 	defer client.Close()
 	
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	
 	// Write initial data
 	for i := 0; i < 3; i++ {
@@ -180,6 +181,17 @@ func TestUbuntuTailDebug(t *testing.T) {
 	
 	// Wait for messages
 	time.Sleep(500 * time.Millisecond)
+	
+	// Cancel context to stop tail
+	cancel()
+	
+	// Wait for tail to finish
+	select {
+	case <-tailErr:
+		// Tail finished
+	case <-time.After(1 * time.Second):
+		t.Log("TAIL: Warning - tail didn't finish within 1 second")
+	}
 	
 	// Check results
 	receivedCount := len(received)
