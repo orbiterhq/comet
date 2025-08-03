@@ -4451,6 +4451,9 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 			shard.mu.Unlock()
 			return fmt.Errorf("failed to reload index: %w", err)
 		}
+		// CRITICAL: Check if we need to rebuild index to see files created by other processes
+		shardDir := filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shardID))
+		shard.lazyRebuildIndexIfNeeded(c.config, shardDir)
 		shard.mu.Unlock()
 	}
 
