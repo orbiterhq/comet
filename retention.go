@@ -376,6 +376,12 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	// Persist the updated index while still holding the lock
 	shard.persistIndex()
 
+	// CRITICAL: Update mmap state timestamp to signal other processes that index changed
+	// This ensures other processes will reload their stale indexes before reading
+	if state := shard.loadState(); state != nil {
+		state.SetLastIndexUpdate(time.Now().UnixNano())
+	}
+
 	// Now we can release the lock - all index modifications are complete
 	shard.mu.Unlock()
 

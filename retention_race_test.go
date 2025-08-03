@@ -97,7 +97,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 	client.Close()
 
 	// Launch many more workers simultaneously for maximum retention contention
-	numWorkers := 15  // Much more aggressive than 3
+	numWorkers := 15 // Much more aggressive than 3
 	var wg sync.WaitGroup
 	outputs := make([]string, numWorkers)
 	errors := make([]error, numWorkers)
