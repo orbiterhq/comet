@@ -190,9 +190,10 @@ func TestRecoverCorruptedState(t *testing.T) {
 	}
 
 	// Check that index values were restored
+	// If CurrentEntryNumber=42, then entries 0-41 have been written, so LastEntryNumber should be 41
 	lastEntry := atomic.LoadInt64(&shard.state.LastEntryNumber)
-	if lastEntry != 42 {
-		t.Errorf("Expected LastEntryNumber 42, got %d", lastEntry)
+	if lastEntry != 41 {
+		t.Errorf("Expected LastEntryNumber 41, got %d", lastEntry)
 	}
 
 	writeOffset := atomic.LoadUint64(&shard.state.WriteOffset)

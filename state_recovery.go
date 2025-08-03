@@ -97,7 +97,11 @@ func (s *Shard) validateAndRecoverState() error {
 			}
 
 			// Try to reload the index from disk
-			if err := s.loadIndex(); err != nil {
+			// Note: loadIndex requires s.mu to be held
+			s.mu.Lock()
+			err := s.loadIndex()
+			s.mu.Unlock()
+			if err != nil {
 				if s.logger != nil {
 					s.logger.Warn("Failed to reload index",
 						"error", err,

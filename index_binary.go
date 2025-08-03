@@ -149,8 +149,15 @@ func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
 	return os.Rename(tempPath, s.indexPath)
 }
 
-// loadBinaryIndex reads the index from binary format
+// loadBinaryIndex reads the index from binary format with default config values.
+// For concurrent access, use loadBinaryIndexWithConfig with explicit values.
 func (s *Shard) loadBinaryIndex() (*ShardIndex, error) {
+	// Use safe default values to avoid race conditions
+	return s.loadBinaryIndexWithConfig(1000, 10000)
+}
+
+// loadBinaryIndexWithConfig reads the index from binary format with explicit config values
+func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*ShardIndex, error) {
 	data, err := os.ReadFile(s.indexPath)
 	if err != nil {
 		return nil, err
@@ -177,8 +184,8 @@ func (s *Shard) loadBinaryIndex() (*ShardIndex, error) {
 	index := &ShardIndex{
 		ConsumerOffsets: make(map[string]int64),
 		BinaryIndex: BinarySearchableIndex{
-			IndexInterval: s.index.BinaryIndex.IndexInterval,
-			MaxNodes:      s.index.BinaryIndex.MaxNodes,
+			IndexInterval: boundaryInterval,
+			MaxNodes:      maxNodes,
 		},
 	}
 
@@ -296,10 +303,10 @@ func (s *Shard) loadBinaryIndex() (*ShardIndex, error) {
 	// Set current file from last file if available
 	if len(index.Files) > 0 {
 		index.CurrentFile = index.Files[len(index.Files)-1].Path
-	} else {
-		index.CurrentFile = s.index.CurrentFile
 	}
-	index.BoundaryInterval = s.index.BoundaryInterval
+	// Note: CurrentFile will be empty if no files - this is handled by callers
+	
+	index.BoundaryInterval = boundaryInterval
 
 	return index, nil
 }

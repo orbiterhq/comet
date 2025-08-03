@@ -44,6 +44,9 @@ func TestGetShardStats(t *testing.T) {
 		}
 	}
 
+	// Force sync to ensure consumer offsets are persisted
+	client.Sync(ctx)
+
 	// Get shard stats
 	stats, err := consumer.GetShardStats(ctx, 1)
 	if err != nil {
@@ -74,7 +77,7 @@ func TestGetShardStats(t *testing.T) {
 	}
 
 	if stats.TotalBytes == 0 {
-		t.Error("TotalBytes is 0")
+		t.Errorf("TotalBytes is 0 - FileCount=%d, TotalEntries=%d", stats.FileCount, stats.TotalEntries)
 	}
 
 	// Test non-existent shard - it will create the shard, not error

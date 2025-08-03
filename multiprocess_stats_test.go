@@ -176,6 +176,11 @@ func TestConcurrentMultiProcessWrites(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	// Sync all clients to ensure index is persisted
+	for _, client := range clients {
+		client.Sync(ctx)
+	}
+
 	// Verify stream length - this tests the actual data persistence
 	totalLength, err := clients[0].Len(ctx, streamName)
 	if err != nil {

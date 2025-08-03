@@ -461,6 +461,9 @@ func TestFileOperationMetrics(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	
+	// Force sync to ensure metrics are updated
+	client.Sync(ctx)
 
 	shard, _ := client.getOrCreateShard(1)
 	if shard.state == nil {
@@ -589,6 +592,7 @@ func TestIndexMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
 	config.Storage.CheckpointTime = 10 // Short checkpoint interval
+	config.Indexing.BoundaryInterval = 10 // Create binary index nodes every 10 entries
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -609,6 +613,12 @@ func TestIndexMetrics(t *testing.T) {
 
 	// Force a checkpoint
 	client.Sync(ctx)
+	
+	// Small delay to ensure async persistence completes
+	time.Sleep(50 * time.Millisecond)
+	
+	// Force another sync to ensure binary index nodes are persisted
+	client.Sync(ctx)
 
 	shard, _ := client.getOrCreateShard(1)
 	if shard.state == nil {
@@ -619,6 +629,21 @@ func TestIndexMetrics(t *testing.T) {
 	lastIndexUpdate := atomic.LoadInt64(&shard.state.LastIndexUpdate)
 	indexPersistCount := atomic.LoadUint64(&shard.state.IndexPersistCount)
 	binaryIndexNodes := atomic.LoadUint64(&shard.state.BinaryIndexNodes)
+
+	// Debug: Check actual binary index nodes in memory
+	shard.mu.RLock()
+	actualNodes := len(shard.index.BinaryIndex.Nodes)
+	indexInterval := shard.index.BinaryIndex.IndexInterval
+	boundaryInterval := shard.index.BoundaryInterval
+	currentEntryNumber := shard.index.CurrentEntryNumber
+	shard.mu.RUnlock()
+
+	t.Logf("Debug index state:")
+	t.Logf("  IndexInterval: %d", indexInterval)
+	t.Logf("  BoundaryInterval: %d", boundaryInterval)
+	t.Logf("  CurrentEntryNumber: %d", currentEntryNumber)
+	t.Logf("  Actual nodes in memory: %d", actualNodes)
+	t.Logf("  Metric BinaryIndexNodes: %d", binaryIndexNodes)
 
 	if lastIndexUpdate == 0 {
 		t.Error("LastIndexUpdate not set")
