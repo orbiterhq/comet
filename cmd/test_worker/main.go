@@ -24,6 +24,11 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "retention-debug" {
+		runRetentionDebug()
+		return
+	}
+
 	var (
 		mode     = flag.String("mode", "writer", "Mode: writer, reader, or benchmark")
 		dir      = flag.String("dir", "", "Data directory")
@@ -221,30 +226,23 @@ func runRetentionTest() {
 	}
 	defer client.Close()
 
+	// Don't write any data - writing would create a new file and interfere with retention testing
+	// But we need to read to load the shard
+	consumer := comet.NewConsumer(client, comet.ConsumerOptions{
+		Group: fmt.Sprintf("retention-worker-%d", *workerID),
+	})
+	
+	// Read one message to ensure shard is loaded
 	ctx := context.Background()
-
-	// Only write a trigger entry to load the shard if this is the first worker
-	// This prevents multiple processes from writing while retention is running
-	if *workerID == 0 {
-		data := []byte(fmt.Sprintf(`{"worker": %d, "trigger": "retention"}`, *workerID))
-		_, err = client.Append(ctx, *streamName, [][]byte{data})
-		if err != nil {
-			log.Printf("Worker %d: failed to write trigger entry: %v", *workerID, err)
-		}
-	} else {
-		// Other workers just need to access the shard to load the index
-		// Use a read operation instead of write to avoid concurrent modifications
-		consumer := comet.NewConsumer(client, comet.ConsumerOptions{
-			Group: fmt.Sprintf("worker-%d-access", *workerID),
-		})
-		// Try to read (will load the shard and index)
-		consumer.Read(ctx, []uint32{1}, 1)
-		consumer.Close()
+	_, err = consumer.Read(ctx, []uint32{1}, 1)
+	if err != nil && err.Error() != "no messages available" {
+		log.Printf("Worker %d: read error (expected): %v", *workerID, err)
 	}
-
+	consumer.Close()
+	
 	log.Printf("Worker %d: triggering retention cleanup", *workerID)
 
-	// Get retention stats before
+	// Get retention stats before - should now show files
 	statsBefore := client.GetRetentionStats()
 	log.Printf("Worker %d: files before retention: %d", *workerID, statsBefore.TotalFiles)
 
@@ -313,4 +311,55 @@ func runIndexRebuildTest() {
 	log.Printf("Successfully wrote new data after index rebuild")
 
 	fmt.Printf("Index rebuild test completed successfully: read %d messages, wrote 3 new entries\n", len(messages))
+}
+
+func runRetentionDebug() {
+	// Parse retention debug flags
+	debugCmd := flag.NewFlagSet("retention-debug", flag.ExitOnError)
+	dir := debugCmd.String("dir", "", "Data directory")
+	streamName := debugCmd.String("stream", "", "Stream name")
+
+	// Skip the command name
+	debugCmd.Parse(os.Args[2:])
+
+	if *dir == "" || *streamName == "" {
+		log.Fatal("--dir and --stream are required")
+	}
+
+	log.Printf("=== RETENTION DEBUG WORKER ===")
+
+	config := comet.MultiProcessConfig()
+	config.Retention.MaxAge = 100 * time.Millisecond
+	config.Retention.MinFilesToKeep = 0
+	config.Retention.ProtectUnconsumed = false
+
+	client, err := comet.NewClientWithConfig(*dir, config)
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	// Write a trigger entry to ensure shard is loaded
+	ctx := context.Background()
+	data := []byte(`{"trigger": "retention-debug"}`)
+	_, err = client.Append(ctx, *streamName, [][]byte{data})
+	if err != nil {
+		log.Printf("Failed to write trigger entry: %v", err)
+	}
+
+	// Get retention stats
+	statsBefore := client.GetRetentionStats()
+	log.Printf("Stats before retention:")
+	log.Printf("  - TotalFiles: %d", statsBefore.TotalFiles)
+	log.Printf("  - TotalSizeBytes: %d", statsBefore.TotalSizeBytes)
+
+	// Run retention
+	log.Printf("Triggering retention cleanup...")
+	client.ForceRetentionCleanup()
+
+	// Get retention stats after
+	statsAfter := client.GetRetentionStats()
+	log.Printf("Stats after retention:")
+	log.Printf("  - TotalFiles: %d (deleted: %d)", statsAfter.TotalFiles, statsBefore.TotalFiles - statsAfter.TotalFiles)
+	log.Printf("  - TotalSizeBytes: %d", statsAfter.TotalSizeBytes)
 }
