@@ -862,7 +862,7 @@ func TestHealth(t *testing.T) {
 
 func TestDebugLogging(t *testing.T) {
 	// Enable debug mode
-	originalDebug := Debug
+	originalDebug := IsDebug()
 	SetDebug(true)
 	defer SetDebug(originalDebug)
 

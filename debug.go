@@ -17,9 +17,9 @@ func init() {
 	}
 }
 
-// Debug is a variable that should be accessed via IsDebug() for thread safety
-// Deprecated: Use IsDebug() instead for thread-safe access
-var Debug = IsDebug()
+// debug is deprecated and should not be used directly - use IsDebug() instead
+// Kept for backward compatibility but will be removed in future versions
+var Debug = false // This is a static value now, use IsDebug() for actual state
 
 // SetDebug allows runtime control of debug mode
 func SetDebug(enabled bool) {
