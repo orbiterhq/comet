@@ -386,9 +386,10 @@ type Client struct {
 // Fields ordered for optimal memory alignment (64-bit words first)
 type Shard struct {
 	// 64-bit aligned fields first (8 bytes each)
-	readerCount    int64     // Lock-free reader tracking
-	lastCheckpoint time.Time // 64-bit on most systems
-	lastMmapCheck  int64     // Last mmap timestamp we saw (for change detection)
+	readerCount         int64     // Lock-free reader tracking
+	lastCheckpoint      time.Time // 64-bit on most systems
+	lastMmapCheck       int64     // Last mmap timestamp we saw (for change detection)
+	lastIndexUpdateSeen int64     // Last index update timestamp seen by Tail (for optimization)
 
 	// Pointers (8 bytes each on 64-bit)
 	dataFile          *os.File      // Data file handle
@@ -4447,6 +4448,17 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 	// In multi-process mode, reload index to get latest state
 	if c.config.Concurrency.EnableMultiProcessMode {
 		shard.mu.Lock()
+		
+		// CRITICAL: Sync mmap writer first to ensure data is visible to other processes
+		if shard.mmapWriter != nil {
+			if err := shard.mmapWriter.Sync(); err != nil {
+				// Log but don't fail - data might still be visible
+				if shard.logger != nil {
+					shard.logger.Warn("Failed to sync mmap writer before tail", "error", err)
+				}
+			}
+		}
+		
 		if err := shard.loadIndex(); err != nil {
 			shard.mu.Unlock()
 			return fmt.Errorf("failed to reload index: %w", err)
@@ -4454,6 +4466,11 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 		// CRITICAL: Check if we need to rebuild index to see files created by other processes
 		shardDir := filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shardID))
 		shard.lazyRebuildIndexIfNeeded(c.config, shardDir)
+		
+		// Initialize lastIndexUpdateSeen to current timestamp
+		if state := shard.loadState(); state != nil {
+			shard.lastIndexUpdateSeen = state.GetLastIndexUpdate()
+		}
 		shard.mu.Unlock()
 	}
 
@@ -4482,6 +4499,44 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+			// In multi-process mode, need to sync and reload to see updates from other processes
+			if c.config.Concurrency.EnableMultiProcessMode {
+				shard.mu.Lock()
+				
+				// Check if index has been updated since last check
+				needsReload := false
+				if state := shard.loadState(); state != nil {
+					lastUpdate := state.GetLastIndexUpdate()
+					if shard.lastIndexUpdateSeen < lastUpdate {
+						needsReload = true
+						shard.lastIndexUpdateSeen = lastUpdate
+					}
+				}
+				
+				if needsReload {
+					// Sync mmap writer to ensure data visibility
+					if shard.mmapWriter != nil {
+						if err := shard.mmapWriter.Sync(); err != nil {
+							if shard.logger != nil {
+								shard.logger.Warn("Failed to sync mmap writer during tail", "error", err)
+							}
+						}
+					}
+					
+					// Reload index to get latest state from other processes
+					if err := shard.loadIndex(); err != nil {
+						if shard.logger != nil {
+							shard.logger.Warn("Failed to reload index during tail", "error", err)
+						}
+					}
+					
+					// Check if we need to rebuild to see new files
+					shardDir := filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shardID))
+					shard.lazyRebuildIndexIfNeeded(c.config, shardDir)
+				}
+				shard.mu.Unlock()
+			}
+			
 			// Get current state
 			shard.mu.RLock()
 			currentEntries := shard.index.CurrentEntryNumber
