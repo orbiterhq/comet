@@ -652,7 +652,7 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 	}
 
 	// In multi-process mode, check if we need to rebuild index AFTER reloading
-	if shard.state != nil {
+	if shard.loadState() != nil {
 		// Check if rebuild needed while holding read lock
 		needsRebuild := shard.checkIfRebuildNeeded()
 		shard.mu.RUnlock()
@@ -986,16 +986,18 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 	}
 
 	// Log state values immediately after loading
-	if c.logger != nil && shard.state != nil {
-		c.logger.Debug("loadExistingShard: state after loading",
-			"shardID", shardID,
-			"pid", processID,
-			"version", atomic.LoadUint64(&shard.state.Version),
-			"lastEntryNumber", atomic.LoadInt64(&shard.state.LastEntryNumber),
-			"writeOffset", atomic.LoadUint64(&shard.state.WriteOffset),
-			"fileSize", atomic.LoadUint64(&shard.state.FileSize),
-			"totalEntries", atomic.LoadInt64(&shard.state.TotalEntries),
-			"totalWrites", atomic.LoadUint64(&shard.state.TotalWrites))
+	if c.logger != nil {
+		if state := shard.loadState(); state != nil {
+			c.logger.Debug("loadExistingShard: state after loading",
+				"shardID", shardID,
+				"pid", processID,
+				"version", atomic.LoadUint64(&state.Version),
+				"lastEntryNumber", atomic.LoadInt64(&state.LastEntryNumber),
+				"writeOffset", atomic.LoadUint64(&state.WriteOffset),
+				"fileSize", atomic.LoadUint64(&state.FileSize),
+				"totalEntries", atomic.LoadInt64(&state.TotalEntries),
+				"totalWrites", atomic.LoadUint64(&state.TotalWrites))
+		}
 	}
 
 	// Create lock files
@@ -1059,13 +1061,13 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 	}
 
 	// Synchronize state with index if index has data and state is uninitialized
-	if shard.state != nil && shard.index.CurrentEntryNumber > 0 && len(shard.index.Files) > 0 {
-		currentLastEntryNumber := atomic.LoadInt64(&shard.state.LastEntryNumber)
+	if state := shard.loadState(); state != nil && shard.index.CurrentEntryNumber > 0 && len(shard.index.Files) > 0 {
+		currentLastEntryNumber := atomic.LoadInt64(&state.LastEntryNumber)
 		if currentLastEntryNumber == -1 {
 			// Set LastEntryNumber to the last allocated entry (CurrentEntryNumber - 1)
 			// If index says CurrentEntryNumber=3, we have entries 0,1,2, so LastEntryNumber=2
 			newLastEntryNumber := shard.index.CurrentEntryNumber - 1
-			atomic.StoreInt64(&shard.state.LastEntryNumber, newLastEntryNumber)
+			atomic.StoreInt64(&state.LastEntryNumber, newLastEntryNumber)
 
 			if c.logger != nil {
 				c.logger.Debug("loadExistingShard: synchronized state with existing index",
@@ -1108,8 +1110,8 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 			"shardID", shardID,
 			"currentEntryNumber", shard.index.CurrentEntryNumber)
 	}
-	if shard.state != nil {
-		atomic.AddUint64(&shard.state.RecoveryAttempts, 1)
+	if state := shard.loadState(); state != nil {
+		atomic.AddUint64(&state.RecoveryAttempts, 1)
 	}
 	if err := shard.recoverFromCrash(); err != nil {
 		return nil, fmt.Errorf("failed to recover: %w", err)
@@ -1119,8 +1121,8 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 			"shardID", shardID,
 			"currentEntryNumber", shard.index.CurrentEntryNumber)
 	}
-	if shard.state != nil {
-		atomic.AddUint64(&shard.state.RecoverySuccesses, 1)
+	if state := shard.loadState(); state != nil {
+		atomic.AddUint64(&state.RecoverySuccesses, 1)
 	}
 
 	// Note: checkpoint goroutine is started elsewhere if needed
@@ -3440,104 +3442,6 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 	}
 
 	return nil
-}
-
-// scanDataFile reads a data file and extracts metadata for index rebuilding
-func (s *Shard) scanDataFile(filePath string) (*FileInfo, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open data file: %w", err)
-	}
-	defer file.Close()
-
-	stat, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat file: %w", err)
-	}
-
-	fileInfo := &FileInfo{
-		Path:        filePath,
-		StartOffset: 0,
-		EndOffset:   stat.Size(),
-		StartTime:   stat.ModTime(), // Use modification time as approximation
-		EndTime:     stat.ModTime(),
-	}
-
-	// Determine starting entry number
-	if len(s.index.Files) > 0 {
-		prevFile := s.index.Files[len(s.index.Files)-1]
-		fileInfo.StartEntry = prevFile.StartEntry + prevFile.Entries
-	} else {
-		fileInfo.StartEntry = 0
-	}
-
-	// Scan through the file to count entries and build index nodes
-	offset := int64(0)
-	entryCount := int64(0)
-	buffer := make([]byte, 12) // Header size
-
-	for offset < stat.Size() {
-		// Read header
-		n, err := file.ReadAt(buffer, offset)
-		if err != nil || n < 12 {
-			break // End of file or corrupted
-		}
-
-		// Parse header
-		length := binary.LittleEndian.Uint32(buffer[0:4])
-		timestamp := binary.LittleEndian.Uint64(buffer[4:12])
-
-		// Check for uninitialized memory (all zeros) - this indicates end of valid data
-		allZeros := true
-		for _, b := range buffer {
-			if b != 0 {
-				allZeros = false
-				break
-			}
-		}
-		if allZeros {
-			break // Stop scanning when we hit uninitialized memory
-		}
-
-		// Validate entry
-		if length > 100*1024*1024 { // 100MB max
-			// Track corruption detection
-			if state := s.loadState(); state != nil {
-				atomic.AddUint64(&state.CorruptionDetected, 1)
-			}
-			break // Corrupted entry
-		}
-
-		// Update timestamps
-		entryTime := time.Unix(0, int64(timestamp))
-		if entryCount == 0 {
-			fileInfo.StartTime = entryTime
-		}
-		fileInfo.EndTime = entryTime
-
-		// Add to binary index at intervals
-		if entryCount%int64(s.index.BoundaryInterval) == 0 {
-			s.index.BinaryIndex.AddIndexNode(fileInfo.StartEntry+entryCount, EntryPosition{
-				FileIndex:  len(s.index.Files), // Current file index
-				ByteOffset: offset,
-			})
-
-			// Update metric if state is available
-			if state := s.loadState(); state != nil {
-				atomic.StoreUint64(&state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
-			}
-		}
-
-		// Move to next entry
-		entrySize := int64(12 + length)
-		offset += entrySize
-		entryCount++
-	}
-
-	fileInfo.Entries = entryCount
-	fileInfo.EndOffset = offset
-
-	return fileInfo, nil
 }
 
 // scanDataFileForRebuild is like scanDataFile but takes startEntry as parameter to avoid using corrupted index state

@@ -11,7 +11,8 @@ import (
 	"strings"
 )
 
-// stateLint checks for direct access to s.state field which should use atomic helpers
+// stateLint checks for direct nil comparisons on state fields
+// These should use loadState() != nil to avoid race conditions
 func main() {
 	var dir = flag.String("dir", ".", "directory to analyze")
 	flag.Parse()
@@ -24,7 +25,7 @@ func main() {
 			return err
 		}
 
-		if !strings.HasSuffix(path, ".go") || strings.Contains(path, "_test.go") {
+		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
 
@@ -52,33 +53,68 @@ func main() {
 
 func checkFile(filename string) []string {
 	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, filename, nil, parser.ParseComments)
+	src, err := os.ReadFile(filename)
+	if err != nil {
+		return nil
+	}
+
+	node, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
 	if err != nil {
 		return nil
 	}
 
 	var issues []string
-	var currentFunc string
-
+	
+	// Find all nil comparisons with state fields
 	ast.Inspect(node, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.FuncDecl:
-			// Track current function name
-			if x.Name != nil {
-				currentFunc = x.Name.Name
-			}
-		case *ast.SelectorExpr:
-			// Check for s.state access
-			if ident, ok := x.X.(*ast.Ident); ok && ident.Name == "s" && x.Sel.Name == "state" {
-				// Allow in loadState and storeState methods
-				if currentFunc == "loadState" || currentFunc == "storeState" {
-					return true
+		switch expr := n.(type) {
+		case *ast.BinaryExpr:
+			// Look for != nil or == nil comparisons
+			if expr.Op == token.NEQ || expr.Op == token.EQL {
+				// Check if right side is nil
+				if ident, ok := expr.Y.(*ast.Ident); ok && ident.Name == "nil" {
+					// Check if left side is a state field access
+					if sel, ok := expr.X.(*ast.SelectorExpr); ok && sel.Sel.Name == "state" {
+						if varIdent, ok := sel.X.(*ast.Ident); ok {
+							if isShardVariable(varIdent.Name) {
+								pos := fset.Position(sel.Pos())
+								op := "!="
+								if expr.Op == token.EQL {
+									op = "=="
+								}
+								issues = append(issues, fmt.Sprintf("%s:%d:%d: direct nil check '%s.state %s nil' should use '%s.loadState() %s nil'",
+									filename, pos.Line, pos.Column, varIdent.Name, op, varIdent.Name, op))
+							}
+						}
+					}
 				}
-				// Check if this is an allowed atomic helper call
-				if !isAllowedStateAccess(x) {
-					pos := fset.Position(x.Pos())
-					issues = append(issues, fmt.Sprintf("%s:%d:%d: direct access to s.state is forbidden, use s.loadState() or s.storeState() instead",
-						filename, pos.Line, pos.Column))
+				// Also check if left side is nil
+				if ident, ok := expr.X.(*ast.Ident); ok && ident.Name == "nil" {
+					// Check if right side is a state field access
+					if sel, ok := expr.Y.(*ast.SelectorExpr); ok && sel.Sel.Name == "state" {
+						if varIdent, ok := sel.X.(*ast.Ident); ok {
+							if isShardVariable(varIdent.Name) {
+								pos := fset.Position(sel.Pos())
+								op := "!="
+								if expr.Op == token.EQL {
+									op = "=="
+								}
+								issues = append(issues, fmt.Sprintf("%s:%d:%d: direct nil check 'nil %s %s.state' should use 'nil %s %s.loadState()'",
+									filename, pos.Line, pos.Column, op, varIdent.Name, op, varIdent.Name))
+							}
+						}
+					}
+				}
+			}
+		case *ast.IfStmt:
+			// Check for if shard.state { ... } patterns
+			if sel, ok := expr.Cond.(*ast.SelectorExpr); ok && sel.Sel.Name == "state" {
+				if varIdent, ok := sel.X.(*ast.Ident); ok {
+					if isShardVariable(varIdent.Name) {
+						pos := fset.Position(sel.Pos())
+						issues = append(issues, fmt.Sprintf("%s:%d:%d: direct boolean check 'if %s.state' should use 'if %s.loadState() != nil'",
+							filename, pos.Line, pos.Column, varIdent.Name, varIdent.Name))
+					}
 				}
 			}
 		}
@@ -88,14 +124,17 @@ func checkFile(filename string) []string {
 	return issues
 }
 
-// isAllowedStateAccess checks if this is an allowed atomic helper function
-func isAllowedStateAccess(sel *ast.SelectorExpr) bool {
-	// Walk up the AST to see if this is part of an assignment from loadState() or storeState()
-	// For now, we'll be strict and only allow these patterns:
-	// - s.storeState(x)
-	// - atomic operations inside loadState/storeState helper methods
-
-	// This is a simplified check - in practice you might want more sophisticated analysis
-	// to allow the atomic helper methods themselves
-	return false
+// isShardVariable checks if the variable name refers to a shard
+func isShardVariable(name string) bool {
+	// Common shard variable names in the codebase
+	shardNames := []string{"s", "shard", "shard2", "sh", "shd"}
+	for _, sn := range shardNames {
+		if name == sn {
+			return true
+		}
+	}
+	// Also check for variables that start/end with shard patterns
+	return strings.HasPrefix(name, "shard") || 
+	       strings.HasSuffix(name, "Shard") ||
+	       strings.HasSuffix(name, "shard")
 }

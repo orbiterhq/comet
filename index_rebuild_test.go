@@ -438,7 +438,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	shard2.mu.RLock()
 	rebuiltFiles := len(shard2.index.Files)
 	rebuiltEntries := shard2.index.CurrentEntryNumber
-	hasCometState := shard2.state != nil
+	hasCometState := shard2.loadState() != nil
 	t.Logf("After rebuild: %d files, %d entries", rebuiltFiles, rebuiltEntries)
 	shard2.mu.RUnlock()
 

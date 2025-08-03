@@ -532,8 +532,8 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 				}
 			}
 		}
-		if s.state != nil {
-			t.Logf("Shard %d state before scan: LastEntryNumber=%d", shard, s.state.GetLastEntryNumber())
+		if state := s.loadState(); state != nil {
+			t.Logf("Shard %d state before scan: LastEntryNumber=%d", shard, state.GetLastEntryNumber())
 		}
 		s.mu.RUnlock()
 

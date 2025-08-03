@@ -96,18 +96,18 @@ func TestMultiProcessSimple(t *testing.T) {
 			)
 
 			t.Logf("Starting writer %d process...", id)
-			
+
 			// Use Start/Wait pattern for better timeout control
 			if err := cmd.Start(); err != nil {
 				t.Logf("Writer %d failed to start: %v", id, err)
 				return
 			}
-			
+
 			done := make(chan error, 1)
 			go func() {
 				done <- cmd.Wait()
 			}()
-			
+
 			select {
 			case <-ctx.Done():
 				cmd.Process.Kill()
@@ -139,18 +139,18 @@ func TestMultiProcessSimple(t *testing.T) {
 			)
 
 			t.Logf("Starting reader %d process...", id)
-			
+
 			// Use Start/Wait pattern for better timeout control
 			if err := cmd.Start(); err != nil {
 				t.Logf("Reader %d failed to start: %v", id, err)
 				return
 			}
-			
+
 			done := make(chan error, 1)
 			go func() {
 				done <- cmd.Wait()
 			}()
-			
+
 			select {
 			case <-ctx.Done():
 				cmd.Process.Kill()
@@ -523,8 +523,8 @@ func TestMultiProcessIntegration(t *testing.T) {
 		tempClient.Sync(context.Background())
 		tempClient.Close()
 
-		// Wait longer for coordination state to stabilize after sync
-		time.Sleep(2 * time.Second)
+		// Wait for coordination state to stabilize after sync
+		time.Sleep(500 * time.Millisecond)
 
 		// Check state BEFORE creating client to ensure it's stabilized
 		shardDir2 := filepath.Join(testDir, "shard-0001")

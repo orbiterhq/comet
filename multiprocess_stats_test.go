@@ -201,8 +201,8 @@ func TestConcurrentMultiProcessWrites(t *testing.T) {
 		shards := client.getAllShards()
 		if len(shards) > 0 {
 			for _, shard := range shards {
-				if shard.state != nil {
-					entries := atomic.LoadInt64(&shard.state.TotalEntries)
+				if state := shard.loadState(); state != nil {
+					entries := atomic.LoadInt64(&state.TotalEntries)
 					t.Logf("Process %d CometState entries: %d", i, entries)
 					if entries > 0 {
 						t.Logf("✅ Process %d has CometState tracking", i)
