@@ -2,7 +2,7 @@
 
 High-performance embedded segmented log for edge observability. Built for single-digit microsecond latency and bounded resources.
 
-> **Note**
+> [!NOTE]
 > This is very much an experiment in vibe coding. While the ideas are sound and the test coverage is robust, you may want to keep that in mind before using it for now.
 
 [**Architecture Guide**](ARCHITECTURE.md) | [**Performance Guide**](PERFORMANCE.md) | [**Troubleshooting**](TROUBLESHOOTING.md) | [**Security**](SECURITY.md) | [**API Reference**](https://pkg.go.dev/github.com/orbiterhq/comet)
