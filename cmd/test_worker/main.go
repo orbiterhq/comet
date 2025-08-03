@@ -29,11 +29,6 @@ func main() {
 		return
 	}
 
-	if len(os.Args) > 1 && os.Args[1] == "index-race" {
-		runIndexRaceWorker()
-		return
-	}
-
 	var (
 		mode     = flag.String("mode", "writer", "Mode: writer, reader, or benchmark")
 		dir      = flag.String("dir", "", "Data directory")
@@ -236,7 +231,7 @@ func runRetentionTest() {
 	consumer := comet.NewConsumer(client, comet.ConsumerOptions{
 		Group: fmt.Sprintf("retention-worker-%d", *workerID),
 	})
-	
+
 	// Read one message to ensure shard is loaded
 	ctx := context.Background()
 	_, err = consumer.Read(ctx, []uint32{1}, 1)
@@ -244,7 +239,7 @@ func runRetentionTest() {
 		log.Printf("Worker %d: read error (expected): %v", *workerID, err)
 	}
 	consumer.Close()
-	
+
 	log.Printf("Worker %d: triggering retention cleanup", *workerID)
 
 	// Get retention stats before - should now show files
@@ -365,6 +360,6 @@ func runRetentionDebug() {
 	// Get retention stats after
 	statsAfter := client.GetRetentionStats()
 	log.Printf("Stats after retention:")
-	log.Printf("  - TotalFiles: %d (deleted: %d)", statsAfter.TotalFiles, statsBefore.TotalFiles - statsAfter.TotalFiles)
+	log.Printf("  - TotalFiles: %d (deleted: %d)", statsAfter.TotalFiles, statsBefore.TotalFiles-statsAfter.TotalFiles)
 	log.Printf("  - TotalSizeBytes: %d", statsAfter.TotalSizeBytes)
 }
