@@ -342,16 +342,32 @@ Comet defaults to single-process mode for optimal single-entry performance. Enab
 // Single-process mode (default) - fastest performance
 client, err := comet.NewClient("/data/streams")
 
-// Multi-process mode - for prefork/multi-process deployments
+// Multi-process mode (EXPERIMENTAL) - for prefork/multi-process deployments
 config := comet.DefaultCometConfig()
 config.Concurrency.EnableMultiProcessMode = true
 client, err := comet.NewClientWithConfig("/data/streams", config)
 ```
 
+**⚠️ IMPORTANT: Multi-Process Mode Limitations**
+
+1. **Experimental Status**: Multi-process mode is experimental and may have edge cases
+2. **Mode Switching**: You CANNOT switch between single-process and multi-process modes on the same data directory. They use incompatible on-disk formats
+3. **Performance Trade-off**: 19x slower for single writes (33μs vs 1.7μs)
+4. **Known Issues**: Some race conditions exist in aggressive retention scenarios
+
 **When to use multi-process mode:**
 
-- Async/batched writes where the 31μs latency is hidden from clients
-- Fiber prefork mode or similar multi-process web servers
+- Process isolation is critical
+- You're already batching writes (reduces the latency impact)
+- Using prefork web servers and need true process separation
+- Can tolerate experimental features
+
+**When to use single-process mode (recommended):**
+
+- Need the lowest possible latency
+- Want maximum reliability
+- Don't need process-level isolation
+- Writing less than 500k entries/second
 
 ## License
 
