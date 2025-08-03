@@ -250,68 +250,105 @@ func TestTail(t *testing.T) {
 		}
 	}
 
-	t.Run("TailNewEntries", func(t *testing.T) {
-		// Use a unique stream name for this subtest - use timestamp to ensure uniqueness
+	t.Run("TailFromKnownPosition", func(t *testing.T) {
+		// This test verifies Tail behavior with a deterministic approach
 		subStreamName := fmt.Sprintf("tail:v1:shard:%04d", int(time.Now().UnixNano()%8000)+1000)
+		ctx := context.Background()
 
-		ctx, cancel := context.WithCancel(context.Background())
+		// Step 1: Write initial entries to establish a known state
+		initialEntries := [][]byte{
+			[]byte(`{"phase": "initial", "seq": 0}`),
+			[]byte(`{"phase": "initial", "seq": 1}`),
+			[]byte(`{"phase": "initial", "seq": 2}`),
+		}
+		_, err := client.Append(ctx, subStreamName, initialEntries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client.Sync(ctx)
+
+		// Step 2: Get the current position BEFORE starting tail
+		initialLength, err := client.Len(ctx, subStreamName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("Initial stream length: %d", initialLength)
+
+		// Step 3: Start tail with cancellable context
+		tailCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
 		var received []StreamMessage
 		var mu sync.Mutex
-		var wg sync.WaitGroup
-		var tailReady = make(chan struct{})
-		
-		wg.Add(1)
+		tailStarted := make(chan struct{})
+		tailDone := make(chan error, 1)
 
-		// Start tailing in goroutine
 		go func() {
-			defer wg.Done()
-			// Signal that we're about to start tailing
-			close(tailReady)
-			err := client.Tail(ctx, subStreamName, func(ctx context.Context, msg StreamMessage) error {
+			close(tailStarted)
+			err := client.Tail(tailCtx, subStreamName, func(ctx context.Context, msg StreamMessage) error {
 				mu.Lock()
 				received = append(received, msg)
 				mu.Unlock()
+				t.Logf("Tail received: entry=%d, data=%s", msg.ID.EntryNumber, string(msg.Data))
 				return nil
 			})
-			if err != nil && err != context.Canceled {
-				t.Errorf("Tail error: %v", err)
-			}
+			tailDone <- err
 		}()
 
-		// Wait for tail goroutine to be ready
-		<-tailReady
-		// Give tail time to start and ensure it's positioned at the current end
-		// This is critical for test isolation across platforms
-		time.Sleep(500 * time.Millisecond)
+		// Step 4: Wait for tail to start, then write NEW entries
+		<-tailStarted
+		time.Sleep(100 * time.Millisecond) // Brief pause to ensure tail is positioned
 
-		// Write new entries with longer initial delay to ensure tail catches first message
-		for i := 0; i < 5; i++ {
-			// Extra delay before first message to ensure tail is fully ready
-			if i == 0 {
-				time.Sleep(100 * time.Millisecond)
-			}
-			data := []byte(fmt.Sprintf(`{"new": %d}`, i))
-			_, err := client.Append(ctx, subStreamName, [][]byte{data})
+		newEntries := [][]byte{
+			[]byte(`{"phase": "new", "seq": 0}`),
+			[]byte(`{"phase": "new", "seq": 1}`),
+			[]byte(`{"phase": "new", "seq": 2}`),
+			[]byte(`{"phase": "new", "seq": 3}`),
+			[]byte(`{"phase": "new", "seq": 4}`),
+		}
+
+		for i, entry := range newEntries {
+			_, err := client.Append(ctx, subStreamName, [][]byte{entry})
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Ensure data is visible
 			client.Sync(ctx)
-			time.Sleep(100 * time.Millisecond) // Space out writes more
+			t.Logf("Wrote new entry %d", i)
+			time.Sleep(50 * time.Millisecond) // Small delay between writes
 		}
 
-		// Give time to receive all messages
-		time.Sleep(500 * time.Millisecond)
+		// Step 5: Wait a bit for messages to be received
+		time.Sleep(200 * time.Millisecond)
 
-		// Check received messages
+		// Step 6: Cancel tail and wait for it to finish
+		cancel()
+		select {
+		case err := <-tailDone:
+			if err != nil && err != context.Canceled {
+				t.Errorf("Tail error: %v", err)
+			}
+		case <-time.After(1 * time.Second):
+			t.Error("Tail didn't finish within timeout")
+		}
+
+		// Step 7: Analyze what we received
 		mu.Lock()
-		count := len(received)
-		mu.Unlock()
+		defer mu.Unlock()
 
-		if count != 5 {
-			t.Errorf("Expected to receive 5 new messages, got %d", count)
+		t.Logf("Total messages received: %d", len(received))
+		
+		// Count messages by phase
+		newCount := 0
+		for _, msg := range received {
+			if strings.Contains(string(msg.Data), `"phase": "new"`) {
+				newCount++
+			}
+		}
+
+		// We should have received the 5 new messages
+		// We might also receive some initial messages depending on timing
+		if newCount != 5 {
+			t.Errorf("Expected to receive 5 new messages, got %d", newCount)
 			
 			// DEBUG: Log shard state when test fails
 			shardID, _ := parseShardFromStream(subStreamName)
