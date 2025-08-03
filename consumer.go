@@ -186,9 +186,14 @@ func buildProcessConfig(handler ProcessFunc, opts []ProcessOption) *processConfi
 
 // NewConsumer creates a new consumer for comet streams
 func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
+	group := opts.Group
+	// If no group specified, use a consistent default to avoid confusion
+	if group == "" {
+		group = "default"
+	}
 	return &Consumer{
 		client: client,
-		group:  opts.Group,
+		group:  group,
 		// readers sync.Map is zero-initialized and ready to use
 	}
 }
@@ -212,7 +217,14 @@ func (c *Consumer) Close() error {
 	return nil
 }
 
-// Read reads up to count entries from the specified shards
+// Read reads up to count entries from the specified shards starting from the consumer group's current offset.
+// This is a low-level method for manual message processing - you probably want Process() instead.
+// 
+// Key differences from Process():
+// - Read() is one-shot, Process() is continuous
+// - Read() requires manual ACKing, Process() can auto-ACK
+// - Read() uses explicit shard IDs, Process() can use wildcards
+// - Read() has no retry logic, Process() has configurable retries
 func (c *Consumer) Read(ctx context.Context, shards []uint32, count int) ([]StreamMessage, error) {
 	var messages []StreamMessage
 	remaining := count
@@ -240,24 +252,31 @@ func (c *Consumer) Read(ctx context.Context, shards []uint32, count int) ([]Stre
 }
 
 // Process continuously reads and processes messages from shards.
+// This is the high-level API for stream processing - handles discovery, retries, and ACKing automatically.
+//
 // The simplest usage processes all discoverable shards:
 //
 //	err := consumer.Process(ctx, handleMessages)
 //
-// With options:
+// Recommended usage with explicit configuration:
+//
+//	err := consumer.Process(ctx, handleMessages,
+//	    comet.WithStream("events:v1:shard:*"),     // Wildcard pattern for shard discovery
+//	    comet.WithBatchSize(1000),                 // Process up to 1000 messages at once
+//	    comet.WithErrorHandler(logError),          // Handle processing errors
+//	    comet.WithAutoAck(true),                   // Automatically ACK successful batches
+//	)
+//
+// For distributed processing across multiple consumer instances:
 //
 //	err := consumer.Process(ctx, handleMessages,
 //	    comet.WithStream("events:v1:shard:*"),
-//	    comet.WithBatchSize(1000),
-//	    comet.WithErrorHandler(logError),
+//	    comet.WithConsumerAssignment(workerID, totalWorkers), // Distribute shards across workers
 //	)
 //
-// For distributed processing:
-//
-//	err := consumer.Process(ctx, handleMessages,
-//	    comet.WithStream("events:v1:shard:*"),
-//	    comet.WithConsumerAssignment(workerID, totalWorkers),
-//	)
+// Stream patterns must end with ":*" for wildcard matching, e.g.:
+// - "events:v1:shard:*" matches events:v1:shard:0000, events:v1:shard:0001, etc.
+// - "logs:*:*:*" matches any 4-part stream name starting with "logs"
 func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...ProcessOption) error {
 	// Build config from options
 	cfg := buildProcessConfig(handler, opts)
@@ -681,7 +700,15 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		}
 		shard.mu.Unlock()
 
-		// Don't persist immediately - let periodic checkpoint handle it
+		// In multi-process mode, we need to persist consumer offsets immediately
+		// since they're not included in regular write checkpoints
+		if c.client.config.Concurrency.EnableMultiProcessMode {
+			// Force immediate persistence of consumer offset - don't wait for checkpoint timer
+			if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+				c.client.logger.Warn("Failed to persist consumer offset after ACK", "error", err)
+			}
+		}
+		
 		return nil
 	}
 
@@ -733,6 +760,13 @@ func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 		}
 
 		shard.mu.Unlock()
+		
+		// In multi-process mode, persist consumer offsets after batch ACK
+		if c.client.config.Concurrency.EnableMultiProcessMode {
+			if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+				c.client.logger.Warn("Failed to persist consumer offsets after batch ACK", "error", err)
+			}
+		}
 	}
 
 	return nil
@@ -812,7 +846,13 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	shard.writesSinceCheckpoint++
 	shard.mu.Unlock()
 
-	// Don't persist immediately - let periodic checkpoint handle it
+	// In multi-process mode, persist consumer offset change immediately
+	if c.client.config.Concurrency.EnableMultiProcessMode {
+		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+			c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
+		}
+	}
+	
 	return nil
 }
 
@@ -840,6 +880,13 @@ func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEn
 		shard.writesSinceCheckpoint++
 	}
 	shard.mu.Unlock()
+
+	// In multi-process mode, persist consumer offset change immediately
+	if c.client.config.Concurrency.EnableMultiProcessMode {
+		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+			c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
+		}
+	}
 
 	return nil
 }
@@ -930,43 +977,44 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 
 	// Parse stream pattern (e.g., "events:v1:shard:*")
 	if !strings.HasSuffix(streamPattern, ":*") {
-		return nil, fmt.Errorf("stream pattern must end with :* (e.g., events:v1:shard:*)")
+		return nil, fmt.Errorf("stream pattern must end with :* for wildcard matching\n"+
+			"Examples:\n"+
+			"  ✓ events:v1:shard:*  (matches events:v1:shard:0000, events:v1:shard:0001, etc.)\n"+
+			"  ✓ logs:*:*:*         (matches any 4-part stream starting with 'logs')\n"+
+			"  ✗ events:v1:shard    (missing :*)\n"+
+			"  ✗ events:v1:*:shard  (wildcard not at end)\n"+
+			"Got: %s", streamPattern)
 	}
 
 	baseStream := strings.TrimSuffix(streamPattern, "*")
 
 	// Discover all available shards
-	// Check up to 9999 shards - the technical limit based on 4-digit shard format (%04d)
-	maxShards := uint32(9999)
+	// Discover shards by scanning existing shard directories
+	// This is much more efficient than checking every possible shard ID
 	var allShards []uint32
 
-	// Try to discover shards in parallel for better performance
-	type result struct {
-		shardID uint32
-		exists  bool
+	// Use filesystem-based discovery for efficiency - check for existing shard directories
+	// This is much faster than calling Len() on every possible shard
+	shardDirs, err := filepath.Glob(filepath.Join(c.client.dataDir, "shard-*"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan for shard directories: %w", err)
 	}
-
-	results := make(chan result, maxShards)
-	var wg sync.WaitGroup
-
-	for shardID := uint32(0); shardID < maxShards; shardID++ {
-		wg.Add(1)
-		go func(id uint32) {
-			defer wg.Done()
-			streamName := fmt.Sprintf("%s%04d", baseStream, id)
-			_, err := c.client.Len(context.Background(), streamName)
-			results <- result{shardID: id, exists: err == nil}
-		}(shardID)
-	}
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	for res := range results {
-		if res.exists {
-			allShards = append(allShards, res.shardID)
+	
+	for _, shardDir := range shardDirs {
+		// Extract shard ID from directory name (e.g., "shard-0166" -> 166)
+		dirName := filepath.Base(shardDir)
+		if !strings.HasPrefix(dirName, "shard-") {
+			continue
+		}
+		
+		shardIDStr := strings.TrimPrefix(dirName, "shard-")
+		var shardID uint64
+		if _, parseErr := fmt.Sscanf(shardIDStr, "%04d", &shardID); parseErr == nil {
+			// Verify this shard matches our stream pattern by checking if data exists
+			streamName := fmt.Sprintf("%s%04d", baseStream, shardID)
+			if length, lenErr := c.client.Len(context.Background(), streamName); lenErr == nil && length > 0 {
+				allShards = append(allShards, uint32(shardID))
+			}
 		}
 	}
 
