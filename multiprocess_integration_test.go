@@ -66,9 +66,9 @@ func TestMultiProcessSimple(t *testing.T) {
 		duration = 1 * time.Second
 	}
 
-	timeout := duration + 10*time.Second
+	timeout := duration + 5*time.Second // 5s buffer should be plenty
 	if os.Getenv("CI") != "" {
-		timeout = duration + 5*time.Second // Tighter timeout in CI
+		timeout = duration + 3*time.Second // Even tighter timeout in CI
 	}
 
 	t.Logf("Test configuration: %d writers, %d readers, duration=%v, timeout=%v",

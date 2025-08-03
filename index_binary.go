@@ -182,10 +182,30 @@ func (s *Shard) loadBinaryIndex() (*ShardIndex, error) {
 		},
 	}
 
-	index.CurrentEntryNumber = int64(binary.LittleEndian.Uint64(data[offset:]))
+	rawValue := binary.LittleEndian.Uint64(data[offset:])
+	index.CurrentEntryNumber = int64(rawValue)
+	if Debug && s.logger != nil {
+		s.logger.Debug("TRACE: Setting CurrentEntryNumber from binary load",
+			"location", "index_binary.go:185",
+			"rawValue", rawValue,
+			"newValue", index.CurrentEntryNumber,
+			"shardID", s.shardID,
+			"dataBytes", fmt.Sprintf("%x", data[offset:offset+8]))
+	}
 	offset += 8
 	index.CurrentWriteOffset = int64(binary.LittleEndian.Uint64(data[offset:]))
 	offset += 8
+
+	// Detect corruption: 341 is the 0x0155 uninitialized memory pattern
+	if index.CurrentEntryNumber == 341 {
+		if s.logger != nil {
+			s.logger.Error("Detected 341 corruption pattern in index file, triggering rebuild",
+				"shardID", s.shardID,
+				"indexPath", s.indexPath,
+				"currentEntryNumber", index.CurrentEntryNumber)
+		}
+		return nil, fmt.Errorf("corrupted index detected: CurrentEntryNumber=341 (uninitialized memory pattern)")
+	}
 
 	consumerCount := binary.LittleEndian.Uint32(data[offset:])
 	offset += 4

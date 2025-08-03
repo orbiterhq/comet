@@ -477,7 +477,7 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 		}(i)
 	}
 
-	// Start 2 tail processes for different shards
+	// Start 2 tail processes for different shards  
 	for i := 1; i <= 2; i++ {
 		wg.Add(1)
 		go func(shardID int) {
@@ -513,7 +513,12 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 	for shard := 1; shard <= 4; shard++ {
 		streamName := fmt.Sprintf("test:v1:shard:%04d", shard)
 		var count int
+		var firstID, lastID int64 = -1, -1
 		err := client.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {
+			if firstID == -1 {
+				firstID = msg.ID.EntryNumber
+			}
+			lastID = msg.ID.EntryNumber
 			count++
 			return true
 		})
@@ -521,7 +526,11 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 			t.Errorf("Failed to scan shard %d: %v", shard, err)
 		}
 		totalEntries += count
-		t.Logf("Shard %d has %d entries", shard, count)
+		if count > 0 {
+			t.Logf("Shard %d has %d entries (IDs %d-%d)", shard, count, firstID, lastID)
+		} else {
+			t.Logf("Shard %d has %d entries", shard, count)
+		}
 	}
 
 	expectedTotal := 3 * 4 * 25 // 3 writers * 4 shards * 25 entries per shard
@@ -551,10 +560,12 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 		// Concurrent writes to multiple shards
 		workerID, _ := strconv.Atoi(os.Getenv("COMET_BROWSE_CONCURRENT_WORKER"))
 		numShards := 4
+		
 		entriesPerShard := 25
 
 		for shard := 1; shard <= numShards; shard++ {
 			streamName := fmt.Sprintf("test:v1:shard:%04d", shard)
+			successCount := 0
 			for i := 0; i < entriesPerShard; i++ {
 				data, _ := json.Marshal(map[string]interface{}{
 					"worker": workerID,
@@ -564,8 +575,13 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 				})
 				_, err := client.Append(ctx, streamName, [][]byte{data})
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Worker %d: Failed to write: %v\n", workerID, err)
+					fmt.Fprintf(os.Stderr, "Worker %d: Failed to write to shard %d: %v\n", workerID, shard, err)
+				} else {
+					successCount++
 				}
+			}
+			if successCount != entriesPerShard {
+				fmt.Printf("Worker %d: Wrote %d/%d entries to shard %d\n", workerID, successCount, entriesPerShard, shard)
 			}
 		}
 		// Ensure data is persisted for other processes
@@ -588,14 +604,28 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 				messages, err := client.ListRecent(ctx, streamName, 20)
 				if err == nil {
 					totalFound += len(messages)
+					if len(messages) > 0 && shard == 2 {
+						// Debug shard 2
+						fmt.Printf("Browser %d: Shard 2 ListRecent returned %d messages, first ID: %d, last ID: %d\n", 
+							browseID, len(messages), messages[0].ID.EntryNumber, messages[len(messages)-1].ID.EntryNumber)
+					}
 				}
 			} else {
 				count := 0
+				var firstID, lastID int64 = -1, -1
 				client.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {
+					if firstID == -1 {
+						firstID = msg.ID.EntryNumber
+					}
+					lastID = msg.ID.EntryNumber
 					count++
 					return count < 50 // Limit scan
 				})
 				totalFound += count
+				if count > 0 && (shard == 1 || shard == 3) {
+					fmt.Printf("Browser %d: Shard %d ScanAll found %d entries (IDs %d-%d)\n", 
+						browseID, shard, count, firstID, lastID)
+				}
 			}
 		}
 		fmt.Printf("Browser %d found %d total entries\n", browseID, totalFound)

@@ -310,7 +310,7 @@ func TestTail(t *testing.T) {
 	})
 
 	t.Run("TailErrorHandling", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
 		expectedErr := fmt.Errorf("test error")
@@ -318,6 +318,7 @@ func TestTail(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(1)
 
+		// Start tail first
 		go func() {
 			defer wg.Done()
 			gotErr = client.Tail(ctx, streamName, func(ctx context.Context, msg StreamMessage) error {
@@ -325,15 +326,26 @@ func TestTail(t *testing.T) {
 			})
 		}()
 
-		// Write a message to trigger the callback
+		// Give tail time to start, then write a message to trigger the callback
 		time.Sleep(100 * time.Millisecond)
 		_, err := client.Append(ctx, streamName, [][]byte{[]byte(`{"trigger": true}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		// Wait for error
-		wg.Wait()
+		// Wait for error with timeout
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success
+		case <-ctx.Done():
+			t.Fatal("Test timed out waiting for tail error")
+		}
 
 		if gotErr != expectedErr {
 			t.Errorf("Expected error %v, got %v", expectedErr, gotErr)

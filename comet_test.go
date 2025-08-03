@@ -309,6 +309,26 @@ func TestClient_CrashRecovery(t *testing.T) {
 		t.Fatalf("failed to sync: %v", err)
 	}
 
+	// VALIDATION: Verify all 3 entries are readable BEFORE the "crash"
+	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "pre-crash-validation"})
+	preMessages, err := consumer1.Read(ctx, []uint32{1}, 10)
+	if err != nil {
+		t.Fatalf("failed to read entries before crash: %v", err)
+	}
+	if len(preMessages) != 3 {
+		t.Fatalf("Phase 1 validation failed: expected 3 entries before crash, got %d", len(preMessages))
+	}
+	consumer1.Close()
+
+	// VALIDATION: Verify Len() reports 3 before crash
+	preLength, err := client1.Len(ctx, streamName)
+	if err != nil {
+		t.Fatalf("failed to get length before crash: %v", err)
+	}
+	if preLength != 3 {
+		t.Fatalf("Phase 1 validation failed: expected length 3 before crash, got %d", preLength)
+	}
+
 	// Check that index was created before closing
 	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {

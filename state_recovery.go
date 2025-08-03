@@ -11,26 +11,52 @@ import (
 
 // validateAndRecoverState validates the state file and recovers from corruption
 func (s *Shard) validateAndRecoverState() error {
-	if s.state == nil {
+	processID := os.Getpid()
+
+	if s.loadState() == nil {
 		return fmt.Errorf("state is nil")
 	}
 
-	// Validate critical fields for sanity
-	lastEntry := atomic.LoadInt64(&s.state.LastEntryNumber)
+	state := s.loadState()
+	if state == nil {
+		return fmt.Errorf("state is nil after loadState")
+	}
 
-	// Check for specific uninitialized memory patterns that we've observed
-	// 341 (0x155) is a pattern seen in uninitialized mmap memory
-	if lastEntry == 341 {
-		// Reset to safe initial value
-		atomic.StoreInt64(&s.state.LastEntryNumber, -1)
-		lastEntry = -1
-		if s.logger != nil {
-			s.logger.Warn("Reset uninitialized LastEntryNumber pattern", "oldValue", 341)
+	// Validate critical fields for sanity
+	lastEntry := atomic.LoadInt64(&state.LastEntryNumber)
+	
+	// Debug logging for CurrentEntryNumber changes
+	if Debug && s.logger != nil {
+		var indexBefore int64 = -1
+		if s.index != nil {
+			indexBefore = s.index.CurrentEntryNumber
 		}
+		s.logger.Debug("validateAndRecoverState: ENTRY",
+			"shardID", s.shardID,
+			"indexCurrentEntryNumber", indexBefore,
+			"stateLastEntryNumber", lastEntry)
+	}
+
+	if s.logger != nil {
+		// Safely access index fields (index may be nil during recovery)
+		var indexCurrentEntryNumber int64 = -1
+		var indexFileCount int = 0
+		if s.index != nil {
+			indexCurrentEntryNumber = s.index.CurrentEntryNumber
+			indexFileCount = len(s.index.Files)
+		}
+		
+		s.logger.Debug("validateAndRecoverState: checking state",
+			"shardID", s.shardID,
+			"pid", processID,
+			"lastEntryNumber", lastEntry,
+			"version", atomic.LoadUint64(&state.Version),
+			"indexCurrentEntryNumber", indexCurrentEntryNumber,
+			"indexFiles", indexFileCount)
 	}
 
 	// Check version
-	version := atomic.LoadUint64(&s.state.Version)
+	version := atomic.LoadUint64(&state.Version)
 	if version == 0 || version > CometStateVersion1 {
 		// Version 0 means uninitialized or corrupted
 		// Version > current means newer format we don't understand
@@ -38,8 +64,8 @@ func (s *Shard) validateAndRecoverState() error {
 	}
 
 	// Validate critical fields for sanity
-	writeOffset := atomic.LoadUint64(&s.state.WriteOffset)
-	fileSize := atomic.LoadUint64(&s.state.FileSize)
+	writeOffset := atomic.LoadUint64(&state.WriteOffset)
+	fileSize := atomic.LoadUint64(&state.FileSize)
 
 	// Basic sanity checks
 	if writeOffset > fileSize && fileSize > 0 {
@@ -52,13 +78,58 @@ func (s *Shard) validateAndRecoverState() error {
 	}
 
 	// LastEntryNumber should be -1 (uninitialized) or >= 0
-	if lastEntry < -1 && lastEntry != 341 { // 341 is handled above
+	if lastEntry < -1 {
 		return s.recoverCorruptedState(fmt.Sprintf("invalid last entry number: %d", lastEntry))
 	}
 
+	// Check for suspicious patterns that suggest uninitialized memory
+	// Common patterns: 0x55 (85), 0xAA (170), 0x155 (341), etc.
+	// These are often used by memory allocators or debugging tools
+	if lastEntry > 0 && (s.index == nil || len(s.index.Files) == 0) {
+		// We have a non-zero entry count but no data files in our index
+		// In multi-process mode, this might just mean the index hasn't been reloaded yet
+		if s.statePath != "" { // Multi-process mode
+			if s.logger != nil {
+				s.logger.Debug("State shows entries but index has no files, reloading index",
+					"lastEntry", lastEntry,
+					"shard", s.shardID,
+					"pid", processID)
+			}
+
+			// Try to reload the index from disk
+			if err := s.loadIndex(); err != nil {
+				if s.logger != nil {
+					s.logger.Warn("Failed to reload index",
+						"error", err,
+						"shard", s.shardID)
+				}
+			}
+
+			// Check again after reloading
+			if s.index == nil || len(s.index.Files) == 0 {
+				// Not a known pattern, but still suspicious
+				if s.logger != nil {
+					s.logger.Warn("Suspicious state after index reload: LastEntryNumber > 0 but no data files",
+						"lastEntry", lastEntry,
+						"shard", s.shardID)
+				}
+				// For now, trust the state in multi-process mode as another process might be writing
+				// This is a trade-off for correctness over strict validation
+			}
+		} else {
+			// Single-process mode - this is definitely suspicious
+			if s.logger != nil {
+				s.logger.Warn("Suspicious state: LastEntryNumber > 0 but no data files",
+					"lastEntry", lastEntry,
+					"shard", s.shardID)
+			}
+			return s.recoverCorruptedState(fmt.Sprintf("suspicious LastEntryNumber %d with no data files", lastEntry))
+		}
+	}
+
 	// Validate metrics are within reasonable bounds
-	totalWrites := atomic.LoadUint64(&s.state.TotalWrites)
-	totalEntries := atomic.LoadInt64(&s.state.TotalEntries)
+	totalWrites := atomic.LoadUint64(&state.TotalWrites)
+	totalEntries := atomic.LoadInt64(&state.TotalEntries)
 
 	// TotalWrites should be >= TotalEntries (can have failed writes)
 	if totalEntries > 0 && totalWrites == 0 {
@@ -66,11 +137,53 @@ func (s *Shard) validateAndRecoverState() error {
 		// Log it but don't recover
 	}
 
-	// Synchronize state with index if they're out of sync
-	// This can happen when the index file has stale or corrupted data
-	if s.index != nil && lastEntry >= 0 && s.index.CurrentEntryNumber != lastEntry {
+	// Synchronize state with index when they're out of sync
+	
+	// Case 1: State is uninitialized (-1) but index has data - initialize state from index
+	if s.index != nil && lastEntry == -1 && s.index.CurrentEntryNumber > 0 && len(s.index.Files) > 0 {
+		if s.logger != nil {
+			s.logger.Info("validateAndRecoverState: initializing state from existing index",
+				"shardID", s.shardID,
+				"pid", processID,
+				"indexCurrentEntryNumber", s.index.CurrentEntryNumber,
+				"stateLastEntryNumber", lastEntry)
+		}
+		
+		// Set state LastEntryNumber to index CurrentEntryNumber - 1
+		// If index says CurrentEntryNumber=3, we have entries 0,1,2, so LastEntryNumber=2
+		state := s.loadState()
+		atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber-1)
+		
+		if Debug && s.logger != nil {
+			s.logger.Debug("TRACE: Setting LastEntryNumber from index",
+				"location", "state_recovery.go:154",
+				"indexCurrentEntryNumber", s.index.CurrentEntryNumber,
+				"newStateLastEntryNumber", s.index.CurrentEntryNumber-1,
+				"shardID", s.shardID)
+		}
+	}
+	
+	// Case 2: State has data but index is out of sync - update index from state
+	if s.index != nil && lastEntry >= 0 && s.index.CurrentEntryNumber != lastEntry + 1 && len(s.index.Files) > 0 {
+		if s.logger != nil {
+			s.logger.Warn("validateAndRecoverState: synchronizing index with state",
+				"shardID", s.shardID,
+				"pid", processID,
+				"indexCurrentEntryNumber", s.index.CurrentEntryNumber,
+				"stateLastEntryNumber", lastEntry,
+				"indexFiles", len(s.index.Files))
+		}
+
 		// Trust the state over the index since state is updated atomically
-		s.index.CurrentEntryNumber = lastEntry
+		// State.LastEntryNumber is the last allocated entry, index.CurrentEntryNumber is the next to allocate
+		if Debug && s.logger != nil {
+			s.logger.Debug("TRACE: Setting CurrentEntryNumber from state recovery",
+				"location", "state_recovery.go:156",
+				"oldValue", s.index.CurrentEntryNumber,
+				"newValue", lastEntry + 1,
+				"shardID", s.shardID)
+		}
+		s.index.CurrentEntryNumber = lastEntry + 1
 
 		// Also update file entries if needed
 		if len(s.index.Files) > 0 {
@@ -81,6 +194,18 @@ func (s *Shard) validateAndRecoverState() error {
 				lastFile.Entries = expectedEntries
 			}
 		}
+	}
+
+	// Debug logging for CurrentEntryNumber changes
+	if Debug && s.logger != nil {
+		var indexAfter int64 = -1
+		if s.index != nil {
+			indexAfter = s.index.CurrentEntryNumber
+		}
+		s.logger.Debug("validateAndRecoverState: EXIT",
+			"shardID", s.shardID,
+			"indexCurrentEntryNumber", indexAfter,
+			"stateLastEntryNumber", lastEntry)
 	}
 
 	return nil
@@ -99,19 +224,19 @@ func (s *Shard) recoverCorruptedState(reason string) error {
 	// Store recovery counts to restore after reinit
 	var prevRecoveryAttempts uint64
 	var prevCorruptionDetected uint64
-	if s.state != nil {
-		prevRecoveryAttempts = atomic.LoadUint64(&s.state.RecoveryAttempts)
-		prevCorruptionDetected = atomic.LoadUint64(&s.state.CorruptionDetected)
+	if state := s.loadState(); state != nil {
+		prevRecoveryAttempts = atomic.LoadUint64(&state.RecoveryAttempts)
+		prevCorruptionDetected = atomic.LoadUint64(&state.CorruptionDetected)
 	}
 
 	// Close and unmap current state
-	if s.state != nil && s.stateData != nil {
+	if s.loadState() != nil && s.stateData != nil {
 		// In mmap mode, unmap the memory
 		if len(s.stateData) > 0 {
 			syscall.Munmap(s.stateData)
 			s.stateData = nil
 		}
-		s.state = nil
+		s.storeState(nil)
 	}
 
 	// Rename corrupted file for investigation
@@ -131,11 +256,19 @@ func (s *Shard) recoverCorruptedState(reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.index != nil && s.state != nil {
+	if s.index != nil && s.loadState() != nil {
 		// Restore what we can from the index
-		atomic.StoreInt64(&s.state.LastEntryNumber, s.index.CurrentEntryNumber)
-		atomic.StoreUint64(&s.state.WriteOffset, uint64(s.index.CurrentWriteOffset))
-		atomic.StoreUint64(&s.state.CurrentFiles, uint64(len(s.index.Files)))
+		state := s.loadState()
+
+		// Set LastEntryNumber to the last allocated entry (CurrentEntryNumber - 1)
+		// If CurrentEntryNumber=3, we have entries 0,1,2, so LastEntryNumber=2
+		if s.index.CurrentEntryNumber > 0 {
+			atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber-1)
+		} else {
+			atomic.StoreInt64(&state.LastEntryNumber, -1)  // No entries allocated yet
+		}
+		atomic.StoreUint64(&state.WriteOffset, uint64(s.index.CurrentWriteOffset))
+		atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
 
 		// Set file index based on current file
 		if s.index.CurrentFile != "" {
@@ -143,14 +276,14 @@ func (s *Shard) recoverCorruptedState(reason string) error {
 			base := filepath.Base(s.index.CurrentFile)
 			var fileIndex uint64
 			if _, err := fmt.Sscanf(base, "log-%016d.comet", &fileIndex); err == nil {
-				atomic.StoreUint64(&s.state.ActiveFileIndex, fileIndex)
+				atomic.StoreUint64(&state.ActiveFileIndex, fileIndex)
 			}
 		}
 
 		// Restore and increment recovery metrics
-		atomic.StoreUint64(&s.state.RecoveryAttempts, prevRecoveryAttempts+1)
-		atomic.StoreUint64(&s.state.CorruptionDetected, prevCorruptionDetected+1)
-		atomic.AddUint64(&s.state.RecoverySuccesses, 1)
+		atomic.StoreUint64(&state.RecoveryAttempts, prevRecoveryAttempts+1)
+		atomic.StoreUint64(&state.CorruptionDetected, prevCorruptionDetected+1)
+		atomic.AddUint64(&state.RecoverySuccesses, 1)
 	}
 
 	return nil

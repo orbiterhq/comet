@@ -436,8 +436,9 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	atomic.AddInt64(&shard.readerCount, 1)
 	defer atomic.AddInt64(&shard.readerCount, -1)
 
-	// Check unified state for instant change detection
-	if shard.state != nil {
+	// Check unified state for instant change detection (multi-process mode only)
+	// In single-process mode, skip this entirely as there's no external coordination needed
+	if c.client.config.Concurrency.EnableMultiProcessMode && shard.state != nil {
 		currentTimestamp := shard.state.GetLastIndexUpdate()
 		if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 			// Index changed - reload it under write lock
@@ -451,11 +452,14 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 				atomic.StoreInt64(&shard.lastMmapCheck, currentTimestamp)
 
 				// In multi-process mode, check if we need to rebuild index from files
-				// We can tell we're in multi-process mode if mmapState exists
-				if shard.state != nil {
-					shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
-					shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
+				shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
+				if Debug && shard.logger != nil {
+					shard.logger.Debug("Consumer triggering index rebuild check",
+						"shard", shard.shardID,
+						"multiProcessMode", c.client.config.Concurrency.EnableMultiProcessMode,
+						"shardDir", shardDir)
 				}
+				shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
 
 				// Also invalidate any cached readers since the index changed
 				c.readers.Range(func(key, value any) bool {
@@ -498,6 +502,14 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	shard.mu.RUnlock()
 
 	// In multi-process mode, check if index might be stale by comparing with state
+	if Debug && shard.logger != nil {
+		shard.logger.Debug("Consumer read state check",
+			"shard", shard.shardID,
+			"stateExists", shard.state != nil,
+			"mmapWriterExists", shard.mmapWriter != nil,
+			"mmapWriterStateExists", shard.mmapWriter != nil && shard.mmapWriter.state != nil,
+			"endEntryNum", endEntryNum)
+	}
 	if shard.state != nil && shard.mmapWriter != nil && shard.mmapWriter.state != nil {
 		totalWrites := shard.mmapWriter.state.GetTotalWrites()
 		if totalWrites > uint64(endEntryNum) {
