@@ -312,7 +312,6 @@ func runBrowseTestWorker(t *testing.T, role string) {
 		}
 		fmt.Printf("Scanned %d total entries (IDs %d-%d)\n", count, firstID, lastID)
 
-
 	case "consumer-read":
 		// Consumer read operation
 		consumer := NewConsumer(client, ConsumerOptions{Group: "test-group"})

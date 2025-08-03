@@ -381,7 +381,6 @@ func runBrowseStressWorker(t *testing.T, role string) {
 			}()
 		}
 
-
 		wg.Wait()
 
 		elapsed := time.Since(start)

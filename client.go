@@ -386,10 +386,9 @@ type Client struct {
 // Fields ordered for optimal memory alignment (64-bit words first)
 type Shard struct {
 	// 64-bit aligned fields first (8 bytes each)
-	readerCount         int64     // Lock-free reader tracking
-	lastCheckpoint      time.Time // 64-bit on most systems
-	lastMmapCheck       int64     // Last mmap timestamp we saw (for change detection)
-	lastIndexUpdateSeen int64     // Last index update timestamp seen by Tail (for optimization)
+	readerCount    int64     // Lock-free reader tracking
+	lastCheckpoint time.Time // 64-bit on most systems
+	lastMmapCheck  int64     // Last mmap timestamp we saw (for change detection)
 
 	// Pointers (8 bytes each on 64-bit)
 	dataFile          *os.File      // Data file handle
