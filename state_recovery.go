@@ -24,7 +24,7 @@ func (s *Shard) validateAndRecoverState() error {
 
 	// Validate critical fields for sanity
 	lastEntry := atomic.LoadInt64(&state.LastEntryNumber)
-	
+
 	// Debug logging for CurrentEntryNumber changes
 	if Debug && s.logger != nil {
 		var indexBefore int64 = -1
@@ -45,7 +45,7 @@ func (s *Shard) validateAndRecoverState() error {
 			indexCurrentEntryNumber = s.index.CurrentEntryNumber
 			indexFileCount = len(s.index.Files)
 		}
-		
+
 		s.logger.Debug("validateAndRecoverState: checking state",
 			"shardID", s.shardID,
 			"pid", processID,
@@ -142,22 +142,22 @@ func (s *Shard) validateAndRecoverState() error {
 	}
 
 	// Synchronize state with index when they're out of sync
-	
+
 	// Case 1: State is uninitialized (-1) but index has data - initialize state from index
 	if s.index != nil && lastEntry == -1 && s.index.CurrentEntryNumber > 0 && len(s.index.Files) > 0 {
 		if s.logger != nil {
-			s.logger.Info("validateAndRecoverState: initializing state from existing index",
+			s.logger.Debug("validateAndRecoverState: initializing state from existing index",
 				"shardID", s.shardID,
 				"pid", processID,
 				"indexCurrentEntryNumber", s.index.CurrentEntryNumber,
 				"stateLastEntryNumber", lastEntry)
 		}
-		
+
 		// Set state LastEntryNumber to index CurrentEntryNumber - 1
 		// If index says CurrentEntryNumber=3, we have entries 0,1,2, so LastEntryNumber=2
 		state := s.loadState()
 		atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber-1)
-		
+
 		if Debug && s.logger != nil {
 			s.logger.Debug("TRACE: Setting LastEntryNumber from index",
 				"location", "state_recovery.go:154",
@@ -166,9 +166,9 @@ func (s *Shard) validateAndRecoverState() error {
 				"shardID", s.shardID)
 		}
 	}
-	
+
 	// Case 2: State has data but index is out of sync - update index from state
-	if s.index != nil && lastEntry >= 0 && s.index.CurrentEntryNumber != lastEntry + 1 && len(s.index.Files) > 0 {
+	if s.index != nil && lastEntry >= 0 && s.index.CurrentEntryNumber != lastEntry+1 && len(s.index.Files) > 0 {
 		if s.logger != nil {
 			s.logger.Warn("validateAndRecoverState: synchronizing index with state",
 				"shardID", s.shardID,
@@ -184,7 +184,7 @@ func (s *Shard) validateAndRecoverState() error {
 			s.logger.Debug("TRACE: Setting CurrentEntryNumber from state recovery",
 				"location", "state_recovery.go:156",
 				"oldValue", s.index.CurrentEntryNumber,
-				"newValue", lastEntry + 1,
+				"newValue", lastEntry+1,
 				"shardID", s.shardID)
 		}
 		s.index.CurrentEntryNumber = lastEntry + 1
@@ -269,7 +269,7 @@ func (s *Shard) recoverCorruptedState(reason string) error {
 		if s.index.CurrentEntryNumber > 0 {
 			atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber-1)
 		} else {
-			atomic.StoreInt64(&state.LastEntryNumber, -1)  // No entries allocated yet
+			atomic.StoreInt64(&state.LastEntryNumber, -1) // No entries allocated yet
 		}
 		atomic.StoreUint64(&state.WriteOffset, uint64(s.index.CurrentWriteOffset))
 		atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
