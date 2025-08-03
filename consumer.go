@@ -936,8 +936,8 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 	baseStream := strings.TrimSuffix(streamPattern, "*")
 
 	// Discover all available shards
-	// Check up to 32 shards by default (can be increased if needed)
-	maxShards := uint32(32)
+	// Check up to 9999 shards - the technical limit based on 4-digit shard format (%04d)
+	maxShards := uint32(9999)
 	var allShards []uint32
 
 	// Try to discover shards in parallel for better performance
