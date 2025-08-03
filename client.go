@@ -2648,14 +2648,20 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, fileIndex in
 		length := binary.LittleEndian.Uint32(headerBuf[0:4])
 		timestamp := binary.LittleEndian.Uint64(headerBuf[4:12])
 
-		// Check for uninitialized memory (zeros) - AGGRESSIVE GAP SKIPPING
+		// Check for uninitialized memory (zeros) - LIMITED GAP SKIPPING
 		if length == 0 && timestamp == 0 {
 
 			found := false
 
-			// NUCLEAR APPROACH: Search every 4 bytes until we find a valid header
-			// This ensures we NEVER miss entries due to gaps
-			for searchOffset := offset + 4; searchOffset <= fileSize-headerSize; searchOffset += 4 {
+			// BOUNDED APPROACH: Search up to 64KB for next valid header
+			// This balances recovery capability with performance
+			maxSearchDistance := int64(64 * 1024) // 64KB limit
+			searchLimit := offset + maxSearchDistance
+			if searchLimit > fileSize-headerSize {
+				searchLimit = fileSize - headerSize
+			}
+
+			for searchOffset := offset + 4; searchOffset <= searchLimit; searchOffset += 4 {
 				searchBuf := make([]byte, headerSize)
 				if n, err := f.ReadAt(searchBuf, searchOffset); err == nil && n == headerSize {
 					searchLength := binary.LittleEndian.Uint32(searchBuf[0:4])

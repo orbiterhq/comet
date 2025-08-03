@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestIndexRebuildRaceCondition tests what happens when multiple processes
@@ -22,9 +23,11 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Build test worker
+	// Build test worker with timeout to avoid hanging
 	workerBinary := filepath.Join(dir, "test_worker")
-	cmd := exec.Command("go", "build", "-o", workerBinary, "./cmd/test_worker")
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer buildCancel()
+	cmd := exec.CommandContext(buildCtx, "go", "build", "-o", workerBinary, "./cmd/test_worker")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("failed to build test worker: %v", err)
 	}

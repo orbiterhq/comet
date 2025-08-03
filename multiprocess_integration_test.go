@@ -210,7 +210,9 @@ func TestMultiProcessIntegration(t *testing.T) {
 			wg.Add(1)
 			go func(id int) {
 				defer wg.Done()
-				cmd := exec.Command(executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
 				cmd.Env = append(os.Environ(),
 					fmt.Sprintf("COMET_MP_TEST_ROLE=writer-%d", id),
 					fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),
@@ -227,7 +229,9 @@ func TestMultiProcessIntegration(t *testing.T) {
 			wg.Add(1)
 			go func(id int) {
 				defer wg.Done()
-				cmd := exec.Command(executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
 				cmd.Env = append(os.Environ(),
 					fmt.Sprintf("COMET_MP_TEST_ROLE=reader-%d", id),
 					fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),
@@ -274,7 +278,9 @@ func TestMultiProcessIntegration(t *testing.T) {
 				defer wg.Done()
 				time.Sleep(time.Duration(id*50) * time.Millisecond) // Stagger starts
 
-				cmd := exec.Command(executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
 				cmd.Env = append(os.Environ(),
 					fmt.Sprintf("COMET_MP_TEST_ROLE=locker-%d", id),
 					fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),
