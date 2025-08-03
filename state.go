@@ -154,9 +154,6 @@ func (s *CometState) SetVersion(v uint64) {
 // Helper methods for atomic operations on uint64 fields
 func (s *CometState) GetLastEntryNumber() int64 {
 	val := atomic.LoadInt64(&s.LastEntryNumber)
-	if Debug {
-		fmt.Printf("DEBUG GetLastEntryNumber: val=%d, ptr=%p, structPtr=%p\n", val, &s.LastEntryNumber, s)
-	}
 	return val
 }
 
@@ -168,17 +165,7 @@ func (s *CometState) IncrementLastEntryNumber() int64 {
 		oldVal := atomic.LoadInt64(&s.LastEntryNumber)
 		newVal := oldVal + 1
 		if atomic.CompareAndSwapInt64(&s.LastEntryNumber, oldVal, newVal) {
-			if Debug {
-				fmt.Printf("DEBUG IncrementLastEntryNumber: old=%d, new=%d, ptr=%p, fieldPtr=%p\n",
-					oldVal, newVal, s, &s.LastEntryNumber)
-			}
 			return newVal
-		}
-		// If CAS failed, another process updated it, retry
-		if Debug {
-			currentVal := atomic.LoadInt64(&s.LastEntryNumber)
-			fmt.Printf("DEBUG IncrementLastEntryNumber: CAS retry old=%d, current=%d, ptr=%p\n",
-				oldVal, currentVal, s)
 		}
 	}
 }
