@@ -174,14 +174,22 @@ func TestConcurrentMultiProcessWrites(t *testing.T) {
 			t.Errorf("Process %d failed to append batch: %v", i, err)
 		}
 
-		// Small delay to avoid index conflicts
-		time.Sleep(10 * time.Millisecond)
+		// Ensure data is persisted before next process writes
+		if err := client.Sync(ctx); err != nil {
+			t.Errorf("Process %d failed to sync: %v", i, err)
+		}
+		
+		// Longer delay to ensure index is fully updated
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Sync all clients to ensure index is persisted
+	// Final sync on all clients
 	for _, client := range clients {
 		client.Sync(ctx)
 	}
+	
+	// Additional delay to ensure all syncs complete
+	time.Sleep(100 * time.Millisecond)
 
 	// Verify stream length - this tests the actual data persistence
 	totalLength, err := clients[0].Len(ctx, streamName)

@@ -251,8 +251,8 @@ func TestTail(t *testing.T) {
 	}
 
 	t.Run("TailNewEntries", func(t *testing.T) {
-		// Use a unique stream name for this subtest
-		subStreamName := fmt.Sprintf("tail:v1:shard:%04d", rand.Intn(8000)+1000)
+		// Use a unique stream name for this subtest - use timestamp to ensure uniqueness
+		subStreamName := fmt.Sprintf("tail:v1:shard:%04d", int(time.Now().UnixNano()%8000)+1000)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -260,11 +260,15 @@ func TestTail(t *testing.T) {
 		var received []StreamMessage
 		var mu sync.Mutex
 		var wg sync.WaitGroup
+		var tailReady = make(chan struct{})
+		
 		wg.Add(1)
 
 		// Start tailing in goroutine
 		go func() {
 			defer wg.Done()
+			// Signal that we're about to start tailing
+			close(tailReady)
 			err := client.Tail(ctx, subStreamName, func(ctx context.Context, msg StreamMessage) error {
 				mu.Lock()
 				received = append(received, msg)
@@ -276,9 +280,11 @@ func TestTail(t *testing.T) {
 			}
 		}()
 
+		// Wait for tail goroutine to be ready
+		<-tailReady
 		// Give tail time to start and ensure it's positioned at the current end
 		// This is critical for test isolation across platforms
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 
 		// Write new entries with longer initial delay to ensure tail catches first message
 		for i := 0; i < 5; i++ {
@@ -291,11 +297,13 @@ func TestTail(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			time.Sleep(50 * time.Millisecond) // Space out writes
+			// Ensure data is visible
+			client.Sync(ctx)
+			time.Sleep(100 * time.Millisecond) // Space out writes more
 		}
 
-		// Give time to receive
-		time.Sleep(300 * time.Millisecond)
+		// Give time to receive all messages
+		time.Sleep(500 * time.Millisecond)
 
 		// Check received messages
 		mu.Lock()
@@ -343,8 +351,8 @@ func TestTail(t *testing.T) {
 	})
 
 	t.Run("TailErrorHandling", func(t *testing.T) {
-		// Use a unique stream name for this subtest
-		subStreamName := fmt.Sprintf("tail:v1:shard:%04d", rand.Intn(1000)+9000)
+		// Use a unique stream name for this subtest - use timestamp to ensure uniqueness
+		subStreamName := fmt.Sprintf("tail:v1:shard:%04d", int(time.Now().UnixNano()%1000)+9000)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
