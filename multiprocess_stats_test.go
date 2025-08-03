@@ -71,9 +71,11 @@ func TestMultiProcessCometStateStats(t *testing.T) {
 	// Debug: Check the shard state directly
 	shardID, _ := parseShardFromStream(streamName)
 	client2.mu.RLock()
-	if shard, exists := client2.shards[shardID]; exists && shard.state != nil {
-		lastEntry := atomic.LoadInt64(&shard.state.LastEntryNumber)
-		t.Logf("Process 2 shard state LastEntryNumber: %d", lastEntry)
+	if shard, exists := client2.shards[shardID]; exists {
+		if state := shard.loadState(); state != nil {
+			lastEntry := atomic.LoadInt64(&state.LastEntryNumber)
+			t.Logf("Process 2 shard state LastEntryNumber: %d", lastEntry)
+		}
 
 		// Check index files
 		if shard.index != nil {
@@ -169,14 +171,15 @@ func TestCometStateDirectAccess(t *testing.T) {
 	}
 
 	// Verify CometState is initialized and has data
-	if testShard.state == nil {
+	state := testShard.loadState()
+	if state == nil {
 		t.Fatalf("CometState should be initialized in multi-process mode")
 	}
 
 	// Check that CometState metrics match what we expect
-	totalEntries := atomic.LoadInt64(&testShard.state.TotalEntries)
-	totalBytes := atomic.LoadUint64(&testShard.state.TotalBytes)
-	lastWriteNanos := atomic.LoadInt64(&testShard.state.LastWriteNanos)
+	totalEntries := atomic.LoadInt64(&state.TotalEntries)
+	totalBytes := atomic.LoadUint64(&state.TotalBytes)
+	lastWriteNanos := atomic.LoadInt64(&state.LastWriteNanos)
 
 	t.Logf("CometState direct access: entries=%d, bytes=%d, lastWrite=%d",
 		totalEntries, totalBytes, lastWriteNanos)

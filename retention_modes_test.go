@@ -105,7 +105,7 @@ func TestRetentionMultiProcess(t *testing.T) {
 	shard, _ := client.getOrCreateShard(1)
 	shard.mu.RLock()
 	initialFiles := len(shard.index.Files)
-	hasCometState := shard.state != nil
+	hasCometState := shard.loadState() != nil
 	currentFile := shard.index.CurrentFile
 	for i, file := range shard.index.Files {
 		t.Logf("File %d: %s (current: %t)", i, file.Path, file.Path == currentFile)

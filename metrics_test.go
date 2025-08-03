@@ -757,7 +757,7 @@ func TestReadErrorMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -788,7 +788,7 @@ func TestReadErrorMetrics(t *testing.T) {
 
 	// Get shard from new client
 	shard2, _ := client2.getOrCreateShard(1)
-	if shard2.state == nil {
+	if shard2.loadState() == nil {
 		t.Skip("State not available")
 	}
 

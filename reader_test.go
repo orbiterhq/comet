@@ -440,8 +440,8 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 
 	const (
 		numWriters   = 2
-		numReaders   = 3  // Reduce concurrent readers for CI stability
-		numEntries   = 50 // Reduce entries for faster completion
+		numReaders   = 3               // Reduce concurrent readers for CI stability
+		numEntries   = 50              // Reduce entries for faster completion
 		testDuration = 1 * time.Second // Shorter duration for CI
 	)
 
@@ -547,13 +547,13 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 
 	// Wait for writers to finish first
 	writerWg.Wait()
-	
+
 	// Sync to ensure all writes are visible
 	client.Sync(context.Background())
 
 	// Give readers more time to process remaining messages
 	time.Sleep(200 * time.Millisecond)
-	
+
 	// Now stop readers gracefully
 	cancel() // This was already called by timeout, but ensure it's done
 	readerWg.Wait()

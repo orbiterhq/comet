@@ -116,7 +116,7 @@ func TestMultiProcessMmapSize(t *testing.T) {
 		t.Fatal("Shard 1 not found")
 	}
 
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		t.Fatal("Unified state not initialized")
 	}
 

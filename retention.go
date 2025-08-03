@@ -92,7 +92,7 @@ func (c *Client) runRetentionCleanup() {
 	for _, shard := range c.shards {
 		shards = append(shards, shard)
 		// Track retention run in each shard's metrics
-		if shard.state != nil {
+		if shard.loadState() != nil {
 			atomic.AddUint64(&shard.state.RetentionRuns, 1)
 			atomic.StoreInt64(&shard.state.LastRetentionNanos, start.UnixNano())
 		}
@@ -114,7 +114,7 @@ func (c *Client) runRetentionCleanup() {
 	// Update retention time metrics
 	duration := time.Since(start)
 	for _, shard := range shards {
-		if shard.state != nil {
+		if shard.loadState() != nil {
 			atomic.AddInt64(&shard.state.RetentionTimeNanos, duration.Nanoseconds())
 		}
 	}
@@ -126,7 +126,7 @@ func (c *Client) runRetentionCleanup() {
 			shard.mu.RLock()
 			totalFiles += len(shard.index.Files)
 			shard.mu.RUnlock()
-			if shard.state != nil {
+			if shard.loadState() != nil {
 				deletedFiles += int(atomic.LoadUint64(&shard.state.FilesDeleted))
 			}
 		}
@@ -234,7 +234,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 			if fileLastEntry >= oldestProtectedEntry {
 				shouldDelete = false
 				// Track files protected by consumers
-				if shard.state != nil {
+				if shard.loadState() != nil {
 					atomic.AddUint64(&shard.state.ProtectedByConsumers, 1)
 				}
 			}
@@ -285,7 +285,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 	}
 
 	// Update oldest entry timestamp
-	if shard.state != nil {
+	if shard.loadState() != nil {
 		if len(filesToKeep) > 0 {
 			// Find the oldest file that remains
 			oldestTime := filesToKeep[0].StartTime
@@ -389,7 +389,7 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 		if err != nil && !os.IsNotExist(err) {
 			// Log error but continue - file may have been deleted by another process
 			// Track retention errors
-			if shard.state != nil {
+			if shard.loadState() != nil {
 				atomic.AddUint64(&shard.state.RetentionErrors, 1)
 			}
 			continue
@@ -400,7 +400,7 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	}
 
 	// Update retention metrics
-	if shard.state != nil && deletedCount > 0 {
+	if shard.loadState() != nil && deletedCount > 0 {
 		atomic.AddUint64(&shard.state.FilesDeleted, uint64(deletedCount))
 		atomic.AddUint64(&shard.state.BytesReclaimed, bytesReclaimed)
 		atomic.AddUint64(&shard.state.EntriesDeleted, entriesDeleted)

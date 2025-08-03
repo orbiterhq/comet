@@ -1356,13 +1356,13 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	// Synchronize state with index if index has data and state is uninitialized
 	// This handles the case where an index file exists from a previous session
 	// but the state is fresh (single-process mode)
-	if shard.state != nil && shard.index.CurrentEntryNumber > 0 && len(shard.index.Files) > 0 {
-		currentLastEntryNumber := atomic.LoadInt64(&shard.state.LastEntryNumber)
+	if state := shard.loadState(); state != nil && shard.index.CurrentEntryNumber > 0 && len(shard.index.Files) > 0 {
+		currentLastEntryNumber := atomic.LoadInt64(&state.LastEntryNumber)
 		if currentLastEntryNumber == -1 {
 			// Set LastEntryNumber to the last allocated entry (CurrentEntryNumber - 1)
 			// If index says CurrentEntryNumber=3, we have entries 0,1,2, so LastEntryNumber=2
 			newLastEntryNumber := shard.index.CurrentEntryNumber - 1
-			atomic.StoreInt64(&shard.state.LastEntryNumber, newLastEntryNumber)
+			atomic.StoreInt64(&state.LastEntryNumber, newLastEntryNumber)
 
 			if c.logger != nil {
 				c.logger.Debug("getOrCreateShard: synchronized state with existing index",
@@ -1388,15 +1388,15 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 
 	// Recover from crash if needed
 	// Track recovery attempt
-	if shard.state != nil {
-		atomic.AddUint64(&shard.state.RecoveryAttempts, 1)
+	if state := shard.loadState(); state != nil {
+		atomic.AddUint64(&state.RecoveryAttempts, 1)
 	}
 	if err := shard.recoverFromCrash(); err != nil {
 		return nil, err
 	}
 	// Recovery successful if we got here
-	if shard.state != nil {
-		atomic.AddUint64(&shard.state.RecoverySuccesses, 1)
+	if state := shard.loadState(); state != nil {
+		atomic.AddUint64(&state.RecoverySuccesses, 1)
 	}
 
 	c.shards[shardID] = shard
@@ -4180,8 +4180,8 @@ func (c *Client) Health() Health {
 	var lastWriteNano int64
 	c.mu.RLock()
 	for _, shard := range c.shards {
-		if shard.state != nil {
-			shardLastWrite := atomic.LoadInt64(&shard.state.LastWriteNanos)
+		if state := shard.loadState(); state != nil {
+			shardLastWrite := atomic.LoadInt64(&state.LastWriteNanos)
 			if shardLastWrite > lastWriteNano {
 				lastWriteNano = shardLastWrite
 			}
@@ -4245,7 +4245,7 @@ func (c *Client) Health() Health {
 		c.mu.RLock()
 		for _, shard := range c.shards {
 			// Just accessing the shard and checking if we can read its state
-			if shard.state == nil {
+			if shard.loadState() == nil {
 				health.ReadsOK = false
 				health.Status = "unhealthy"
 				health.Healthy = false
@@ -4448,7 +4448,7 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 	// In multi-process mode, reload index to get latest state
 	if c.config.Concurrency.EnableMultiProcessMode {
 		shard.mu.Lock()
-		
+
 		// CRITICAL: Sync mmap writer first to ensure data is visible to other processes
 		if shard.mmapWriter != nil {
 			if err := shard.mmapWriter.Sync(); err != nil {
@@ -4458,7 +4458,7 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 				}
 			}
 		}
-		
+
 		if err := shard.loadIndex(); err != nil {
 			shard.mu.Unlock()
 			return fmt.Errorf("failed to reload index: %w", err)
@@ -4466,7 +4466,7 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 		// CRITICAL: Check if we need to rebuild index to see files created by other processes
 		shardDir := filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shardID))
 		shard.lazyRebuildIndexIfNeeded(c.config, shardDir)
-		
+
 		// Initialize lastIndexUpdateSeen to current timestamp
 		if state := shard.loadState(); state != nil {
 			shard.lastIndexUpdateSeen = state.GetLastIndexUpdate()
@@ -4502,7 +4502,7 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 			// In multi-process mode, need to sync and reload to see updates from other processes
 			if c.config.Concurrency.EnableMultiProcessMode {
 				shard.mu.Lock()
-				
+
 				// Check if index has been updated since last check
 				needsReload := false
 				if state := shard.loadState(); state != nil {
@@ -4512,7 +4512,7 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 						shard.lastIndexUpdateSeen = lastUpdate
 					}
 				}
-				
+
 				if needsReload {
 					// Sync mmap writer to ensure data visibility
 					if shard.mmapWriter != nil {
@@ -4522,21 +4522,21 @@ func (c *Client) Tail(ctx context.Context, streamName string, fn func(context.Co
 							}
 						}
 					}
-					
+
 					// Reload index to get latest state from other processes
 					if err := shard.loadIndex(); err != nil {
 						if shard.logger != nil {
 							shard.logger.Warn("Failed to reload index during tail", "error", err)
 						}
 					}
-					
+
 					// Check if we need to rebuild to see new files
 					shardDir := filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shardID))
 					shard.lazyRebuildIndexIfNeeded(c.config, shardDir)
 				}
 				shard.mu.Unlock()
 			}
-			
+
 			// Get current state
 			shard.mu.RLock()
 			currentEntries := shard.index.CurrentEntryNumber

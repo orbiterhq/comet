@@ -337,7 +337,7 @@ func TestTail(t *testing.T) {
 		defer mu.Unlock()
 
 		t.Logf("Total messages received: %d", len(received))
-		
+
 		// Count messages by phase
 		newCount := 0
 		for _, msg := range received {
@@ -350,7 +350,7 @@ func TestTail(t *testing.T) {
 		// We might also receive some initial messages depending on timing
 		if newCount != 5 {
 			t.Errorf("Expected to receive 5 new messages, got %d", newCount)
-			
+
 			// DEBUG: Log shard state when test fails
 			shardID, _ := parseShardFromStream(subStreamName)
 			shard, _ := client.getOrCreateShard(shardID)
@@ -359,11 +359,11 @@ func TestTail(t *testing.T) {
 			t.Logf("  Files: %d", len(shard.index.Files))
 			t.Logf("  CurrentEntryNumber: %d", shard.index.CurrentEntryNumber)
 			for i, f := range shard.index.Files {
-				t.Logf("  File[%d]: %s, entries=%d, start=%d", 
+				t.Logf("  File[%d]: %s, entries=%d, start=%d",
 					i, filepath.Base(f.Path), f.Entries, f.StartEntry)
 			}
 			shard.mu.RUnlock()
-			
+
 			// Log received messages
 			t.Logf("DEBUG: Received messages:")
 			for i, msg := range received {
@@ -403,11 +403,16 @@ func TestTail(t *testing.T) {
 		// Give tail time to start, then write a message to trigger the callback
 		// Use longer delay on all platforms for consistency
 		time.Sleep(200 * time.Millisecond)
-		_, err := client.Append(ctx, subStreamName, [][]byte{[]byte(`{"trigger": true}`)})
-		if err != nil {
-			t.Fatal(err)
+
+		// Write multiple messages to ensure one triggers the callback
+		for i := 0; i < 3; i++ {
+			_, err := client.Append(ctx, subStreamName, [][]byte{[]byte(fmt.Sprintf(`{"trigger": %d}`, i))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.Sync(ctx)
+			time.Sleep(50 * time.Millisecond)
 		}
-		client.Sync(ctx)
 
 		// Wait for error with timeout
 		done := make(chan struct{})

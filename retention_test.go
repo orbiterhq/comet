@@ -43,7 +43,7 @@ func TestRetention_Basic(t *testing.T) {
 
 	// Debug: Check sequence counter before rotation
 	shard.mu.Lock()
-	if shard.state != nil {
+	if shard.loadState() != nil {
 		t.Logf("File sequence before rotation: %d", shard.state.LastFileSequence)
 	} else {
 		t.Log("CometState not initialized (single-process mode)")

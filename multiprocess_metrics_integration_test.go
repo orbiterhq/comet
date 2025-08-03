@@ -110,7 +110,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if shard.state == nil {
+		if shard.loadState() == nil {
 			t.Fatal("CometState not initialized")
 		}
 

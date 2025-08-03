@@ -414,7 +414,7 @@ func TestMultiProcessDetailedMetrics(t *testing.T) {
 	}
 
 	shard1, _ := client1.getOrCreateShard(1)
-	if shard1.state == nil {
+	if shard1.loadState() == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 

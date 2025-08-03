@@ -41,7 +41,7 @@ func TestReaderCacheMetrics(t *testing.T) {
 		t.Fatal("Failed to get shard:", err)
 	}
 
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -197,7 +197,7 @@ func TestReaderCacheEviction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 

@@ -134,7 +134,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 			}
 
 			// Cleanup state file for next test
-			if shard.state != nil && shard.stateData != nil {
+			if shard.loadState() != nil && shard.stateData != nil {
 				if len(shard.stateData) > 0 {
 					syscall.Munmap(shard.stateData)
 					shard.stateData = nil
@@ -673,7 +673,7 @@ func TestRecoverWithNoIndex(t *testing.T) {
 	shard.mu.Unlock()
 
 	// Verify state was reinitialized
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		t.Error("State should not be nil after recovery")
 	}
 

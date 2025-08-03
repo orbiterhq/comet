@@ -64,7 +64,7 @@ func checkFile(filename string) []string {
 	}
 
 	var issues []string
-	
+
 	// Find all nil comparisons with state fields
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch expr := n.(type) {
@@ -134,7 +134,7 @@ func isShardVariable(name string) bool {
 		}
 	}
 	// Also check for variables that start/end with shard patterns
-	return strings.HasPrefix(name, "shard") || 
-	       strings.HasSuffix(name, "Shard") ||
-	       strings.HasSuffix(name, "shard")
+	return strings.HasPrefix(name, "shard") ||
+		strings.HasSuffix(name, "Shard") ||
+		strings.HasSuffix(name, "shard")
 }
