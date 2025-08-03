@@ -237,6 +237,7 @@ func TestTail(t *testing.T) {
 
 	ctx := context.Background()
 	// Use test-specific stream name to ensure isolation between test iterations
+	// This base stream name is only used for initial writes
 	streamName := fmt.Sprintf("tail:v1:shard:%04d", rand.Intn(9000)+1000)
 
 	// Write initial data
@@ -249,7 +250,7 @@ func TestTail(t *testing.T) {
 	}
 
 	t.Run("TailNewEntries", func(t *testing.T) {
-		// Use subtest-specific shard for better isolation
+		// Use a unique stream name for this subtest
 		subStreamName := fmt.Sprintf("tail:v1:shard:%04d", rand.Intn(8000)+1000)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -274,11 +275,16 @@ func TestTail(t *testing.T) {
 			}
 		}()
 
-		// Give tail time to start
-		time.Sleep(200 * time.Millisecond)
+		// Give tail time to start and ensure it's positioned at the current end
+		// This is critical for test isolation across platforms
+		time.Sleep(300 * time.Millisecond)
 
-		// Write new entries
+		// Write new entries with longer initial delay to ensure tail catches first message
 		for i := 0; i < 5; i++ {
+			// Extra delay before first message to ensure tail is fully ready
+			if i == 0 {
+				time.Sleep(100 * time.Millisecond)
+			}
 			data := []byte(fmt.Sprintf(`{"new": %d}`, i))
 			_, err := client.Append(ctx, subStreamName, [][]byte{data})
 			if err != nil {
@@ -315,7 +321,7 @@ func TestTail(t *testing.T) {
 	})
 
 	t.Run("TailErrorHandling", func(t *testing.T) {
-		// Use subtest-specific shard for better isolation
+		// Use a unique stream name for this subtest
 		subStreamName := fmt.Sprintf("tail:v1:shard:%04d", rand.Intn(1000)+9000)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -335,7 +341,8 @@ func TestTail(t *testing.T) {
 		}()
 
 		// Give tail time to start, then write a message to trigger the callback
-		time.Sleep(100 * time.Millisecond)
+		// Use longer delay on all platforms for consistency
+		time.Sleep(200 * time.Millisecond)
 		_, err := client.Append(ctx, subStreamName, [][]byte{[]byte(`{"trigger": true}`)})
 		if err != nil {
 			t.Fatal(err)
