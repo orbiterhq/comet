@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -430,16 +431,21 @@ func TestMultiProcessDetailedMetrics(t *testing.T) {
 	defer client2.Close()
 
 	// Simulate some contention
+	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
+		wg.Add(2) // Add 2 for each iteration (one for each goroutine)
 		go func() {
+			defer wg.Done()
 			client1.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("concurrent1")})
 		}()
 		go func() {
+			defer wg.Done()
 			client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("concurrent2")})
 		}()
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	// Wait for all goroutines to complete
+	wg.Wait()
 
 	// Check multi-process metrics
 	processCount := atomic.LoadUint64(&shard1.state.ProcessCount)

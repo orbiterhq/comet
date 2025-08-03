@@ -1725,9 +1725,9 @@ func containsString(s, substr string) bool {
 // TestBulletproofMultiProcess runs comprehensive stress tests
 func TestBulletproofMultiProcess(t *testing.T) {
 	// Skip in CI due to index corruption issues
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping flaky multi-process stress test in CI")
-	}
+	// if os.Getenv("CI") != "" {
+	// 	t.Skip("Skipping flaky multi-process stress test in CI")
+	// }
 
 	tests := []struct {
 		name         string

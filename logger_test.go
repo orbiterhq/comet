@@ -9,6 +9,81 @@ import (
 	"testing"
 )
 
+// TestLogger is a logger implementation for testing that captures output
+type TestLogger struct {
+	level  LogLevel
+	buffer *bytes.Buffer
+	t      *testing.T
+}
+
+// NewTestLogger creates a new test logger that captures output
+func NewTestLogger(t *testing.T, level LogLevel) *TestLogger {
+	return &TestLogger{
+		level:  level,
+		buffer: &bytes.Buffer{},
+		t:      t,
+	}
+}
+
+// Contains checks if the captured output contains the given string
+func (tl *TestLogger) Contains(text string) bool {
+	return strings.Contains(tl.buffer.String(), text)
+}
+
+// Reset clears the captured output
+func (tl *TestLogger) Reset() {
+	tl.buffer.Reset()
+}
+
+// String returns all captured output
+func (tl *TestLogger) String() string {
+	return tl.buffer.String()
+}
+
+// Logger interface implementation
+func (tl *TestLogger) Debug(msg string, keysAndValues ...interface{}) {
+	if tl.level <= LogLevelDebug {
+		tl.log("DEBUG", msg, keysAndValues...)
+	}
+}
+
+func (tl *TestLogger) Info(msg string, keysAndValues ...interface{}) {
+	if tl.level <= LogLevelInfo {
+		tl.log("INFO", msg, keysAndValues...)
+	}
+}
+
+func (tl *TestLogger) Warn(msg string, keysAndValues ...interface{}) {
+	if tl.level <= LogLevelWarn {
+		tl.log("WARN", msg, keysAndValues...)
+	}
+}
+
+func (tl *TestLogger) Error(msg string, keysAndValues ...interface{}) {
+	if tl.level <= LogLevelError {
+		tl.log("ERROR", msg, keysAndValues...)
+	}
+}
+
+func (tl *TestLogger) WithContext(ctx context.Context) Logger {
+	return tl // Simple implementation for tests
+}
+
+func (tl *TestLogger) WithFields(keysAndValues ...interface{}) Logger {
+	// For simplicity, return same logger - could be enhanced if needed
+	return tl
+}
+
+func (tl *TestLogger) log(level, msg string, keysAndValues ...interface{}) {
+	fmt.Fprintf(tl.buffer, "[%s] %s", level, msg)
+	for i := 0; i < len(keysAndValues); i += 2 {
+		if i+1 < len(keysAndValues) {
+			fmt.Fprintf(tl.buffer, " %v=%v", keysAndValues[i], keysAndValues[i+1])
+		}
+	}
+	fmt.Fprintln(tl.buffer)
+}
+
 func TestNoOpLogger(t *testing.T) {
 	logger := NoOpLogger{}
 

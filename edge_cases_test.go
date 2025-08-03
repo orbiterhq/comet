@@ -34,7 +34,10 @@ func TestConcurrentRotationStorm(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "storm:v1:shard:0000"
+	// Use a unique shard ID to avoid conflicts with other tests
+	// Use timestamp-based ID to ensure uniqueness across test runs
+	shardID := uint32(time.Now().UnixNano() % 10000) // Random shard ID based on timestamp
+	streamName := fmt.Sprintf("storm:v1:shard:%04d", shardID)
 
 	// Create data that will trigger rotation after a few writes
 	largeData := make([]byte, 10000) // 10KB entries
@@ -81,8 +84,8 @@ func TestConcurrentRotationStorm(t *testing.T) {
 	}
 
 	// Verify we have at least some data and files created
-	shardID, _ := parseShardFromStream(streamName)
-	shard, _ := client.getOrCreateShard(shardID)
+	parsedShardID, _ := parseShardFromStream(streamName)
+	shard, _ := client.getOrCreateShard(parsedShardID)
 
 	shard.mu.RLock()
 	fileCount := len(shard.index.Files)

@@ -23,9 +23,9 @@ func TestRetentionRaceCondition(t *testing.T) {
 	}
 
 	// Skip in CI due to timing-dependent behavior
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping flaky multi-process retention test in CI")
-	}
+	// if os.Getenv("CI") != "" {
+	// 	t.Skip("Skipping flaky multi-process retention test in CI")
+	// }
 
 	dir := t.TempDir()
 

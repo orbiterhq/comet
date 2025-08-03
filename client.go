@@ -1060,23 +1060,8 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 			"indexAfterLoad", shard.index.CurrentEntryNumber)
 	}
 
-	// Synchronize state with index if index has data and state is uninitialized
-	if state := shard.loadState(); state != nil && shard.index.CurrentEntryNumber > 0 && len(shard.index.Files) > 0 {
-		currentLastEntryNumber := atomic.LoadInt64(&state.LastEntryNumber)
-		if currentLastEntryNumber == -1 {
-			// Set LastEntryNumber to the last allocated entry (CurrentEntryNumber - 1)
-			// If index says CurrentEntryNumber=3, we have entries 0,1,2, so LastEntryNumber=2
-			newLastEntryNumber := shard.index.CurrentEntryNumber - 1
-			atomic.StoreInt64(&state.LastEntryNumber, newLastEntryNumber)
-
-			if c.logger != nil {
-				c.logger.Debug("loadExistingShard: synchronized state with existing index",
-					"shardID", shardID,
-					"indexCurrentEntryNumber", shard.index.CurrentEntryNumber,
-					"stateLastEntryNumber", newLastEntryNumber)
-			}
-		}
-	}
+	// Note: State synchronization is handled by validateAndRecoverState during recovery
+	// to avoid duplicate synchronization that can cause double-counting
 
 	// Log index state after loading
 	if c.logger != nil {
