@@ -154,22 +154,20 @@ func (s *CometState) SetVersion(v uint64) {
 // Helper methods for atomic operations on uint64 fields
 func (s *CometState) GetLastEntryNumber() int64 {
 	val := atomic.LoadInt64(&s.LastEntryNumber)
-	if Debug {
-		fmt.Printf("DEBUG GetLastEntryNumber: val=%d, ptr=%p, structPtr=%p\n", val, &s.LastEntryNumber, s)
-	}
 	return val
 }
 
 func (s *CometState) IncrementLastEntryNumber() int64 {
-	oldVal := atomic.LoadInt64(&s.LastEntryNumber)
-	newVal := atomic.AddInt64(&s.LastEntryNumber, 1)
-	afterVal := atomic.LoadInt64(&s.LastEntryNumber)
-
-	if Debug {
-		fmt.Printf("DEBUG IncrementLastEntryNumber: old=%d, returned=%d, after=%d, ptr=%p, fieldPtr=%p\n",
-			oldVal, newVal, afterVal, s, &s.LastEntryNumber)
+	// Use a compare-and-swap loop to ensure atomic increment across processes
+	// This handles the case where multiple processes have different memory mappings
+	// of the same file but need to coordinate atomic updates
+	for {
+		oldVal := atomic.LoadInt64(&s.LastEntryNumber)
+		newVal := oldVal + 1
+		if atomic.CompareAndSwapInt64(&s.LastEntryNumber, oldVal, newVal) {
+			return newVal
+		}
 	}
-	return newVal
 }
 
 func (s *CometState) GetLastIndexUpdate() int64 {
@@ -220,13 +218,20 @@ func (s *CometState) AddLastFileSequence(delta uint64) uint64 {
 	return atomic.AddUint64(&s.LastFileSequence, delta)
 }
 
-// TotalWrites methods
+// TotalWrites methods - use CAS for multi-process accuracy in observability
 func (s *CometState) GetTotalWrites() uint64 {
 	return atomic.LoadUint64(&s.TotalWrites)
 }
 
 func (s *CometState) AddTotalWrites(delta uint64) uint64 {
-	return atomic.AddUint64(&s.TotalWrites, delta)
+	// Use CAS loop for multi-process accuracy - write metrics are critical for observability
+	for {
+		oldVal := atomic.LoadUint64(&s.TotalWrites)
+		newVal := oldVal + delta
+		if atomic.CompareAndSwapUint64(&s.TotalWrites, oldVal, newVal) {
+			return newVal
+		}
+	}
 }
 
 // LastWriteNanos methods
@@ -238,24 +243,52 @@ func (s *CometState) StoreLastWriteNanos(val int64) {
 	atomic.StoreInt64(&s.LastWriteNanos, val)
 }
 
-// TotalEntries methods
+// TotalEntries methods - use CAS for multi-process accuracy in observability
 func (s *CometState) AddTotalEntries(delta int64) int64 {
-	return atomic.AddInt64(&s.TotalEntries, delta)
+	// Use CAS loop for multi-process accuracy - entry counts are critical for observability
+	for {
+		oldVal := atomic.LoadInt64(&s.TotalEntries)
+		newVal := oldVal + delta
+		if atomic.CompareAndSwapInt64(&s.TotalEntries, oldVal, newVal) {
+			return newVal
+		}
+	}
 }
 
-// TotalBytes methods
+// TotalBytes methods - use CAS for multi-process accuracy in observability
 func (s *CometState) AddTotalBytes(delta uint64) uint64 {
-	return atomic.AddUint64(&s.TotalBytes, delta)
+	// Use CAS loop for multi-process accuracy - byte counts are critical for observability
+	for {
+		oldVal := atomic.LoadUint64(&s.TotalBytes)
+		newVal := oldVal + delta
+		if atomic.CompareAndSwapUint64(&s.TotalBytes, oldVal, newVal) {
+			return newVal
+		}
+	}
 }
 
-// FileRotations methods
+// FileRotations methods - use CAS for multi-process accuracy in observability
 func (s *CometState) AddFileRotations(delta uint64) uint64 {
-	return atomic.AddUint64(&s.FileRotations, delta)
+	// Use CAS loop for multi-process accuracy - file rotation counts are critical for observability
+	for {
+		oldVal := atomic.LoadUint64(&s.FileRotations)
+		newVal := oldVal + delta
+		if atomic.CompareAndSwapUint64(&s.FileRotations, oldVal, newVal) {
+			return newVal
+		}
+	}
 }
 
-// FilesCreated methods
+// FilesCreated methods - use CAS for multi-process accuracy in observability
 func (s *CometState) AddFilesCreated(delta uint64) uint64 {
-	return atomic.AddUint64(&s.FilesCreated, delta)
+	// Use CAS loop for multi-process accuracy - file creation counts are critical for observability
+	for {
+		oldVal := atomic.LoadUint64(&s.FilesCreated)
+		newVal := oldVal + delta
+		if atomic.CompareAndSwapUint64(&s.FilesCreated, oldVal, newVal) {
+			return newVal
+		}
+	}
 }
 
 // MinWriteLatency methods
@@ -302,6 +335,30 @@ func (s *CometState) GetCompressionRatioFloat() float64 {
 		return 1.0
 	}
 	return float64(compressed) / float64(original)
+}
+
+// ErrorCount methods - critical for error rate calculations
+func (s *CometState) AddErrorCount(delta uint64) uint64 {
+	// Use CAS loop for multi-process accuracy - error counts are critical for observability
+	for {
+		oldVal := atomic.LoadUint64(&s.ErrorCount)
+		newVal := oldVal + delta
+		if atomic.CompareAndSwapUint64(&s.ErrorCount, oldVal, newVal) {
+			return newVal
+		}
+	}
+}
+
+// FailedWrites methods - critical for error rate calculations
+func (s *CometState) AddFailedWrites(delta uint64) uint64 {
+	// Use CAS loop for multi-process accuracy - failed write counts are critical for observability
+	for {
+		oldVal := atomic.LoadUint64(&s.FailedWrites)
+		newVal := oldVal + delta
+		if atomic.CompareAndSwapUint64(&s.FailedWrites, oldVal, newVal) {
+			return newVal
+		}
+	}
 }
 
 func (s *CometState) GetErrorRate() float64 {

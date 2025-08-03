@@ -3,23 +3,34 @@ package comet
 import (
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
-// Debug controls whether debug logging is enabled
-var Debug bool
+// debugEnabled controls whether debug logging is enabled (using atomic for thread safety)
+var debugEnabled int32
 
 func init() {
 	// Check environment variable for debug mode
 	debugEnv := os.Getenv("COMET_DEBUG")
-	Debug = debugEnv != "" && debugEnv != "0" && strings.ToLower(debugEnv) != "false"
+	if debugEnv != "" && debugEnv != "0" && strings.ToLower(debugEnv) != "false" {
+		atomic.StoreInt32(&debugEnabled, 1)
+	}
 }
+
+// debug is deprecated and should not be used directly - use IsDebug() instead
+// Kept for backward compatibility but will be removed in future versions
+var Debug = false // This is a static value now, use IsDebug() for actual state
 
 // SetDebug allows runtime control of debug mode
 func SetDebug(enabled bool) {
-	Debug = enabled
+	if enabled {
+		atomic.StoreInt32(&debugEnabled, 1)
+	} else {
+		atomic.StoreInt32(&debugEnabled, 0)
+	}
 }
 
-// IsDebug returns whether debug mode is enabled
+// IsDebug returns whether debug mode is enabled (thread-safe)
 func IsDebug() bool {
-	return Debug
+	return atomic.LoadInt32(&debugEnabled) == 1
 }

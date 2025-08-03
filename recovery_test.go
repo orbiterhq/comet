@@ -92,7 +92,7 @@ func TestInitializeMmapWriterRecovery(t *testing.T) {
 	}
 
 	// Make sure we have state initialized before recovery
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		shard.mu.Unlock()
 		t.Skip("State not available in test environment")
 		return

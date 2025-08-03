@@ -155,8 +155,8 @@ func TestLoggingIntegration(t *testing.T) {
 
 func TestDebugMode(t *testing.T) {
 	// Save original state
-	originalDebug := Debug
-	defer func() { Debug = originalDebug }()
+	originalDebug := IsDebug()
+	defer SetDebug(originalDebug)
 
 	// Test SetDebug
 	SetDebug(true)

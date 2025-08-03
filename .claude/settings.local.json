@@ -9,13 +9,16 @@
       "Bash(grep:*)",
       "Bash(go vet:*)",
       "Bash(go test:*)",
+      "Bash(go fmt:*)",
       "Bash(COMET_DEBUG=1 go test:*)",
       "Bash(go tool pprof:*)",
       "Bash(go run:*)",
       "Bash(mise run test:*)",
       "Bash(mise run lint:*)",
       "Bash(git stash:*)",
-      "Bash(dprint fmt:*)"
+      "Bash(git diff:*)",
+      "Bash(dprint fmt:*)",
+      "Bash(DEBUG=true go test -run TestIndexMetrics -v)"
     ],
     "deny": []
   }

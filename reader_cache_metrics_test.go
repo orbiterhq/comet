@@ -41,17 +41,18 @@ func TestReaderCacheMetrics(t *testing.T) {
 		t.Fatal("Failed to get shard:", err)
 	}
 
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check initial state - no reader cache activity yet
-	initialFileMaps := atomic.LoadUint64(&shard.state.ReaderFileMaps)
-	initialFileUnmaps := atomic.LoadUint64(&shard.state.ReaderFileUnmaps)
-	initialCacheBytes := atomic.LoadUint64(&shard.state.ReaderCacheBytes)
-	initialMappedFiles := atomic.LoadUint64(&shard.state.ReaderMappedFiles)
-	initialRemaps := atomic.LoadUint64(&shard.state.ReaderFileRemaps)
-	initialEvicts := atomic.LoadUint64(&shard.state.ReaderCacheEvicts)
+	state := shard.loadState()
+	initialFileMaps := atomic.LoadUint64(&state.ReaderFileMaps)
+	initialFileUnmaps := atomic.LoadUint64(&state.ReaderFileUnmaps)
+	initialCacheBytes := atomic.LoadUint64(&state.ReaderCacheBytes)
+	initialMappedFiles := atomic.LoadUint64(&state.ReaderMappedFiles)
+	initialRemaps := atomic.LoadUint64(&state.ReaderFileRemaps)
+	initialEvicts := atomic.LoadUint64(&state.ReaderCacheEvicts)
 
 	t.Logf("Initial reader cache metrics:")
 	t.Logf("  File maps: %d", initialFileMaps)
@@ -76,9 +77,9 @@ func TestReaderCacheMetrics(t *testing.T) {
 	}
 
 	// Check metrics after reading
-	afterReadFileMaps := atomic.LoadUint64(&shard.state.ReaderFileMaps)
-	afterReadCacheBytes := atomic.LoadUint64(&shard.state.ReaderCacheBytes)
-	afterReadMappedFiles := atomic.LoadUint64(&shard.state.ReaderMappedFiles)
+	afterReadFileMaps := atomic.LoadUint64(&state.ReaderFileMaps)
+	afterReadCacheBytes := atomic.LoadUint64(&state.ReaderCacheBytes)
+	afterReadMappedFiles := atomic.LoadUint64(&state.ReaderMappedFiles)
 
 	t.Logf("\nAfter reading:")
 	t.Logf("  File maps: %d (was %d)", afterReadFileMaps, initialFileMaps)
@@ -117,13 +118,13 @@ func TestReaderCacheMetrics(t *testing.T) {
 	}
 
 	// Final metrics check
-	finalFileMaps := atomic.LoadUint64(&shard.state.ReaderFileMaps)
-	finalFileUnmaps := atomic.LoadUint64(&shard.state.ReaderFileUnmaps)
-	finalCacheBytes := atomic.LoadUint64(&shard.state.ReaderCacheBytes)
-	finalMappedFiles := atomic.LoadUint64(&shard.state.ReaderMappedFiles)
-	finalRemaps := atomic.LoadUint64(&shard.state.ReaderFileRemaps)
-	finalEvicts := atomic.LoadUint64(&shard.state.ReaderCacheEvicts)
-	finalCacheHits := atomic.LoadUint64(&shard.state.ReaderCacheHits)
+	finalFileMaps := atomic.LoadUint64(&state.ReaderFileMaps)
+	finalFileUnmaps := atomic.LoadUint64(&state.ReaderFileUnmaps)
+	finalCacheBytes := atomic.LoadUint64(&state.ReaderCacheBytes)
+	finalMappedFiles := atomic.LoadUint64(&state.ReaderMappedFiles)
+	finalRemaps := atomic.LoadUint64(&state.ReaderFileRemaps)
+	finalEvicts := atomic.LoadUint64(&state.ReaderCacheEvicts)
+	finalCacheHits := atomic.LoadUint64(&state.ReaderCacheHits)
 
 	t.Logf("\nFinal reader cache metrics:")
 	t.Logf("  File maps: %d", finalFileMaps)
@@ -146,9 +147,9 @@ func TestReaderCacheMetrics(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// Check that unmaps occurred
-	afterCloseUnmaps := atomic.LoadUint64(&shard.state.ReaderFileUnmaps)
-	afterCloseCacheBytes := atomic.LoadUint64(&shard.state.ReaderCacheBytes)
-	afterCloseMappedFiles := atomic.LoadUint64(&shard.state.ReaderMappedFiles)
+	afterCloseUnmaps := atomic.LoadUint64(&state.ReaderFileUnmaps)
+	afterCloseCacheBytes := atomic.LoadUint64(&state.ReaderCacheBytes)
+	afterCloseMappedFiles := atomic.LoadUint64(&state.ReaderMappedFiles)
 
 	t.Logf("\nAfter closing consumer:")
 	t.Logf("  File unmaps: %d (was %d)", afterCloseUnmaps, finalFileUnmaps)
@@ -197,7 +198,7 @@ func TestReaderCacheEviction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -210,12 +211,13 @@ func TestReaderCacheEviction(t *testing.T) {
 	}
 	defer reader.Close()
 
-	reader.SetState(shard.state)
+	evictionState := shard.loadState()
+	reader.SetState(evictionState)
 
 	// Get initial metrics
-	initialMaps := atomic.LoadUint64(&shard.state.ReaderFileMaps)
-	initialUnmaps := atomic.LoadUint64(&shard.state.ReaderFileUnmaps)
-	initialEvicts := atomic.LoadUint64(&shard.state.ReaderCacheEvicts)
+	initialMaps := atomic.LoadUint64(&evictionState.ReaderFileMaps)
+	initialUnmaps := atomic.LoadUint64(&evictionState.ReaderFileUnmaps)
+	initialEvicts := atomic.LoadUint64(&evictionState.ReaderCacheEvicts)
 
 	// Manually test eviction by mapping a file and then evicting it
 	reader.mappingMu.Lock()
@@ -224,7 +226,7 @@ func TestReaderCacheEviction(t *testing.T) {
 		mapped, err := reader.mapFile(0, reader.fileInfos[0])
 		if err == nil {
 			reader.mappedFiles[0] = mapped
-			atomic.StoreUint64(&shard.state.ReaderMappedFiles, uint64(len(reader.mappedFiles)))
+			atomic.StoreUint64(&evictionState.ReaderMappedFiles, uint64(len(reader.mappedFiles)))
 		}
 	}
 	reader.mappingMu.Unlock()
@@ -236,10 +238,10 @@ func TestReaderCacheEviction(t *testing.T) {
 	}
 
 	// Check metrics changed
-	finalMaps := atomic.LoadUint64(&shard.state.ReaderFileMaps)
-	finalUnmaps := atomic.LoadUint64(&shard.state.ReaderFileUnmaps)
-	finalEvicts := atomic.LoadUint64(&shard.state.ReaderCacheEvicts)
-	finalMappedFiles := atomic.LoadUint64(&shard.state.ReaderMappedFiles)
+	finalMaps := atomic.LoadUint64(&evictionState.ReaderFileMaps)
+	finalUnmaps := atomic.LoadUint64(&evictionState.ReaderFileUnmaps)
+	finalEvicts := atomic.LoadUint64(&evictionState.ReaderCacheEvicts)
+	finalMappedFiles := atomic.LoadUint64(&evictionState.ReaderMappedFiles)
 
 	t.Logf("Eviction test results:")
 	t.Logf("  Maps: %d -> %d", initialMaps, finalMaps)

@@ -29,24 +29,25 @@ func TestAllInternalMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Test Version
-	version := atomic.LoadUint64(&shard.state.Version)
+	version := atomic.LoadUint64(&state.Version)
 	if version != CometStateVersion1 {
 		t.Errorf("Version = %d, want %d", version, CometStateVersion1)
 	}
 
 	// Test LastEntryNumber
-	lastEntryNumber := atomic.LoadInt64(&shard.state.LastEntryNumber)
+	lastEntryNumber := atomic.LoadInt64(&state.LastEntryNumber)
 	if lastEntryNumber < 0 {
 		t.Errorf("LastEntryNumber = %d, want >= 0", lastEntryNumber)
 	}
 
 	// Test ActiveFileIndex
-	activeFileIndex := atomic.LoadUint64(&shard.state.ActiveFileIndex)
+	activeFileIndex := atomic.LoadUint64(&state.ActiveFileIndex)
 	shard.mu.RLock()
 	expectedIndex := uint64(len(shard.index.Files) - 1)
 	shard.mu.RUnlock()
@@ -55,13 +56,13 @@ func TestAllInternalMetrics(t *testing.T) {
 	}
 
 	// Test FileSize
-	fileSize := atomic.LoadUint64(&shard.state.FileSize)
+	fileSize := atomic.LoadUint64(&state.FileSize)
 	if fileSize == 0 {
 		t.Error("FileSize = 0, want > 0")
 	}
 
 	// Test LastFileSequence
-	lastFileSeq := atomic.LoadUint64(&shard.state.LastFileSequence)
+	lastFileSeq := atomic.LoadUint64(&state.LastFileSequence)
 	// Note: LastFileSequence starts at 0 for the first file
 	t.Logf("LastFileSequence: %d (starts at 0 for first file)", lastFileSeq)
 
@@ -106,13 +107,14 @@ func TestCompressionEdgeCaseMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check best/worst compression
-	bestCompression := atomic.LoadUint64(&shard.state.BestCompression)
-	worstCompression := atomic.LoadUint64(&shard.state.WorstCompression)
+	bestCompression := atomic.LoadUint64(&state.BestCompression)
+	worstCompression := atomic.LoadUint64(&state.WorstCompression)
 
 	// These may be 0 if compression tracking isn't fully implemented
 	t.Logf("Compression edge case metrics:")
@@ -151,14 +153,15 @@ func TestCheckpointMetrics(t *testing.T) {
 	client.Sync(ctx)
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check checkpoint metrics
-	checkpointCount := atomic.LoadUint64(&shard.state.CheckpointCount)
-	lastCheckpointNanos := atomic.LoadInt64(&shard.state.LastCheckpointNanos)
-	checkpointTimeNanos := atomic.LoadInt64(&shard.state.CheckpointTimeNanos)
+	checkpointCount := atomic.LoadUint64(&state.CheckpointCount)
+	lastCheckpointNanos := atomic.LoadInt64(&state.LastCheckpointNanos)
+	checkpointTimeNanos := atomic.LoadInt64(&state.CheckpointTimeNanos)
 
 	// These are tracked in maybeCheckpoint() but may not be implemented yet
 	t.Logf("Checkpoint metrics:")
@@ -190,12 +193,13 @@ func TestSyncLatencyMetrics(t *testing.T) {
 	client.Sync(ctx)
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check sync latency
-	syncLatencyNanos := atomic.LoadInt64(&shard.state.SyncLatencyNanos)
+	syncLatencyNanos := atomic.LoadInt64(&state.SyncLatencyNanos)
 
 	t.Logf("Sync metrics:")
 	t.Logf("  Sync latency: %d ns", syncLatencyNanos)
@@ -225,13 +229,14 @@ func TestRotationFailureMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check rotation metrics
-	rotationTimeNanos := atomic.LoadInt64(&shard.state.RotationTimeNanos)
-	failedRotations := atomic.LoadUint64(&shard.state.FailedRotations)
+	rotationTimeNanos := atomic.LoadInt64(&state.RotationTimeNanos)
+	failedRotations := atomic.LoadUint64(&state.FailedRotations)
 
 	t.Logf("Rotation metrics:")
 	t.Logf("  Rotation time: %d ns", rotationTimeNanos)
@@ -258,13 +263,14 @@ func TestIndexErrorMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check index metrics
-	indexPersistErrors := atomic.LoadUint64(&shard.state.IndexPersistErrors)
-	indexSizeBytes := atomic.LoadUint64(&shard.state.IndexSizeBytes)
+	indexPersistErrors := atomic.LoadUint64(&state.IndexPersistErrors)
+	indexSizeBytes := atomic.LoadUint64(&state.IndexSizeBytes)
 
 	t.Logf("Index error metrics:")
 	t.Logf("  Index persist errors: %d", indexPersistErrors)
@@ -290,7 +296,7 @@ func TestCorruptionMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -320,13 +326,15 @@ func TestCorruptionMetrics(t *testing.T) {
 	// Try to get shard to check metrics
 	if client2 != nil {
 		shard2, _ := client2.getOrCreateShard(1)
-		if shard2 != nil && shard2.state != nil {
-			corruptionDetected := atomic.LoadUint64(&shard2.state.CorruptionDetected)
-			partialWrites := atomic.LoadUint64(&shard2.state.PartialWrites)
+		if shard2 != nil {
+			if state := shard2.loadState(); state != nil {
+				corruptionDetected := atomic.LoadUint64(&state.CorruptionDetected)
+				partialWrites := atomic.LoadUint64(&state.PartialWrites)
 
-			t.Logf("Corruption metrics:")
-			t.Logf("  Corruption detected: %d", corruptionDetected)
-			t.Logf("  Partial writes: %d", partialWrites)
+				t.Logf("Corruption metrics:")
+				t.Logf("  Corruption detected: %d", corruptionDetected)
+				t.Logf("  Partial writes: %d", partialWrites)
+			}
 		}
 	}
 }
@@ -367,15 +375,16 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 	client.ForceRetentionCleanup()
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check detailed retention metrics
-	lastRetentionNanos := atomic.LoadInt64(&shard.state.LastRetentionNanos)
-	retentionTimeNanos := atomic.LoadInt64(&shard.state.RetentionTimeNanos)
-	retentionErrors := atomic.LoadUint64(&shard.state.RetentionErrors)
-	protectedByConsumers := atomic.LoadUint64(&shard.state.ProtectedByConsumers)
+	lastRetentionNanos := atomic.LoadInt64(&state.LastRetentionNanos)
+	retentionTimeNanos := atomic.LoadInt64(&state.RetentionTimeNanos)
+	retentionErrors := atomic.LoadUint64(&state.RetentionErrors)
+	protectedByConsumers := atomic.LoadUint64(&state.ProtectedByConsumers)
 
 	t.Logf("Detailed retention metrics:")
 	t.Logf("  Last retention: %v", time.Unix(0, lastRetentionNanos))
@@ -405,7 +414,7 @@ func TestMultiProcessDetailedMetrics(t *testing.T) {
 	}
 
 	shard1, _ := client1.getOrCreateShard(1)
-	if shard1.state == nil {
+	if shard1.loadState() == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -472,82 +481,83 @@ func TestMetricsCompleteness(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Access ALL 70 metrics to ensure they don't panic
 	metrics := map[string]interface{}{
-		"Version":              atomic.LoadUint64(&shard.state.Version),
-		"WriteOffset":          atomic.LoadUint64(&shard.state.WriteOffset),
-		"LastEntryNumber":      atomic.LoadInt64(&shard.state.LastEntryNumber),
-		"LastIndexUpdate":      atomic.LoadInt64(&shard.state.LastIndexUpdate),
-		"ActiveFileIndex":      atomic.LoadUint64(&shard.state.ActiveFileIndex),
-		"FileSize":             atomic.LoadUint64(&shard.state.FileSize),
-		"LastFileSequence":     atomic.LoadUint64(&shard.state.LastFileSequence),
-		"TotalEntries":         atomic.LoadInt64(&shard.state.TotalEntries),
-		"TotalBytes":           atomic.LoadUint64(&shard.state.TotalBytes),
-		"TotalWrites":          atomic.LoadUint64(&shard.state.TotalWrites),
-		"LastWriteNanos":       atomic.LoadInt64(&shard.state.LastWriteNanos),
-		"CurrentBatchSize":     atomic.LoadUint64(&shard.state.CurrentBatchSize),
-		"TotalBatches":         atomic.LoadUint64(&shard.state.TotalBatches),
-		"FailedWrites":         atomic.LoadUint64(&shard.state.FailedWrites),
-		"TotalCompressed":      atomic.LoadUint64(&shard.state.TotalCompressed),
-		"CompressedEntries":    atomic.LoadUint64(&shard.state.CompressedEntries),
-		"SkippedCompression":   atomic.LoadUint64(&shard.state.SkippedCompression),
-		"CompressionRatio":     atomic.LoadUint64(&shard.state.CompressionRatio),
-		"CompressionTimeNanos": atomic.LoadInt64(&shard.state.CompressionTimeNanos),
-		"BestCompression":      atomic.LoadUint64(&shard.state.BestCompression),
-		"WorstCompression":     atomic.LoadUint64(&shard.state.WorstCompression),
-		"WriteLatencySum":      atomic.LoadUint64(&shard.state.WriteLatencySum),
-		"WriteLatencyCount":    atomic.LoadUint64(&shard.state.WriteLatencyCount),
-		"MinWriteLatency":      atomic.LoadUint64(&shard.state.MinWriteLatency),
-		"MaxWriteLatency":      atomic.LoadUint64(&shard.state.MaxWriteLatency),
-		"P50WriteLatency":      atomic.LoadUint64(&shard.state.P50WriteLatency),
-		"P99WriteLatency":      atomic.LoadUint64(&shard.state.P99WriteLatency),
-		"SyncLatencyNanos":     atomic.LoadInt64(&shard.state.SyncLatencyNanos),
-		"FilesCreated":         atomic.LoadUint64(&shard.state.FilesCreated),
-		"FilesDeleted":         atomic.LoadUint64(&shard.state.FilesDeleted),
-		"FileRotations":        atomic.LoadUint64(&shard.state.FileRotations),
-		"RotationTimeNanos":    atomic.LoadInt64(&shard.state.RotationTimeNanos),
-		"CurrentFiles":         atomic.LoadUint64(&shard.state.CurrentFiles),
-		"TotalFileBytes":       atomic.LoadUint64(&shard.state.TotalFileBytes),
-		"FailedRotations":      atomic.LoadUint64(&shard.state.FailedRotations),
-		"CheckpointCount":      atomic.LoadUint64(&shard.state.CheckpointCount),
-		"LastCheckpointNanos":  atomic.LoadInt64(&shard.state.LastCheckpointNanos),
-		"CheckpointTimeNanos":  atomic.LoadInt64(&shard.state.CheckpointTimeNanos),
-		"IndexPersistCount":    atomic.LoadUint64(&shard.state.IndexPersistCount),
-		"IndexPersistErrors":   atomic.LoadUint64(&shard.state.IndexPersistErrors),
-		"IndexSizeBytes":       atomic.LoadUint64(&shard.state.IndexSizeBytes),
-		"BinaryIndexNodes":     atomic.LoadUint64(&shard.state.BinaryIndexNodes),
-		"ActiveReaders":        atomic.LoadUint64(&shard.state.ActiveReaders),
-		"TotalReaders":         atomic.LoadUint64(&shard.state.TotalReaders),
-		"MaxConsumerLag":       atomic.LoadUint64(&shard.state.MaxConsumerLag),
-		"TotalEntriesRead":     atomic.LoadUint64(&shard.state.TotalEntriesRead),
-		"ConsumerGroups":       atomic.LoadUint64(&shard.state.ConsumerGroups),
-		"AckedEntries":         atomic.LoadUint64(&shard.state.AckedEntries),
-		"ReaderCacheHits":      atomic.LoadUint64(&shard.state.ReaderCacheHits),
-		"ErrorCount":           atomic.LoadUint64(&shard.state.ErrorCount),
-		"LastErrorNanos":       atomic.LoadInt64(&shard.state.LastErrorNanos),
-		"CorruptionDetected":   atomic.LoadUint64(&shard.state.CorruptionDetected),
-		"RecoveryAttempts":     atomic.LoadUint64(&shard.state.RecoveryAttempts),
-		"RecoverySuccesses":    atomic.LoadUint64(&shard.state.RecoverySuccesses),
-		"PartialWrites":        atomic.LoadUint64(&shard.state.PartialWrites),
-		"ReadErrors":           atomic.LoadUint64(&shard.state.ReadErrors),
-		"RetentionRuns":        atomic.LoadUint64(&shard.state.RetentionRuns),
-		"LastRetentionNanos":   atomic.LoadInt64(&shard.state.LastRetentionNanos),
-		"RetentionTimeNanos":   atomic.LoadInt64(&shard.state.RetentionTimeNanos),
-		"EntriesDeleted":       atomic.LoadUint64(&shard.state.EntriesDeleted),
-		"BytesReclaimed":       atomic.LoadUint64(&shard.state.BytesReclaimed),
-		"OldestEntryNanos":     atomic.LoadInt64(&shard.state.OldestEntryNanos),
-		"RetentionErrors":      atomic.LoadUint64(&shard.state.RetentionErrors),
-		"ProtectedByConsumers": atomic.LoadUint64(&shard.state.ProtectedByConsumers),
-		"ProcessCount":         atomic.LoadUint64(&shard.state.ProcessCount),
-		"LastProcessHeartbeat": atomic.LoadInt64(&shard.state.LastProcessHeartbeat),
-		"ContentionCount":      atomic.LoadUint64(&shard.state.ContentionCount),
-		"LockWaitNanos":        atomic.LoadInt64(&shard.state.LockWaitNanos),
-		"MMAPRemapCount":       atomic.LoadUint64(&shard.state.MMAPRemapCount),
-		"FalseShareCount":      atomic.LoadUint64(&shard.state.FalseShareCount),
+		"Version":              atomic.LoadUint64(&state.Version),
+		"WriteOffset":          atomic.LoadUint64(&state.WriteOffset),
+		"LastEntryNumber":      atomic.LoadInt64(&state.LastEntryNumber),
+		"LastIndexUpdate":      atomic.LoadInt64(&state.LastIndexUpdate),
+		"ActiveFileIndex":      atomic.LoadUint64(&state.ActiveFileIndex),
+		"FileSize":             atomic.LoadUint64(&state.FileSize),
+		"LastFileSequence":     atomic.LoadUint64(&state.LastFileSequence),
+		"TotalEntries":         atomic.LoadInt64(&state.TotalEntries),
+		"TotalBytes":           atomic.LoadUint64(&state.TotalBytes),
+		"TotalWrites":          atomic.LoadUint64(&state.TotalWrites),
+		"LastWriteNanos":       atomic.LoadInt64(&state.LastWriteNanos),
+		"CurrentBatchSize":     atomic.LoadUint64(&state.CurrentBatchSize),
+		"TotalBatches":         atomic.LoadUint64(&state.TotalBatches),
+		"FailedWrites":         atomic.LoadUint64(&state.FailedWrites),
+		"TotalCompressed":      atomic.LoadUint64(&state.TotalCompressed),
+		"CompressedEntries":    atomic.LoadUint64(&state.CompressedEntries),
+		"SkippedCompression":   atomic.LoadUint64(&state.SkippedCompression),
+		"CompressionRatio":     atomic.LoadUint64(&state.CompressionRatio),
+		"CompressionTimeNanos": atomic.LoadInt64(&state.CompressionTimeNanos),
+		"BestCompression":      atomic.LoadUint64(&state.BestCompression),
+		"WorstCompression":     atomic.LoadUint64(&state.WorstCompression),
+		"WriteLatencySum":      atomic.LoadUint64(&state.WriteLatencySum),
+		"WriteLatencyCount":    atomic.LoadUint64(&state.WriteLatencyCount),
+		"MinWriteLatency":      atomic.LoadUint64(&state.MinWriteLatency),
+		"MaxWriteLatency":      atomic.LoadUint64(&state.MaxWriteLatency),
+		"P50WriteLatency":      atomic.LoadUint64(&state.P50WriteLatency),
+		"P99WriteLatency":      atomic.LoadUint64(&state.P99WriteLatency),
+		"SyncLatencyNanos":     atomic.LoadInt64(&state.SyncLatencyNanos),
+		"FilesCreated":         atomic.LoadUint64(&state.FilesCreated),
+		"FilesDeleted":         atomic.LoadUint64(&state.FilesDeleted),
+		"FileRotations":        atomic.LoadUint64(&state.FileRotations),
+		"RotationTimeNanos":    atomic.LoadInt64(&state.RotationTimeNanos),
+		"CurrentFiles":         atomic.LoadUint64(&state.CurrentFiles),
+		"TotalFileBytes":       atomic.LoadUint64(&state.TotalFileBytes),
+		"FailedRotations":      atomic.LoadUint64(&state.FailedRotations),
+		"CheckpointCount":      atomic.LoadUint64(&state.CheckpointCount),
+		"LastCheckpointNanos":  atomic.LoadInt64(&state.LastCheckpointNanos),
+		"CheckpointTimeNanos":  atomic.LoadInt64(&state.CheckpointTimeNanos),
+		"IndexPersistCount":    atomic.LoadUint64(&state.IndexPersistCount),
+		"IndexPersistErrors":   atomic.LoadUint64(&state.IndexPersistErrors),
+		"IndexSizeBytes":       atomic.LoadUint64(&state.IndexSizeBytes),
+		"BinaryIndexNodes":     atomic.LoadUint64(&state.BinaryIndexNodes),
+		"ActiveReaders":        atomic.LoadUint64(&state.ActiveReaders),
+		"TotalReaders":         atomic.LoadUint64(&state.TotalReaders),
+		"MaxConsumerLag":       atomic.LoadUint64(&state.MaxConsumerLag),
+		"TotalEntriesRead":     atomic.LoadUint64(&state.TotalEntriesRead),
+		"ConsumerGroups":       atomic.LoadUint64(&state.ConsumerGroups),
+		"AckedEntries":         atomic.LoadUint64(&state.AckedEntries),
+		"ReaderCacheHits":      atomic.LoadUint64(&state.ReaderCacheHits),
+		"ErrorCount":           atomic.LoadUint64(&state.ErrorCount),
+		"LastErrorNanos":       atomic.LoadInt64(&state.LastErrorNanos),
+		"CorruptionDetected":   atomic.LoadUint64(&state.CorruptionDetected),
+		"RecoveryAttempts":     atomic.LoadUint64(&state.RecoveryAttempts),
+		"RecoverySuccesses":    atomic.LoadUint64(&state.RecoverySuccesses),
+		"PartialWrites":        atomic.LoadUint64(&state.PartialWrites),
+		"ReadErrors":           atomic.LoadUint64(&state.ReadErrors),
+		"RetentionRuns":        atomic.LoadUint64(&state.RetentionRuns),
+		"LastRetentionNanos":   atomic.LoadInt64(&state.LastRetentionNanos),
+		"RetentionTimeNanos":   atomic.LoadInt64(&state.RetentionTimeNanos),
+		"EntriesDeleted":       atomic.LoadUint64(&state.EntriesDeleted),
+		"BytesReclaimed":       atomic.LoadUint64(&state.BytesReclaimed),
+		"OldestEntryNanos":     atomic.LoadInt64(&state.OldestEntryNanos),
+		"RetentionErrors":      atomic.LoadUint64(&state.RetentionErrors),
+		"ProtectedByConsumers": atomic.LoadUint64(&state.ProtectedByConsumers),
+		"ProcessCount":         atomic.LoadUint64(&state.ProcessCount),
+		"LastProcessHeartbeat": atomic.LoadInt64(&state.LastProcessHeartbeat),
+		"ContentionCount":      atomic.LoadUint64(&state.ContentionCount),
+		"LockWaitNanos":        atomic.LoadInt64(&state.LockWaitNanos),
+		"MMAPRemapCount":       atomic.LoadUint64(&state.MMAPRemapCount),
+		"FalseShareCount":      atomic.LoadUint64(&state.FalseShareCount),
 	}
 
 	// Count how many metrics we accessed

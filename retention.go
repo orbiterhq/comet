@@ -92,9 +92,9 @@ func (c *Client) runRetentionCleanup() {
 	for _, shard := range c.shards {
 		shards = append(shards, shard)
 		// Track retention run in each shard's metrics
-		if shard.state != nil {
-			atomic.AddUint64(&shard.state.RetentionRuns, 1)
-			atomic.StoreInt64(&shard.state.LastRetentionNanos, start.UnixNano())
+		if state := shard.loadState(); state != nil {
+			atomic.AddUint64(&state.RetentionRuns, 1)
+			atomic.StoreInt64(&state.LastRetentionNanos, start.UnixNano())
 		}
 	}
 	c.mu.RUnlock()
@@ -114,20 +114,20 @@ func (c *Client) runRetentionCleanup() {
 	// Update retention time metrics
 	duration := time.Since(start)
 	for _, shard := range shards {
-		if shard.state != nil {
-			atomic.AddInt64(&shard.state.RetentionTimeNanos, duration.Nanoseconds())
+		if state := shard.loadState(); state != nil {
+			atomic.AddInt64(&state.RetentionTimeNanos, duration.Nanoseconds())
 		}
 	}
 
 	// Debug log retention summary
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		var totalFiles, deletedFiles int
 		for _, shard := range shards {
 			shard.mu.RLock()
 			totalFiles += len(shard.index.Files)
 			shard.mu.RUnlock()
-			if shard.state != nil {
-				deletedFiles += int(atomic.LoadUint64(&shard.state.FilesDeleted))
+			if state := shard.loadState(); state != nil {
+				deletedFiles += int(atomic.LoadUint64(&state.FilesDeleted))
 			}
 		}
 		c.logger.Debug("Retention cleanup completed",
@@ -234,8 +234,8 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 			if fileLastEntry >= oldestProtectedEntry {
 				shouldDelete = false
 				// Track files protected by consumers
-				if shard.state != nil {
-					atomic.AddUint64(&shard.state.ProtectedByConsumers, 1)
+				if state := shard.loadState(); state != nil {
+					atomic.AddUint64(&state.ProtectedByConsumers, 1)
 				}
 			}
 		}
@@ -285,7 +285,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 	}
 
 	// Update oldest entry timestamp
-	if shard.state != nil {
+	if state := shard.loadState(); state != nil {
 		if len(filesToKeep) > 0 {
 			// Find the oldest file that remains
 			oldestTime := filesToKeep[0].StartTime
@@ -296,7 +296,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 			}
 			// Only set if we found a valid timestamp
 			if !oldestTime.IsZero() {
-				atomic.StoreInt64(&shard.state.OldestEntryNanos, oldestTime.UnixNano())
+				atomic.StoreInt64(&state.OldestEntryNanos, oldestTime.UnixNano())
 			}
 		} else if len(shard.index.Files) > 0 {
 			// If we're keeping all files (no deletion), still update the metric
@@ -308,7 +308,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 			}
 			// Only set if we found a valid timestamp
 			if !oldestTime.IsZero() {
-				atomic.StoreInt64(&shard.state.OldestEntryNanos, oldestTime.UnixNano())
+				atomic.StoreInt64(&state.OldestEntryNanos, oldestTime.UnixNano())
 			}
 		}
 	}
@@ -376,6 +376,12 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	// Persist the updated index while still holding the lock
 	shard.persistIndex()
 
+	// CRITICAL: Update mmap state timestamp to signal other processes that index changed
+	// This ensures other processes will reload their stale indexes before reading
+	if state := shard.loadState(); state != nil {
+		state.SetLastIndexUpdate(time.Now().UnixNano())
+	}
+
 	// Now we can release the lock - all index modifications are complete
 	shard.mu.Unlock()
 
@@ -389,8 +395,8 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 		if err != nil && !os.IsNotExist(err) {
 			// Log error but continue - file may have been deleted by another process
 			// Track retention errors
-			if shard.state != nil {
-				atomic.AddUint64(&shard.state.RetentionErrors, 1)
+			if state := shard.loadState(); state != nil {
+				atomic.AddUint64(&state.RetentionErrors, 1)
 			}
 			continue
 		}
@@ -400,10 +406,10 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	}
 
 	// Update retention metrics
-	if shard.state != nil && deletedCount > 0 {
-		atomic.AddUint64(&shard.state.FilesDeleted, uint64(deletedCount))
-		atomic.AddUint64(&shard.state.BytesReclaimed, bytesReclaimed)
-		atomic.AddUint64(&shard.state.EntriesDeleted, entriesDeleted)
+	if state := shard.loadState(); state != nil && deletedCount > 0 {
+		atomic.AddUint64(&state.FilesDeleted, uint64(deletedCount))
+		atomic.AddUint64(&state.BytesReclaimed, bytesReclaimed)
+		atomic.AddUint64(&state.EntriesDeleted, entriesDeleted)
 	}
 }
 

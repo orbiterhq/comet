@@ -60,11 +60,13 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 
 				// Report metrics if available
 				shard, err := client.getOrCreateShard(1)
-				if err == nil && shard.state != nil {
-					b.ReportMetric(float64(shard.state.TotalWrites)/float64(b.N), "writes/op")
-					avgLatency := shard.state.GetAverageWriteLatency()
-					if avgLatency > 0 {
-						b.ReportMetric(float64(avgLatency)/1000, "μs/write")
+				if err == nil {
+					if state := shard.loadState(); state != nil {
+						b.ReportMetric(float64(state.TotalWrites)/float64(b.N), "writes/op")
+						avgLatency := state.GetAverageWriteLatency()
+						if avgLatency > 0 {
+							b.ReportMetric(float64(avgLatency)/1000, "μs/write")
+						}
 					}
 				}
 			})
@@ -88,7 +90,7 @@ func BenchmarkLatencyMetrics(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		b.Skip("State not available")
 	}
 
@@ -97,7 +99,9 @@ func BenchmarkLatencyMetrics(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			// Simulate various latencies
 			latency := uint64(100000 + i%50000) // 100-150μs range
-			shard.state.UpdateWriteLatency(latency)
+			if state := shard.loadState(); state != nil {
+				state.UpdateWriteLatency(latency)
+			}
 		}
 	})
 }
@@ -136,11 +140,11 @@ func BenchmarkCompressionMetrics(b *testing.B) {
 
 	// Report compression metrics
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state != nil {
-		ratio := shard.state.GetCompressionRatioFloat()
+	if state := shard.loadState(); state != nil {
+		ratio := state.GetCompressionRatioFloat()
 		b.ReportMetric(ratio*100, "%compression")
-		if shard.state.CompressionTimeNanos > 0 {
-			avgCompressionTime := float64(shard.state.CompressionTimeNanos) / float64(shard.state.CompressedEntries)
+		if state.CompressionTimeNanos > 0 {
+			avgCompressionTime := float64(state.CompressionTimeNanos) / float64(state.CompressedEntries)
 			b.ReportMetric(avgCompressionTime/1000, "μs/compression")
 		}
 	}
@@ -183,9 +187,11 @@ func BenchmarkConcurrentMetrics(b *testing.B) {
 	totalLatency := uint64(0)
 	for i := uint32(1); i <= 4; i++ {
 		shard, err := client.getOrCreateShard(i)
-		if err == nil && shard.state != nil {
-			totalWrites += shard.state.TotalWrites
-			totalLatency += shard.state.WriteLatencySum
+		if err == nil {
+			if state := shard.loadState(); state != nil {
+				totalWrites += state.TotalWrites
+				totalLatency += state.WriteLatencySum
+			}
 		}
 	}
 
@@ -231,13 +237,13 @@ func BenchmarkRetentionMetrics(b *testing.B) {
 
 	// Report retention metrics
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state != nil {
-		b.ReportMetric(float64(shard.state.RetentionRuns), "runs")
-		if shard.state.RetentionTimeNanos > 0 && shard.state.RetentionRuns > 0 {
-			avgRetentionTime := float64(shard.state.RetentionTimeNanos) / float64(shard.state.RetentionRuns)
+	if state := shard.loadState(); state != nil {
+		b.ReportMetric(float64(state.RetentionRuns), "runs")
+		if state.RetentionTimeNanos > 0 && state.RetentionRuns > 0 {
+			avgRetentionTime := float64(state.RetentionTimeNanos) / float64(state.RetentionRuns)
 			b.ReportMetric(avgRetentionTime/1e6, "ms/retention")
 		}
-		b.ReportMetric(float64(shard.state.FilesDeleted), "files-deleted")
-		b.ReportMetric(float64(shard.state.BytesReclaimed), "bytes-reclaimed")
+		b.ReportMetric(float64(state.FilesDeleted), "files-deleted")
+		b.ReportMetric(float64(state.BytesReclaimed), "bytes-reclaimed")
 	}
 }

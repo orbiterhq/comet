@@ -149,8 +149,15 @@ func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
 	return os.Rename(tempPath, s.indexPath)
 }
 
-// loadBinaryIndex reads the index from binary format
+// loadBinaryIndex reads the index from binary format with default config values.
+// For concurrent access, use loadBinaryIndexWithConfig with explicit values.
 func (s *Shard) loadBinaryIndex() (*ShardIndex, error) {
+	// Use safe default values to avoid race conditions
+	return s.loadBinaryIndexWithConfig(1000, 10000)
+}
+
+// loadBinaryIndexWithConfig reads the index from binary format with explicit config values
+func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*ShardIndex, error) {
 	data, err := os.ReadFile(s.indexPath)
 	if err != nil {
 		return nil, err
@@ -177,15 +184,35 @@ func (s *Shard) loadBinaryIndex() (*ShardIndex, error) {
 	index := &ShardIndex{
 		ConsumerOffsets: make(map[string]int64),
 		BinaryIndex: BinarySearchableIndex{
-			IndexInterval: s.index.BinaryIndex.IndexInterval,
-			MaxNodes:      s.index.BinaryIndex.MaxNodes,
+			IndexInterval: boundaryInterval,
+			MaxNodes:      maxNodes,
 		},
 	}
 
-	index.CurrentEntryNumber = int64(binary.LittleEndian.Uint64(data[offset:]))
+	rawValue := binary.LittleEndian.Uint64(data[offset:])
+	index.CurrentEntryNumber = int64(rawValue)
+	if IsDebug() && s.logger != nil {
+		s.logger.Debug("TRACE: Setting CurrentEntryNumber from binary load",
+			"location", "index_binary.go:185",
+			"rawValue", rawValue,
+			"newValue", index.CurrentEntryNumber,
+			"shardID", s.shardID,
+			"dataBytes", fmt.Sprintf("%x", data[offset:offset+8]))
+	}
 	offset += 8
 	index.CurrentWriteOffset = int64(binary.LittleEndian.Uint64(data[offset:]))
 	offset += 8
+
+	// Detect corruption: 341 is the 0x0155 uninitialized memory pattern
+	if index.CurrentEntryNumber == 341 {
+		if s.logger != nil {
+			s.logger.Error("Detected 341 corruption pattern in index file, triggering rebuild",
+				"shardID", s.shardID,
+				"indexPath", s.indexPath,
+				"currentEntryNumber", index.CurrentEntryNumber)
+		}
+		return nil, fmt.Errorf("corrupted index detected: CurrentEntryNumber=341 (uninitialized memory pattern)")
+	}
 
 	consumerCount := binary.LittleEndian.Uint32(data[offset:])
 	offset += 4
@@ -276,10 +303,10 @@ func (s *Shard) loadBinaryIndex() (*ShardIndex, error) {
 	// Set current file from last file if available
 	if len(index.Files) > 0 {
 		index.CurrentFile = index.Files[len(index.Files)-1].Path
-	} else {
-		index.CurrentFile = s.index.CurrentFile
 	}
-	index.BoundaryInterval = s.index.BoundaryInterval
+	// Note: CurrentFile will be empty if no files - this is handled by callers
+
+	index.BoundaryInterval = boundaryInterval
 
 	return index, nil
 }

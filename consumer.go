@@ -201,8 +201,10 @@ func (c *Consumer) Close() error {
 			reader.Close()
 			// Decrement active readers count
 			shardID := key.(uint32)
-			if shard, err := c.client.getOrCreateShard(shardID); err == nil && shard.state != nil {
-				atomic.AddUint64(&shard.state.ActiveReaders, ^uint64(0)) // Decrement by 1
+			if shard, err := c.client.getOrCreateShard(shardID); err == nil {
+				if state := shard.loadState(); state != nil {
+					atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
+				}
 			}
 		}
 		return true
@@ -372,13 +374,13 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 			c.readers.Delete(shard.shardID)
 			reader.Close()
 			// Decrement active readers count
-			if shard.state != nil {
-				atomic.AddUint64(&shard.state.ActiveReaders, ^uint64(0)) // Decrement by 1
+			if state := shard.loadState(); state != nil {
+				atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
 			}
 		} else {
 			// Track reader cache hit
-			if shard.state != nil {
-				atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
+			if state := shard.loadState(); state != nil {
+				atomic.AddUint64(&state.ReaderCacheHits, 1)
 			}
 			return reader, nil
 		}
@@ -410,8 +412,8 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 	}
 
 	// Set the state for metrics tracking
-	if shard.state != nil {
-		newReader.SetState(shard.state)
+	if state := shard.loadState(); state != nil {
+		newReader.SetState(state)
 	}
 
 	// Use LoadOrStore to handle race where multiple goroutines try to create
@@ -422,9 +424,9 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 	}
 
 	// Track new reader creation
-	if shard.state != nil {
-		atomic.AddUint64(&shard.state.TotalReaders, 1)
-		atomic.AddUint64(&shard.state.ActiveReaders, 1)
+	if state := shard.loadState(); state != nil {
+		atomic.AddUint64(&state.TotalReaders, 1)
+		atomic.AddUint64(&state.ActiveReaders, 1)
 	}
 
 	return newReader, nil
@@ -436,44 +438,50 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	atomic.AddInt64(&shard.readerCount, 1)
 	defer atomic.AddInt64(&shard.readerCount, -1)
 
-	// Check unified state for instant change detection
-	if shard.state != nil {
-		currentTimestamp := shard.state.GetLastIndexUpdate()
-		if currentTimestamp != shard.lastMmapCheck {
-			// Index changed - reload it under write lock
-			shard.mu.Lock()
-			// Double-check after acquiring lock
-			if currentTimestamp != shard.lastMmapCheck {
-				if err := shard.loadIndexWithRecovery(); err != nil {
-					shard.mu.Unlock()
-					return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
-				}
-				shard.lastMmapCheck = currentTimestamp
-
-				// In multi-process mode, check if we need to rebuild index from files
-				// We can tell we're in multi-process mode if mmapState exists
-				if shard.state != nil {
-					shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
-					shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
-				}
-
-				// Also invalidate any cached readers since the index changed
-				c.readers.Range(func(key, value any) bool {
-					if key.(uint32) == shard.shardID {
-						if reader, ok := value.(*Reader); ok {
-							reader.Close()
-							// Decrement active readers count
-							if shard.state != nil {
-								atomic.AddUint64(&shard.state.ActiveReaders, ^uint64(0)) // Decrement by 1
-							}
-						}
-						c.readers.Delete(key)
-						return false // Stop after finding this shard's reader
+	// Check unified state for instant change detection (multi-process mode only)
+	// In single-process mode, skip this entirely as there's no external coordination needed
+	if c.client.config.Concurrency.EnableMultiProcessMode {
+		if state := shard.loadState(); state != nil {
+			currentTimestamp := state.GetLastIndexUpdate()
+			if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
+				// Index changed - reload it under write lock
+				shard.mu.Lock()
+				// Double-check after acquiring lock
+				if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
+					if err := shard.loadIndexWithRecovery(); err != nil {
+						shard.mu.Unlock()
+						return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 					}
-					return true
-				})
+					atomic.StoreInt64(&shard.lastMmapCheck, currentTimestamp)
+
+					// In multi-process mode, check if we need to rebuild index from files
+					shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
+					if IsDebug() && shard.logger != nil {
+						shard.logger.Debug("Consumer triggering index rebuild check",
+							"shard", shard.shardID,
+							"multiProcessMode", c.client.config.Concurrency.EnableMultiProcessMode,
+							"shardDir", shardDir)
+					}
+					shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
+
+					// Also invalidate any cached readers since the index changed
+					c.readers.Range(func(key, value any) bool {
+						if key.(uint32) == shard.shardID {
+							if reader, ok := value.(*Reader); ok {
+								reader.Close()
+								// Decrement active readers count
+								if state := shard.loadState(); state != nil {
+									atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
+								}
+							}
+							c.readers.Delete(key)
+							return false // Stop after finding this shard's reader
+						}
+						return true
+					})
+				}
+				shard.mu.Unlock()
 			}
-			shard.mu.Unlock()
 		}
 	}
 
@@ -498,7 +506,15 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	shard.mu.RUnlock()
 
 	// In multi-process mode, check if index might be stale by comparing with state
-	if shard.state != nil && shard.mmapWriter != nil && shard.mmapWriter.state != nil {
+	if IsDebug() && shard.logger != nil {
+		shard.logger.Debug("Consumer read state check",
+			"shard", shard.shardID,
+			"stateExists", shard.loadState() != nil,
+			"mmapWriterExists", shard.mmapWriter != nil,
+			"mmapWriterStateExists", shard.mmapWriter != nil && shard.mmapWriter.state != nil,
+			"endEntryNum", endEntryNum)
+	}
+	if shard.loadState() != nil && shard.mmapWriter != nil && shard.mmapWriter.state != nil {
 		totalWrites := shard.mmapWriter.state.GetTotalWrites()
 		if totalWrites > uint64(endEntryNum) {
 			// Need write lock for rebuild
@@ -579,8 +595,8 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			}
 			if err != nil {
 				// Track read error in CometState
-				if shard.state != nil {
-					atomic.AddUint64(&shard.state.ReadErrors, 1)
+				if state := shard.loadState(); state != nil {
+					atomic.AddUint64(&state.ReadErrors, 1)
 				}
 				return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
 			}
@@ -596,8 +612,8 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	}
 
 	// Track read metrics in CometState
-	if shard.state != nil && len(messages) > 0 {
-		atomic.AddUint64(&shard.state.TotalEntriesRead, uint64(len(messages)))
+	if state := shard.loadState(); state != nil && len(messages) > 0 {
+		atomic.AddUint64(&state.TotalEntriesRead, uint64(len(messages)))
 	}
 
 	return messages, nil
@@ -648,8 +664,10 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		shard.mu.Lock()
 		// Check if this is a new consumer group
 		_, groupExists := shard.index.ConsumerOffsets[c.group]
-		if !groupExists && shard.state != nil {
-			atomic.AddUint64(&shard.state.ConsumerGroups, 1)
+		if !groupExists {
+			if state := shard.loadState(); state != nil {
+				atomic.AddUint64(&state.ConsumerGroups, 1)
+			}
 		}
 		// Update consumer offset to the next entry number
 		// This ensures we won't re-read this entry
@@ -658,8 +676,8 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		// Mark that we need a checkpoint
 		shard.writesSinceCheckpoint++
 		// Track acked entries
-		if shard.state != nil {
-			atomic.AddUint64(&shard.state.AckedEntries, 1)
+		if state := shard.loadState(); state != nil {
+			atomic.AddUint64(&state.AckedEntries, 1)
 		}
 		shard.mu.Unlock()
 
@@ -700,15 +718,17 @@ func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 		if maxEntry >= 0 {
 			// Check if this is a new consumer group
 			_, groupExists := shard.index.ConsumerOffsets[c.group]
-			if !groupExists && shard.state != nil {
-				atomic.AddUint64(&shard.state.ConsumerGroups, 1)
+			if !groupExists {
+				if state := shard.loadState(); state != nil {
+					atomic.AddUint64(&state.ConsumerGroups, 1)
+				}
 			}
 			shard.index.ConsumerOffsets[c.group] = maxEntry + 1
 			// Mark that we need a checkpoint
 			shard.writesSinceCheckpoint++
 			// Track acked entries
-			if shard.state != nil {
-				atomic.AddUint64(&shard.state.AckedEntries, uint64(len(ids)))
+			if state := shard.loadState(); state != nil {
+				atomic.AddUint64(&state.AckedEntries, uint64(len(ids)))
 			}
 		}
 
@@ -726,18 +746,18 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 	}
 
 	// Check unified state for instant change detection
-	if shard.state != nil {
-		currentTimestamp := shard.state.GetLastIndexUpdate()
-		if currentTimestamp != shard.lastMmapCheck {
+	if state := shard.loadState(); state != nil {
+		currentTimestamp := state.GetLastIndexUpdate()
+		if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 			// Index changed - reload it under write lock
 			shard.mu.Lock()
 			// Double-check after acquiring lock
-			if currentTimestamp != shard.lastMmapCheck {
+			if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 				if err := shard.loadIndexWithRecovery(); err != nil {
 					shard.mu.Unlock()
 					return 0, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 				}
-				shard.lastMmapCheck = currentTimestamp
+				atomic.StoreInt64(&shard.lastMmapCheck, currentTimestamp)
 			}
 			shard.mu.Unlock()
 		}
@@ -755,14 +775,14 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 	lag := shard.index.CurrentEntryNumber - consumerEntry
 
 	// Track max consumer lag
-	if shard.state != nil && lag > 0 {
+	if state := shard.loadState(); state != nil && lag > 0 {
 		// Update max lag if this is higher
 		for {
-			currentMax := atomic.LoadUint64(&shard.state.MaxConsumerLag)
+			currentMax := atomic.LoadUint64(&state.MaxConsumerLag)
 			if uint64(lag) <= currentMax {
 				break
 			}
-			if atomic.CompareAndSwapUint64(&shard.state.MaxConsumerLag, currentMax, uint64(lag)) {
+			if atomic.CompareAndSwapUint64(&state.MaxConsumerLag, currentMax, uint64(lag)) {
 				break
 			}
 		}
@@ -850,18 +870,18 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 	}
 
 	// Check unified state for instant change detection
-	if shard.state != nil {
-		currentTimestamp := shard.state.GetLastIndexUpdate()
-		if currentTimestamp != shard.lastMmapCheck {
+	if state := shard.loadState(); state != nil {
+		currentTimestamp := state.GetLastIndexUpdate()
+		if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 			// Index changed - reload it under write lock
 			shard.mu.Lock()
 			// Double-check after acquiring lock
-			if currentTimestamp != shard.lastMmapCheck {
+			if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
 				if err := shard.loadIndexWithRecovery(); err != nil {
 					shard.mu.Unlock()
 					return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 				}
-				shard.lastMmapCheck = currentTimestamp
+				atomic.StoreInt64(&shard.lastMmapCheck, currentTimestamp)
 			}
 			shard.mu.Unlock()
 		}

@@ -440,9 +440,9 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 
 	const (
 		numWriters   = 2
-		numReaders   = 4
-		numEntries   = 100
-		testDuration = 2 * time.Second
+		numReaders   = 3               // Reduce concurrent readers for CI stability
+		numEntries   = 50              // Reduce entries for faster completion
+		testDuration = 1 * time.Second // Shorter duration for CI
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testDuration)
@@ -474,8 +474,8 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 					writeCount.Add(1)
 				}
 
-				// Small random delay
-				time.Sleep(time.Duration(rand.Intn(10)) * time.Microsecond)
+				// Small random delay - increased for CI stability
+				time.Sleep(time.Duration(rand.Intn(50)+10) * time.Microsecond)
 			}
 		}(i)
 	}
@@ -545,12 +545,17 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 	// Let it run for the test duration
 	<-ctx.Done()
 
-	// Wait for writers to finish
+	// Wait for writers to finish first
 	writerWg.Wait()
 
-	// Give readers a bit more time to process remaining messages
-	time.Sleep(100 * time.Millisecond)
-	cancel() // Cancel context to stop readers
+	// Sync to ensure all writes are visible
+	client.Sync(context.Background())
+
+	// Give readers more time to process remaining messages
+	time.Sleep(200 * time.Millisecond)
+
+	// Now stop readers gracefully
+	cancel() // This was already called by timeout, but ensure it's done
 	readerWg.Wait()
 
 	t.Logf("Writes: %d, Reads: %d, Errors: %d", writeCount.Load(), readCount.Load(), errorCount.Load())

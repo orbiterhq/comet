@@ -46,12 +46,13 @@ func TestBatchMetrics(t *testing.T) {
 	}
 
 	// Check batch metrics
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
-	currentBatchSize := atomic.LoadUint64(&shard.state.CurrentBatchSize)
-	totalBatches := atomic.LoadUint64(&shard.state.TotalBatches)
+	currentBatchSize := atomic.LoadUint64(&state.CurrentBatchSize)
+	totalBatches := atomic.LoadUint64(&state.TotalBatches)
 
 	if currentBatchSize != uint64(len(entries)) {
 		t.Errorf("CurrentBatchSize = %d, want %d", currentBatchSize, len(entries))
@@ -104,12 +105,13 @@ func TestReadMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check read metrics
-	totalEntriesRead := atomic.LoadUint64(&shard.state.TotalEntriesRead)
+	totalEntriesRead := atomic.LoadUint64(&state.TotalEntriesRead)
 	if totalEntriesRead != uint64(len(messages)) {
 		t.Errorf("TotalEntriesRead = %d, want %d", totalEntriesRead, len(messages))
 	}
@@ -120,12 +122,12 @@ func TestReadMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	readerCacheHits := atomic.LoadUint64(&shard.state.ReaderCacheHits)
+	readerCacheHits := atomic.LoadUint64(&state.ReaderCacheHits)
 	if readerCacheHits < 1 {
 		t.Errorf("ReaderCacheHits = %d, want >= 1", readerCacheHits)
 	}
 
-	totalEntriesRead2 := atomic.LoadUint64(&shard.state.TotalEntriesRead)
+	totalEntriesRead2 := atomic.LoadUint64(&state.TotalEntriesRead)
 	expectedTotal := uint64(len(messages) + len(messages2))
 	if totalEntriesRead2 != expectedTotal {
 		t.Errorf("TotalEntriesRead after second read = %d, want %d", totalEntriesRead2, expectedTotal)
@@ -170,13 +172,14 @@ func TestRecoveryMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check recovery metrics
-	recoveryAttempts := atomic.LoadUint64(&shard.state.RecoveryAttempts)
-	recoverySuccesses := atomic.LoadUint64(&shard.state.RecoverySuccesses)
+	recoveryAttempts := atomic.LoadUint64(&state.RecoveryAttempts)
+	recoverySuccesses := atomic.LoadUint64(&state.RecoverySuccesses)
 
 	if recoveryAttempts < 1 {
 		t.Errorf("RecoveryAttempts = %d, want >= 1", recoveryAttempts)
@@ -209,7 +212,8 @@ func TestConsumerGroupMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -239,23 +243,23 @@ func TestConsumerGroupMetrics(t *testing.T) {
 	consumer3.Ack(ctx, ids...)
 
 	// Check metrics
-	consumerGroups := atomic.LoadUint64(&shard.state.ConsumerGroups)
+	consumerGroups := atomic.LoadUint64(&state.ConsumerGroups)
 	if consumerGroups != 3 {
 		t.Errorf("ConsumerGroups = %d, want 3", consumerGroups)
 	}
 
-	ackedEntries := atomic.LoadUint64(&shard.state.AckedEntries)
+	ackedEntries := atomic.LoadUint64(&state.AckedEntries)
 	expectedAcked := uint64(1 + len(messages2) + len(messages3))
 	if ackedEntries != expectedAcked {
 		t.Errorf("AckedEntries = %d, want %d", ackedEntries, expectedAcked)
 	}
 
-	totalReaders := atomic.LoadUint64(&shard.state.TotalReaders)
+	totalReaders := atomic.LoadUint64(&state.TotalReaders)
 	if totalReaders < 1 {
 		t.Errorf("TotalReaders = %d, want >= 1", totalReaders)
 	}
 
-	activeReaders := atomic.LoadUint64(&shard.state.ActiveReaders)
+	activeReaders := atomic.LoadUint64(&state.ActiveReaders)
 	if activeReaders < 1 {
 		t.Errorf("ActiveReaders = %d, want >= 1", activeReaders)
 	}
@@ -266,7 +270,7 @@ func TestConsumerGroupMetrics(t *testing.T) {
 		t.Errorf("Consumer1 lag = %d, want > 0", lag1)
 	}
 
-	maxLag := atomic.LoadUint64(&shard.state.MaxConsumerLag)
+	maxLag := atomic.LoadUint64(&state.MaxConsumerLag)
 	if maxLag == 0 {
 		t.Error("MaxConsumerLag not tracked")
 	}
@@ -316,21 +320,22 @@ func TestWriteLatencyMetrics(t *testing.T) {
 			continue
 		}
 
-		if shard.state == nil {
+		state := shard.loadState()
+		if state == nil {
 			continue
 		}
 
 		// Check basic latency metrics
-		count := atomic.LoadUint64(&shard.state.WriteLatencyCount)
+		count := atomic.LoadUint64(&state.WriteLatencyCount)
 		if count == 0 {
 			continue // No writes to this shard
 		}
 
-		sum := atomic.LoadUint64(&shard.state.WriteLatencySum)
-		min := atomic.LoadUint64(&shard.state.MinWriteLatency)
-		max := atomic.LoadUint64(&shard.state.MaxWriteLatency)
-		p50 := atomic.LoadUint64(&shard.state.P50WriteLatency)
-		p99 := atomic.LoadUint64(&shard.state.P99WriteLatency)
+		sum := atomic.LoadUint64(&state.WriteLatencySum)
+		min := atomic.LoadUint64(&state.MinWriteLatency)
+		max := atomic.LoadUint64(&state.MaxWriteLatency)
+		p50 := atomic.LoadUint64(&state.P50WriteLatency)
+		p99 := atomic.LoadUint64(&state.P99WriteLatency)
 
 		avgLatency := sum / count
 
@@ -400,16 +405,17 @@ func TestCompressionMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check compression metrics
-	totalCompressed := atomic.LoadUint64(&shard.state.TotalCompressed)
-	compressedEntries := atomic.LoadUint64(&shard.state.CompressedEntries)
-	skippedCompression := atomic.LoadUint64(&shard.state.SkippedCompression)
-	compressionRatio := atomic.LoadUint64(&shard.state.CompressionRatio)
-	compressionTime := atomic.LoadInt64(&shard.state.CompressionTimeNanos)
+	totalCompressed := atomic.LoadUint64(&state.TotalCompressed)
+	compressedEntries := atomic.LoadUint64(&state.CompressedEntries)
+	skippedCompression := atomic.LoadUint64(&state.SkippedCompression)
+	compressionRatio := atomic.LoadUint64(&state.CompressionRatio)
+	compressionTime := atomic.LoadInt64(&state.CompressionTimeNanos)
 
 	if compressedEntries < 2 {
 		t.Errorf("CompressedEntries = %d, want >= 2", compressedEntries)
@@ -462,16 +468,20 @@ func TestFileOperationMetrics(t *testing.T) {
 		}
 	}
 
+	// Force sync to ensure metrics are updated
+	client.Sync(ctx)
+
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check file metrics
-	filesCreated := atomic.LoadUint64(&shard.state.FilesCreated)
-	fileRotations := atomic.LoadUint64(&shard.state.FileRotations)
-	currentFiles := atomic.LoadUint64(&shard.state.CurrentFiles)
-	totalFileBytes := atomic.LoadUint64(&shard.state.TotalFileBytes)
+	filesCreated := atomic.LoadUint64(&state.FilesCreated)
+	fileRotations := atomic.LoadUint64(&state.FileRotations)
+	currentFiles := atomic.LoadUint64(&state.CurrentFiles)
+	totalFileBytes := atomic.LoadUint64(&state.TotalFileBytes)
 
 	if filesCreated < 2 {
 		t.Errorf("FilesCreated = %d, want >= 2", filesCreated)
@@ -534,7 +544,8 @@ func TestWriteMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -544,11 +555,11 @@ func TestWriteMetrics(t *testing.T) {
 	shard.mu.RUnlock()
 
 	// Check write metrics
-	totalEntries := atomic.LoadInt64(&shard.state.TotalEntries)
-	totalBytesMetric := atomic.LoadUint64(&shard.state.TotalBytes)
-	totalWrites := atomic.LoadUint64(&shard.state.TotalWrites)
-	lastWriteNanos := atomic.LoadInt64(&shard.state.LastWriteNanos)
-	writeOffset := atomic.LoadUint64(&shard.state.WriteOffset)
+	totalEntries := atomic.LoadInt64(&state.TotalEntries)
+	totalBytesMetric := atomic.LoadUint64(&state.TotalBytes)
+	totalWrites := atomic.LoadUint64(&state.TotalWrites)
+	lastWriteNanos := atomic.LoadInt64(&state.LastWriteNanos)
+	writeOffset := atomic.LoadUint64(&state.WriteOffset)
 
 	// Note: TotalEntries tracks ALL entries written to the shard, not just ours
 	// So we check that it's at least numEntries
@@ -588,7 +599,8 @@ func TestWriteMetrics(t *testing.T) {
 func TestIndexMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	config.Storage.CheckpointTime = 10 // Short checkpoint interval
+	config.Storage.CheckpointTime = 10    // Short checkpoint interval
+	config.Indexing.BoundaryInterval = 10 // Create binary index nodes every 10 entries
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -610,15 +622,37 @@ func TestIndexMetrics(t *testing.T) {
 	// Force a checkpoint
 	client.Sync(ctx)
 
+	// Small delay to ensure async persistence completes
+	time.Sleep(50 * time.Millisecond)
+
+	// Force another sync to ensure binary index nodes are persisted
+	client.Sync(ctx)
+
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check index metrics
-	lastIndexUpdate := atomic.LoadInt64(&shard.state.LastIndexUpdate)
-	indexPersistCount := atomic.LoadUint64(&shard.state.IndexPersistCount)
-	binaryIndexNodes := atomic.LoadUint64(&shard.state.BinaryIndexNodes)
+	lastIndexUpdate := atomic.LoadInt64(&state.LastIndexUpdate)
+	indexPersistCount := atomic.LoadUint64(&state.IndexPersistCount)
+	binaryIndexNodes := atomic.LoadUint64(&state.BinaryIndexNodes)
+
+	// Debug: Check actual binary index nodes in memory
+	shard.mu.RLock()
+	actualNodes := len(shard.index.BinaryIndex.Nodes)
+	indexInterval := shard.index.BinaryIndex.IndexInterval
+	boundaryInterval := shard.index.BoundaryInterval
+	currentEntryNumber := shard.index.CurrentEntryNumber
+	shard.mu.RUnlock()
+
+	t.Logf("Debug index state:")
+	t.Logf("  IndexInterval: %d", indexInterval)
+	t.Logf("  BoundaryInterval: %d", boundaryInterval)
+	t.Logf("  CurrentEntryNumber: %d", currentEntryNumber)
+	t.Logf("  Actual nodes in memory: %d", actualNodes)
+	t.Logf("  Metric BinaryIndexNodes: %d", binaryIndexNodes)
 
 	if lastIndexUpdate == 0 {
 		t.Error("LastIndexUpdate not set")
@@ -657,7 +691,8 @@ func TestWriteErrorMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -678,9 +713,9 @@ func TestWriteErrorMetrics(t *testing.T) {
 		}
 
 		// Check error metrics
-		errorCount := atomic.LoadUint64(&shard.state.ErrorCount)
-		failedWrites := atomic.LoadUint64(&shard.state.FailedWrites)
-		lastErrorNanos := atomic.LoadInt64(&shard.state.LastErrorNanos)
+		errorCount := atomic.LoadUint64(&state.ErrorCount)
+		failedWrites := atomic.LoadUint64(&state.FailedWrites)
+		lastErrorNanos := atomic.LoadInt64(&state.LastErrorNanos)
 
 		if errorCount == 0 {
 			t.Error("ErrorCount = 0, want > 0 after write error")
@@ -722,7 +757,7 @@ func TestReadErrorMetrics(t *testing.T) {
 	}
 
 	shard, _ := client.getOrCreateShard(1)
-	if shard.state == nil {
+	if shard.loadState() == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -753,7 +788,7 @@ func TestReadErrorMetrics(t *testing.T) {
 
 	// Get shard from new client
 	shard2, _ := client2.getOrCreateShard(1)
-	if shard2.state == nil {
+	if shard2.loadState() == nil {
 		t.Skip("State not available")
 	}
 
@@ -802,120 +837,17 @@ func TestMultiProcessMetrics(t *testing.T) {
 
 	// Get shard from first client
 	shard, _ := client1.getOrCreateShard(1)
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check multi-process metrics
-	processCount := atomic.LoadUint64(&shard.state.ProcessCount)
-	mmapRemapCount := atomic.LoadUint64(&shard.state.MMAPRemapCount)
+	processCount := atomic.LoadUint64(&state.ProcessCount)
+	mmapRemapCount := atomic.LoadUint64(&state.MMAPRemapCount)
 
 	// These metrics might be tracked if multi-process coordination is fully implemented
 	t.Logf("Multi-process metrics:")
 	t.Logf("  Process count: %d", processCount)
 	t.Logf("  MMAP remap count: %d", mmapRemapCount)
-}
-
-// TestAtomicMetricsInterface tests the atomicMetrics implementation directly
-func TestAtomicMetricsInterface(t *testing.T) {
-	metrics := newAtomicMetrics()
-
-	// Test all methods that were previously untested (0% coverage)
-	metrics.IncrementEntries(5)
-	metrics.IncrementEntries(3)
-
-	metrics.AddBytes(1024)
-	metrics.AddBytes(512)
-
-	metrics.AddCompressedBytes(256)
-	metrics.AddCompressedBytes(128)
-
-	metrics.RecordWriteLatency(1000)
-	metrics.RecordMinWriteLatency(500)
-	metrics.RecordMinWriteLatency(800) // Should not update (higher)
-	metrics.RecordMinWriteLatency(300) // Should update (lower)
-
-	metrics.RecordMaxWriteLatency(2000)
-	metrics.RecordMaxWriteLatency(1500) // Should not update (lower)
-	metrics.RecordMaxWriteLatency(2500) // Should update (higher)
-
-	metrics.SetCompressionRatio(7550) // 75.5% as basis points
-	metrics.IncrementCompressedEntries(1)
-	metrics.IncrementCompressedEntries(1)
-	metrics.IncrementSkippedCompression(1)
-
-	metrics.AddCompressionWait(1500)
-	metrics.AddCompressionWait(800)
-
-	metrics.IncrementFilesCreated(1)
-	metrics.IncrementFilesCreated(1)
-	metrics.IncrementFilesDeleted(1)
-	metrics.IncrementFileRotations(1)
-	metrics.IncrementCheckpoints(1)
-
-	checkpointTime := uint64(time.Now().UnixNano())
-	metrics.SetLastCheckpoint(checkpointTime)
-
-	metrics.SetActiveReaders(3)
-	metrics.SetMaxConsumerLag(42)
-
-	metrics.IncrementErrors(1)
-	metrics.IncrementErrors(1)
-
-	errorTime := uint64(time.Now().UnixNano())
-	metrics.SetLastError(errorTime)
-
-	metrics.IncrementIndexPersistErrors(1)
-
-	// Test GetStats to verify all operations worked
-	stats := metrics.GetStats()
-
-	// Verify the stats contain expected values
-	if stats.TotalEntries != 8 {
-		t.Errorf("Stats.TotalEntries = %d, want 8", stats.TotalEntries)
-	}
-	if stats.TotalBytes != 1536 {
-		t.Errorf("Stats.TotalBytes = %d, want 1536", stats.TotalBytes)
-	}
-	if stats.TotalCompressed != 384 {
-		t.Errorf("Stats.TotalCompressed = %d, want 384", stats.TotalCompressed)
-	}
-	if stats.CompressedEntries != 2 {
-		t.Errorf("Stats.CompressedEntries = %d, want 2", stats.CompressedEntries)
-	}
-	if stats.CompressionRatio != 7550 {
-		t.Errorf("Stats.CompressionRatio = %d, want 7550", stats.CompressionRatio)
-	}
-	if stats.MinWriteLatency != 300 {
-		t.Errorf("Stats.MinWriteLatency = %d, want 300", stats.MinWriteLatency)
-	}
-	if stats.MaxWriteLatency != 2500 {
-		t.Errorf("Stats.MaxWriteLatency = %d, want 2500", stats.MaxWriteLatency)
-	}
-	if stats.FilesCreated != 2 {
-		t.Errorf("Stats.FilesCreated = %d, want 2", stats.FilesCreated)
-	}
-	if stats.FilesDeleted != 1 {
-		t.Errorf("Stats.FilesDeleted = %d, want 1", stats.FilesDeleted)
-	}
-	if stats.FileRotations != 1 {
-		t.Errorf("Stats.FileRotations = %d, want 1", stats.FileRotations)
-	}
-	if stats.CheckpointCount != 1 {
-		t.Errorf("Stats.CheckpointCount = %d, want 1", stats.CheckpointCount)
-	}
-	if stats.ActiveReaders != 3 {
-		t.Errorf("Stats.ActiveReaders = %d, want 3", stats.ActiveReaders)
-	}
-	if stats.ConsumerLag != 42 {
-		t.Errorf("Stats.ConsumerLag = %d, want 42", stats.ConsumerLag)
-	}
-	if stats.ErrorCount != 2 {
-		t.Errorf("Stats.ErrorCount = %d, want 2", stats.ErrorCount)
-	}
-	if stats.IndexPersistErrors != 1 {
-		t.Errorf("Stats.IndexPersistErrors = %d, want 1", stats.IndexPersistErrors)
-	}
-
-	t.Logf("All atomic metrics interface methods tested successfully")
 }

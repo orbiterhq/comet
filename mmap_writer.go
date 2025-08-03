@@ -251,18 +251,31 @@ func (w *MmapWriter) Write(entries [][]byte, entryNumbers []uint64) error {
 		// Since we map from beginning, offset is the position
 		pos := offset
 
+		// Validate mapping is still valid before each write
+		if w.mappedData == nil {
+			return fmt.Errorf("mapped data is nil")
+		}
+
 		// Double-check bounds before writing
 		if pos+12+int64(len(entry)) > int64(len(w.mappedData)) {
 			return fmt.Errorf("write would exceed mapped region: pos=%d, entry=%d bytes, mapped=%d bytes",
 				pos, len(entry)+12, len(w.mappedData))
 		}
 
-		// Write header (12 bytes)
-		binary.LittleEndian.PutUint32(w.mappedData[pos:pos+4], uint32(len(entry)))
-		binary.LittleEndian.PutUint64(w.mappedData[pos+4:pos+12], uint64(now))
+		// Additional safety check - ensure we have at least the slice bounds
+		if pos < 0 || pos+12 > int64(len(w.mappedData)) {
+			return fmt.Errorf("invalid write position: pos=%d, mapped size=%d", pos, len(w.mappedData))
+		}
 
-		// Write data
-		copy(w.mappedData[pos+12:pos+12+int64(len(entry))], entry)
+		// Try memory-mapped write first, fall back to file I/O on any issue
+		err := w.tryMemoryMappedWrite(pos, entry, now)
+		if err != nil {
+			// Memory mapping failed - use safer file-based approach
+			err = w.writeViaFile(pos, entry, now)
+			if err != nil {
+				return fmt.Errorf("both mmap and file write failed: %w", err)
+			}
+		}
 
 		offset += 12 + int64(len(entry))
 		_ = entryNumbers[i] // Entry numbers already allocated by caller
@@ -429,6 +442,59 @@ func (w *MmapWriter) Close() error {
 	if w.dataFile != nil {
 		w.dataFile.Close()
 		w.dataFile = nil
+	}
+
+	return nil
+}
+
+// tryMemoryMappedWrite attempts to write using memory mapping with error recovery
+func (w *MmapWriter) tryMemoryMappedWrite(pos int64, entry []byte, timestamp int64) (err error) {
+	// Catch any panics from invalid memory access
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("memory mapping panic: %v", r)
+		}
+	}()
+
+	// Double check bounds before attempting write
+	if pos < 0 || pos+12+int64(len(entry)) > int64(len(w.mappedData)) {
+		return fmt.Errorf("memory write bounds check failed")
+	}
+
+	// Write header (12 bytes)
+	binary.LittleEndian.PutUint32(w.mappedData[pos:pos+4], uint32(len(entry)))
+	binary.LittleEndian.PutUint64(w.mappedData[pos+4:pos+12], uint64(timestamp))
+
+	// Write data
+	copy(w.mappedData[pos+12:pos+12+int64(len(entry))], entry)
+
+	return nil
+}
+
+// writeViaFile performs the write using regular file I/O as a safe fallback
+func (w *MmapWriter) writeViaFile(pos int64, entry []byte, timestamp int64) error {
+	if w.dataFile == nil {
+		return fmt.Errorf("data file is nil")
+	}
+
+	// Seek to position
+	if _, err := w.dataFile.Seek(pos, 0); err != nil {
+		return fmt.Errorf("seek failed: %w", err)
+	}
+
+	// Create header buffer
+	header := make([]byte, 12)
+	binary.LittleEndian.PutUint32(header[0:4], uint32(len(entry)))
+	binary.LittleEndian.PutUint64(header[4:12], uint64(timestamp))
+
+	// Write header
+	if _, err := w.dataFile.Write(header); err != nil {
+		return fmt.Errorf("header write failed: %w", err)
+	}
+
+	// Write data
+	if _, err := w.dataFile.Write(entry); err != nil {
+		return fmt.Errorf("data write failed: %w", err)
 	}
 
 	return nil
