@@ -1533,21 +1533,29 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		initialWriteOffset := s.index.CurrentWriteOffset
 		initialWritesSinceCheckpoint := s.writesSinceCheckpoint
 
-		// Both single-process and multi-process modes: use unified state for entry numbering
+		// Pre-allocate entry numbers - different approaches for single vs multi-process
 		entryNumbers := make([]int64, len(entries))
 
-		// Pre-allocate entry numbers atomically using state
-		state := s.loadState()
-		if state != nil {
-			for i := range entries {
-				entryNumbers[i] = state.IncrementLastEntryNumber()
+		if config.Concurrency.EnableMultiProcessMode {
+			// Multi-process mode: use atomic state operations for thread safety
+			state := s.loadState()
+			if state != nil {
+				for i := range entries {
+					entryNumbers[i] = state.IncrementLastEntryNumber()
+				}
+			} else {
+				// Fallback if state not available (shouldn't happen in normal operation)
+				if Debug && s.logger != nil {
+					s.logger.Warn("State not available, using index fallback",
+						"shard", s.shardID)
+				}
+				baseEntry := s.index.CurrentEntryNumber
+				for i := range entries {
+					entryNumbers[i] = baseEntry + int64(i)
+				}
 			}
 		} else {
-			// Fallback if state not available (shouldn't happen in normal operation)
-			if Debug && s.logger != nil {
-				s.logger.Warn("State not available, using index fallback",
-					"shard", s.shardID)
-			}
+			// Single-process mode: direct index access for maximum performance
 			baseEntry := s.index.CurrentEntryNumber
 			for i := range entries {
 				entryNumbers[i] = baseEntry + int64(i)
@@ -1751,12 +1759,8 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				s.index.CurrentWriteOffset = initialWriteOffset
 				s.writesSinceCheckpoint = initialWritesSinceCheckpoint
 
-				// Also rollback the state to keep it in sync with index
-				if state := s.loadState(); state != nil {
-					// Reset state LastEntryNumber to the initial value
-					// We need to "undo" the IncrementLastEntryNumber calls
-					atomic.StoreInt64(&state.LastEntryNumber, initialEntryNumber-1)
-				}
+				// In single-process mode, no need to rollback state since we didn't modify it
+				// State is not used for entry numbering in single-process mode
 				return nil
 			}
 		}

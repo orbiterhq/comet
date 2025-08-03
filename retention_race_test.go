@@ -36,7 +36,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 	config := MultiProcessConfig()
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0
-	config.Storage.MaxFileSize = 128 // Extremely small files to force rotation
+	config.Storage.MaxFileSize = 200 // Small files to force frequent rotations
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -45,18 +45,19 @@ func TestRetentionRaceCondition(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Create multiple files by forcing rotation
+	// Create massive number of files by forcing frequent rotation
 	shard, _ := client.getOrCreateShard(1)
 
-	for i := 0; i < 20; i++ {
-		data := [][]byte{[]byte(fmt.Sprintf(`{"id": %d, "data": "test data for race condition with padding to make it larger"}`, i))}
+	// Create way more entries and files to stress the retention system
+	for i := 0; i < 200; i++ {
+		data := [][]byte{[]byte(fmt.Sprintf(`{"id": %d, "data": "small"}`, i))}
 		_, err := client.Append(ctx, streamName, data)
 		if err != nil {
 			t.Fatalf("failed to write data: %v", err)
 		}
 
-		// Force rotation every few entries to create more files
-		if (i+1)%4 == 0 {
+		// Force rotation very frequently to create many small files
+		if (i+1)%2 == 0 {
 			shard.mu.Lock()
 			err = shard.rotateFile(&client.metrics, &config)
 			shard.mu.Unlock()
@@ -79,7 +80,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 
 	// Mark ALL non-current files as old
 	shard.mu.Lock()
-	oldTime := time.Now().Add(-200 * time.Millisecond)
+	oldTime := time.Now().Add(-500 * time.Millisecond) // Much older to ensure deletion
 	filesMarked := 0
 	for i := range shard.index.Files {
 		if shard.index.Files[i].Path != currentFile {
@@ -95,8 +96,8 @@ func TestRetentionRaceCondition(t *testing.T) {
 	client.Sync(ctx)
 	client.Close()
 
-	// Launch multiple workers simultaneously to race on retention
-	numWorkers := 3
+	// Launch many more workers simultaneously for maximum retention contention
+	numWorkers := 15  // Much more aggressive than 3
 	var wg sync.WaitGroup
 	outputs := make([]string, numWorkers)
 	errors := make([]error, numWorkers)
