@@ -96,12 +96,28 @@ func TestMultiProcessSimple(t *testing.T) {
 			)
 
 			t.Logf("Starting writer %d process...", id)
-			output, err := cmd.CombinedOutput()
-			if err != nil && ctx.Err() == nil {
-				t.Logf("Writer %d failed: %v\nOutput: %s", id, err, output)
-			} else if os.Getenv("CI") != "" {
-				// Always log output in CI for debugging
-				t.Logf("Writer %d completed. Output:\n%s", id, output)
+			
+			// Use Start/Wait pattern for better timeout control
+			if err := cmd.Start(); err != nil {
+				t.Logf("Writer %d failed to start: %v", id, err)
+				return
+			}
+			
+			done := make(chan error, 1)
+			go func() {
+				done <- cmd.Wait()
+			}()
+			
+			select {
+			case <-ctx.Done():
+				cmd.Process.Kill()
+				t.Logf("Writer %d killed due to timeout", id)
+			case err := <-done:
+				if err != nil {
+					t.Logf("Writer %d failed: %v", id, err)
+				} else if os.Getenv("CI") != "" {
+					t.Logf("Writer %d completed successfully", id)
+				}
 			}
 		}(i)
 	}
@@ -123,12 +139,28 @@ func TestMultiProcessSimple(t *testing.T) {
 			)
 
 			t.Logf("Starting reader %d process...", id)
-			output, err := cmd.CombinedOutput()
-			if err != nil && ctx.Err() == nil {
-				t.Logf("Reader %d failed: %v\nOutput: %s", id, err, output)
-			} else if os.Getenv("CI") != "" {
-				// Always log output in CI for debugging
-				t.Logf("Reader %d completed. Output:\n%s", id, output)
+			
+			// Use Start/Wait pattern for better timeout control
+			if err := cmd.Start(); err != nil {
+				t.Logf("Reader %d failed to start: %v", id, err)
+				return
+			}
+			
+			done := make(chan error, 1)
+			go func() {
+				done <- cmd.Wait()
+			}()
+			
+			select {
+			case <-ctx.Done():
+				cmd.Process.Kill()
+				t.Logf("Reader %d killed due to timeout", id)
+			case err := <-done:
+				if err != nil {
+					t.Logf("Reader %d failed: %v", id, err)
+				} else if os.Getenv("CI") != "" {
+					t.Logf("Reader %d completed successfully", id)
+				}
 			}
 		}(i)
 	}
