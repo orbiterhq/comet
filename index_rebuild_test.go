@@ -415,14 +415,10 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 
 	client.Close()
 
-	// Delete both index file and state to force complete rebuild
+	// Delete only the index file to force rebuild (keep state file for multi-process mode)
 	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
-	statePath := filepath.Join(dir, "shard-0001", "comet.state")
 
 	if err := os.Remove(indexPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 
@@ -434,7 +430,10 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	defer client2.Close()
 
 	// Verify index was rebuilt correctly
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, err := client2.getOrCreateShard(1)
+	if err != nil {
+		t.Fatalf("Failed to get shard after rebuild: %v", err)
+	}
 	shard2.mu.RLock()
 	rebuiltFiles := len(shard2.index.Files)
 	rebuiltEntries := shard2.index.CurrentEntryNumber
