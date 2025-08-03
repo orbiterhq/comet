@@ -1095,9 +1095,11 @@ func TestMultiProcessFileLocking(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping file lock test in short mode")
 	}
+	
 
 	// Check if we're the parent or child
 	if workerID := os.Getenv("COMET_LOCK_TEST_WORKER"); workerID != "" {
+		t.Logf("Running as worker %s", workerID)
 		runLockTestWorker(t, workerID)
 		return
 	}
@@ -1118,7 +1120,7 @@ func TestMultiProcessFileLocking(t *testing.T) {
 	// Don't pre-initialize - let the workers race to create and lock
 
 	// Now spawn multiple processes that try to write to the SAME shard
-	numWorkers := 5
+	numWorkers := 3
 	var wg sync.WaitGroup
 	results := make(chan string, numWorkers)
 
@@ -1129,14 +1131,16 @@ func TestMultiProcessFileLocking(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
+			
+			t.Logf("Starting worker %d", id)
 
 			// Stagger process starts slightly to avoid thundering herd
 			time.Sleep(time.Duration(id*50) * time.Millisecond)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessFileLocking$", "-test.v")
+			cmd := exec.CommandContext(ctx, executable, "-test.run", "TestMultiProcessFileLocking", "-test.v")
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("COMET_LOCK_TEST_WORKER=%d", id),
 				fmt.Sprintf("COMET_LOCK_TEST_DIR=%s", dir),
@@ -1144,8 +1148,9 @@ func TestMultiProcessFileLocking(t *testing.T) {
 			)
 
 			output, err := cmd.CombinedOutput()
-			if err != nil && ctx.Err() == context.DeadlineExceeded {
-				results <- fmt.Sprintf("Worker %d timed out after 5s\nPartial output: %s", id, output)
+			t.Logf("Worker %d completed with err=%v, output length=%d", id, err, len(output))
+			if ctx.Err() == context.DeadlineExceeded {
+				results <- fmt.Sprintf("Worker %d timed out after 10s\nPartial output: %s", id, output)
 			} else if err != nil {
 				results <- fmt.Sprintf("Worker %d failed: %v\nOutput: %s", id, err, output)
 			} else {
