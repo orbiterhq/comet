@@ -444,43 +444,43 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		if state := shard.loadState(); state != nil {
 			currentTimestamp := state.GetLastIndexUpdate()
 			if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
-			// Index changed - reload it under write lock
-			shard.mu.Lock()
-			// Double-check after acquiring lock
-			if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
-				if err := shard.loadIndexWithRecovery(); err != nil {
-					shard.mu.Unlock()
-					return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
-				}
-				atomic.StoreInt64(&shard.lastMmapCheck, currentTimestamp)
-
-				// In multi-process mode, check if we need to rebuild index from files
-				shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
-				if Debug && shard.logger != nil {
-					shard.logger.Debug("Consumer triggering index rebuild check",
-						"shard", shard.shardID,
-						"multiProcessMode", c.client.config.Concurrency.EnableMultiProcessMode,
-						"shardDir", shardDir)
-				}
-				shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
-
-				// Also invalidate any cached readers since the index changed
-				c.readers.Range(func(key, value any) bool {
-					if key.(uint32) == shard.shardID {
-						if reader, ok := value.(*Reader); ok {
-							reader.Close()
-							// Decrement active readers count
-							if state := shard.loadState(); state != nil {
-								atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
-							}
-						}
-						c.readers.Delete(key)
-						return false // Stop after finding this shard's reader
+				// Index changed - reload it under write lock
+				shard.mu.Lock()
+				// Double-check after acquiring lock
+				if currentTimestamp != atomic.LoadInt64(&shard.lastMmapCheck) {
+					if err := shard.loadIndexWithRecovery(); err != nil {
+						shard.mu.Unlock()
+						return nil, fmt.Errorf("failed to reload index after detecting mmap change: %w", err)
 					}
-					return true
-				})
-			}
-			shard.mu.Unlock()
+					atomic.StoreInt64(&shard.lastMmapCheck, currentTimestamp)
+
+					// In multi-process mode, check if we need to rebuild index from files
+					shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
+					if Debug && shard.logger != nil {
+						shard.logger.Debug("Consumer triggering index rebuild check",
+							"shard", shard.shardID,
+							"multiProcessMode", c.client.config.Concurrency.EnableMultiProcessMode,
+							"shardDir", shardDir)
+					}
+					shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
+
+					// Also invalidate any cached readers since the index changed
+					c.readers.Range(func(key, value any) bool {
+						if key.(uint32) == shard.shardID {
+							if reader, ok := value.(*Reader); ok {
+								reader.Close()
+								// Decrement active readers count
+								if state := shard.loadState(); state != nil {
+									atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
+								}
+							}
+							c.readers.Delete(key)
+							return false // Stop after finding this shard's reader
+						}
+						return true
+					})
+				}
+				shard.mu.Unlock()
 			}
 		}
 	}

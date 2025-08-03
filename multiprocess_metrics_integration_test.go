@@ -110,16 +110,17 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if shard.loadState() == nil {
+		state := shard.loadState()
+		if state == nil {
 			t.Fatal("CometState not initialized")
 		}
 
 		// Check write metrics
 		t.Run("WriteMetrics", func(t *testing.T) {
-			totalWrites := atomic.LoadUint64(&shard.state.TotalWrites)
-			totalEntries := atomic.LoadInt64(&shard.state.TotalEntries)
-			totalBytes := atomic.LoadUint64(&shard.state.TotalBytes)
-			lastWriteNanos := atomic.LoadInt64(&shard.state.LastWriteNanos)
+			totalWrites := atomic.LoadUint64(&state.TotalWrites)
+			totalEntries := atomic.LoadInt64(&state.TotalEntries)
+			totalBytes := atomic.LoadUint64(&state.TotalBytes)
+			lastWriteNanos := atomic.LoadInt64(&state.LastWriteNanos)
 
 			if totalWrites == 0 {
 				t.Error("TotalWrites = 0, expected > 0")
@@ -140,10 +141,10 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 
 		// Check compression metrics
 		t.Run("CompressionMetrics", func(t *testing.T) {
-			compressedEntries := atomic.LoadUint64(&shard.state.CompressedEntries)
-			skippedCompression := atomic.LoadUint64(&shard.state.SkippedCompression)
-			compressionRatio := atomic.LoadUint64(&shard.state.CompressionRatio)
-			compressionTimeNanos := atomic.LoadInt64(&shard.state.CompressionTimeNanos)
+			compressedEntries := atomic.LoadUint64(&state.CompressedEntries)
+			skippedCompression := atomic.LoadUint64(&state.SkippedCompression)
+			compressionRatio := atomic.LoadUint64(&state.CompressionRatio)
+			compressionTimeNanos := atomic.LoadInt64(&state.CompressionTimeNanos)
 
 			if compressedEntries == 0 {
 				t.Error("CompressedEntries = 0, expected > 0")
@@ -159,11 +160,11 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 
 		// Check latency metrics
 		t.Run("LatencyMetrics", func(t *testing.T) {
-			writeLatencyCount := atomic.LoadUint64(&shard.state.WriteLatencyCount)
-			minLatency := atomic.LoadUint64(&shard.state.MinWriteLatency)
-			maxLatency := atomic.LoadUint64(&shard.state.MaxWriteLatency)
-			p50Latency := atomic.LoadUint64(&shard.state.P50WriteLatency)
-			p99Latency := atomic.LoadUint64(&shard.state.P99WriteLatency)
+			writeLatencyCount := atomic.LoadUint64(&state.WriteLatencyCount)
+			minLatency := atomic.LoadUint64(&state.MinWriteLatency)
+			maxLatency := atomic.LoadUint64(&state.MaxWriteLatency)
+			p50Latency := atomic.LoadUint64(&state.P50WriteLatency)
+			p99Latency := atomic.LoadUint64(&state.P99WriteLatency)
 
 			if writeLatencyCount == 0 {
 				t.Error("WriteLatencyCount = 0, expected > 0")
@@ -185,10 +186,10 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 
 		// Check file operation metrics
 		t.Run("FileMetrics", func(t *testing.T) {
-			filesCreated := atomic.LoadUint64(&shard.state.FilesCreated)
-			fileRotations := atomic.LoadUint64(&shard.state.FileRotations)
-			currentFiles := atomic.LoadUint64(&shard.state.CurrentFiles)
-			totalFileBytes := atomic.LoadUint64(&shard.state.TotalFileBytes)
+			filesCreated := atomic.LoadUint64(&state.FilesCreated)
+			fileRotations := atomic.LoadUint64(&state.FileRotations)
+			currentFiles := atomic.LoadUint64(&state.CurrentFiles)
+			totalFileBytes := atomic.LoadUint64(&state.TotalFileBytes)
 
 			if filesCreated == 0 {
 				t.Error("FilesCreated = 0, expected > 0")
@@ -214,11 +215,11 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 
 		// Check reader/consumer metrics
 		t.Run("ReaderMetrics", func(t *testing.T) {
-			totalEntriesRead := atomic.LoadUint64(&shard.state.TotalEntriesRead)
-			activeReaders := atomic.LoadUint64(&shard.state.ActiveReaders)
-			totalReaders := atomic.LoadUint64(&shard.state.TotalReaders)
-			consumerGroups := atomic.LoadUint64(&shard.state.ConsumerGroups)
-			ackedEntries := atomic.LoadUint64(&shard.state.AckedEntries)
+			totalEntriesRead := atomic.LoadUint64(&state.TotalEntriesRead)
+			activeReaders := atomic.LoadUint64(&state.ActiveReaders)
+			totalReaders := atomic.LoadUint64(&state.TotalReaders)
+			consumerGroups := atomic.LoadUint64(&state.ConsumerGroups)
+			ackedEntries := atomic.LoadUint64(&state.AckedEntries)
 
 			if totalEntriesRead == 0 {
 				t.Error("TotalEntriesRead = 0, expected > 0")
@@ -236,11 +237,11 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 
 		// Check retention metrics
 		t.Run("RetentionMetrics", func(t *testing.T) {
-			retentionRuns := atomic.LoadUint64(&shard.state.RetentionRuns)
-			filesDeleted := atomic.LoadUint64(&shard.state.FilesDeleted)
-			bytesReclaimed := atomic.LoadUint64(&shard.state.BytesReclaimed)
-			entriesDeleted := atomic.LoadUint64(&shard.state.EntriesDeleted)
-			oldestEntryNanos := atomic.LoadInt64(&shard.state.OldestEntryNanos)
+			retentionRuns := atomic.LoadUint64(&state.RetentionRuns)
+			filesDeleted := atomic.LoadUint64(&state.FilesDeleted)
+			bytesReclaimed := atomic.LoadUint64(&state.BytesReclaimed)
+			entriesDeleted := atomic.LoadUint64(&state.EntriesDeleted)
+			oldestEntryNanos := atomic.LoadInt64(&state.OldestEntryNanos)
 
 			if retentionRuns == 0 {
 				t.Error("RetentionRuns = 0, expected > 0")
@@ -270,25 +271,25 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 
 		// Check multi-process coordination metrics
 		t.Run("MultiProcessMetrics", func(t *testing.T) {
-			processCount := atomic.LoadUint64(&shard.state.ProcessCount)
-			contentionCount := atomic.LoadUint64(&shard.state.ContentionCount)
-			lockWaitNanos := atomic.LoadInt64(&shard.state.LockWaitNanos)
-			mmapRemapCount := atomic.LoadUint64(&shard.state.MMAPRemapCount)
+			processCount := atomic.LoadUint64(&state.ProcessCount)
+			contentionCount := atomic.LoadUint64(&state.ContentionCount)
+			lockWaitNanos := atomic.LoadInt64(&state.LockWaitNanos)
+			mmapRemapCount := atomic.LoadUint64(&state.MMAPRemapCount)
 
 			// These should be tracked during multi-process operations
 			t.Logf("Multi-process metrics: processes=%d, contentions=%d, lockWait=%dms, remaps=%d",
 				processCount, contentionCount, lockWaitNanos/1e6, mmapRemapCount)
 
 			// At minimum, verify they're accessible without panics
-			_ = atomic.LoadUint64(&shard.state.FalseShareCount)
-			_ = atomic.LoadInt64(&shard.state.LastProcessHeartbeat)
+			_ = atomic.LoadUint64(&state.FalseShareCount)
+			_ = atomic.LoadInt64(&state.LastProcessHeartbeat)
 		})
 
 		// Check error metrics
 		t.Run("ErrorMetrics", func(t *testing.T) {
-			errorCount := atomic.LoadUint64(&shard.state.ErrorCount)
-			failedWrites := atomic.LoadUint64(&shard.state.FailedWrites)
-			readErrors := atomic.LoadUint64(&shard.state.ReadErrors)
+			errorCount := atomic.LoadUint64(&state.ErrorCount)
+			failedWrites := atomic.LoadUint64(&state.FailedWrites)
+			readErrors := atomic.LoadUint64(&state.ReadErrors)
 
 			t.Logf("Error metrics: errors=%d, failedWrites=%d, readErrors=%d",
 				errorCount, failedWrites, readErrors)
@@ -301,13 +302,13 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 				name  string
 				value interface{}
 			}{
-				{"Version", atomic.LoadUint64(&shard.state.Version)},
-				{"WriteOffset", atomic.LoadUint64(&shard.state.WriteOffset)},
-				{"LastEntryNumber", atomic.LoadInt64(&shard.state.LastEntryNumber)},
-				{"LastIndexUpdate", atomic.LoadInt64(&shard.state.LastIndexUpdate)},
-				{"ActiveFileIndex", atomic.LoadUint64(&shard.state.ActiveFileIndex)},
-				{"FileSize", atomic.LoadUint64(&shard.state.FileSize)},
-				{"LastFileSequence", atomic.LoadUint64(&shard.state.LastFileSequence)},
+				{"Version", atomic.LoadUint64(&state.Version)},
+				{"WriteOffset", atomic.LoadUint64(&state.WriteOffset)},
+				{"LastEntryNumber", atomic.LoadInt64(&state.LastEntryNumber)},
+				{"LastIndexUpdate", atomic.LoadInt64(&state.LastIndexUpdate)},
+				{"ActiveFileIndex", atomic.LoadUint64(&state.ActiveFileIndex)},
+				{"FileSize", atomic.LoadUint64(&state.FileSize)},
+				{"LastFileSequence", atomic.LoadUint64(&state.LastFileSequence)},
 				// ... (all 70 metrics would be listed in production)
 			}
 

@@ -820,12 +820,13 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		shard, exists := client.shards[uint32(1)]
 		client.mu.RUnlock()
 
-		if !exists || shard.loadState() == nil {
+		state := shard.loadState()
+		if !exists || state == nil {
 			t.Fatal("Shard or unified state not found")
 		}
 
 		// Monitor for changes
-		lastTimestamp := shard.state.GetLastIndexUpdate()
+		lastTimestamp := state.GetLastIndexUpdate()
 		changesDetected := 0
 		writerEntriesFound := 0
 
@@ -844,7 +845,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 				return
 			case <-ticker.C:
 				// Check mmap timestamp
-				currentTimestamp := shard.state.GetLastIndexUpdate()
+				currentTimestamp := state.GetLastIndexUpdate()
 				if currentTimestamp > lastTimestamp {
 					changesDetected++
 					t.Logf("✓ Mmap reader: mmap change detected! (change #%d)", changesDetected)
@@ -1808,7 +1809,7 @@ func TestBulletproofMultiProcess(t *testing.T) {
 				waitTime = 200 * time.Millisecond
 			}
 			time.Sleep(waitTime)
-			
+
 			// Force sync to ensure all data is persisted before verification
 			verifyClient.Sync(context.Background())
 

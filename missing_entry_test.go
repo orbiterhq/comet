@@ -113,8 +113,8 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 				t.Logf("  File %d: %s (entries %d-%d)", i, f.Path, f.StartEntry, f.StartEntry+f.Entries-1)
 			}
 		}
-		if shard.loadState() != nil {
-			t.Logf("Process 1: Before close - State LastEntryNumber: %d", shard.state.GetLastEntryNumber())
+		if state := shard.loadState(); state != nil {
+			t.Logf("Process 1: Before close - State LastEntryNumber: %d", state.GetLastEntryNumber())
 		}
 		shard.mu.RUnlock()
 
@@ -148,8 +148,8 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 			t.Logf("TRACE: Got shard pointer %p, index pointer %p", shard, shard.index)
 		}
 		t.Logf("Process 2: After load - Index CurrentEntryNumber: %d", shard.index.CurrentEntryNumber)
-		if shard.loadState() != nil {
-			t.Logf("Process 2: After load - State LastEntryNumber: %d", shard.state.GetLastEntryNumber())
+		if state := shard.loadState(); state != nil {
+			t.Logf("Process 2: After load - State LastEntryNumber: %d", state.GetLastEntryNumber())
 		}
 		shard.mu.RUnlock()
 
