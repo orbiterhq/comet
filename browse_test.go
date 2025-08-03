@@ -298,7 +298,9 @@ func TestTail(t *testing.T) {
 
 		// Step 4: Wait for tail to start, then write NEW entries
 		<-tailStarted
-		time.Sleep(100 * time.Millisecond) // Brief pause to ensure tail is positioned
+		// Give the tail more time to initialize its position and start polling
+		// The ticker is 100ms, so we wait at least 2 cycles to ensure it's properly positioned
+		time.Sleep(250 * time.Millisecond)
 
 		newEntries := [][]byte{
 			[]byte(`{"phase": "new", "seq": 0}`),
@@ -315,11 +317,14 @@ func TestTail(t *testing.T) {
 			}
 			client.Sync(ctx)
 			t.Logf("Wrote new entry %d", i)
-			time.Sleep(50 * time.Millisecond) // Small delay between writes
+			// Longer delay between writes to ensure tail polling catches each one
+			time.Sleep(150 * time.Millisecond)
 		}
 
-		// Step 5: Wait a bit for messages to be received
-		time.Sleep(200 * time.Millisecond)
+		// Step 5: Wait longer for messages to be received
+		// Allow for at least 3 more polling cycles to catch any delayed messages
+		// Since the ticker is 100ms, we need to ensure the last write has time to be detected
+		time.Sleep(400 * time.Millisecond)
 
 		// Step 6: Cancel tail and wait for it to finish
 		cancel()

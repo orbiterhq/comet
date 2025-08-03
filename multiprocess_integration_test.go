@@ -1801,8 +1801,16 @@ func TestBulletproofMultiProcess(t *testing.T) {
 			}
 			defer verifyClient.Close()
 
-			// Wait a moment for index updates
-			time.Sleep(10 * time.Millisecond)
+			// Wait for index updates and checkpoints to complete
+			// CheckpointTime is 100ms, so we need to wait longer, especially for heavy load tests
+			waitTime := 50 * time.Millisecond
+			if test.expectations > 500 { // Heavy load tests need more time
+				waitTime = 200 * time.Millisecond
+			}
+			time.Sleep(waitTime)
+			
+			// Force sync to ensure all data is persisted before verification
+			verifyClient.Sync(context.Background())
 
 			consumer := NewConsumer(verifyClient, ConsumerOptions{Group: fmt.Sprintf("verify-%d", time.Now().UnixNano())})
 			defer consumer.Close()
