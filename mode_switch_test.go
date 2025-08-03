@@ -42,7 +42,7 @@ func TestModeSwitchDetection(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected mode mismatch error, got nil")
 		}
-		if !contains(err.Error(), "mode switching is not supported") {
+		if !strings.Contains(err.Error(), "mode switching is not supported") {
 			t.Errorf("expected mode switching error, got: %v", err)
 		}
 	})
@@ -80,12 +80,10 @@ func TestModeSwitchDetection(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected mode mismatch error, got nil")
 		}
-		if !contains(err.Error(), "mode switching is not supported") {
+		if !strings.Contains(err.Error(), "mode switching is not supported") {
 			t.Errorf("expected mode switching error, got: %v", err)
 		}
 	})
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && strings.Contains(s, substr))
-}
+// Use the contains function from browse_multiprocess_test.go instead
