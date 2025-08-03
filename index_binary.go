@@ -305,7 +305,7 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 		index.CurrentFile = index.Files[len(index.Files)-1].Path
 	}
 	// Note: CurrentFile will be empty if no files - this is handled by callers
-	
+
 	index.BoundaryInterval = boundaryInterval
 
 	return index, nil

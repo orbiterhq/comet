@@ -477,7 +477,7 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 		}(i)
 	}
 
-	// Start 2 tail processes for different shards  
+	// Start 2 tail processes for different shards
 	for i := 1; i <= 2; i++ {
 		wg.Add(1)
 		go func(shardID int) {
@@ -515,19 +515,19 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 
 	for shard := 1; shard <= 4; shard++ {
 		streamName := fmt.Sprintf("test:v1:shard:%04d", shard)
-		
+
 		// Get detailed shard information before scanning
 		s, _ := client.getOrCreateShard(uint32(shard))
 		s.mu.RLock()
 		if s.index != nil {
-			t.Logf("Shard %d index before scan: CurrentEntryNumber=%d, Files=%d", 
+			t.Logf("Shard %d index before scan: CurrentEntryNumber=%d, Files=%d",
 				shard, s.index.CurrentEntryNumber, len(s.index.Files))
 			for i, f := range s.index.Files {
 				if stat, err := os.Stat(f.Path); err != nil {
-					t.Logf("  File %d: %s (entries %d-%d) - ERROR: %v", 
+					t.Logf("  File %d: %s (entries %d-%d) - ERROR: %v",
 						i, filepath.Base(f.Path), f.StartEntry, f.StartEntry+f.Entries-1, err)
 				} else {
-					t.Logf("  File %d: %s (entries %d-%d, size %d bytes)", 
+					t.Logf("  File %d: %s (entries %d-%d, size %d bytes)",
 						i, filepath.Base(f.Path), f.StartEntry, f.StartEntry+f.Entries-1, stat.Size())
 				}
 			}
@@ -536,7 +536,7 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 			t.Logf("Shard %d state before scan: LastEntryNumber=%d", shard, s.state.GetLastEntryNumber())
 		}
 		s.mu.RUnlock()
-		
+
 		var count int
 		var firstID, lastID int64 = -1, -1
 		err := client.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {
@@ -585,7 +585,7 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 		// Concurrent writes to multiple shards
 		workerID, _ := strconv.Atoi(os.Getenv("COMET_BROWSE_CONCURRENT_WORKER"))
 		numShards := 4
-		
+
 		entriesPerShard := 25
 
 		for shard := 1; shard <= numShards; shard++ {
@@ -631,7 +631,7 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 					totalFound += len(messages)
 					if len(messages) > 0 && shard == 2 {
 						// Debug shard 2
-						fmt.Printf("Browser %d: Shard 2 ListRecent returned %d messages, first ID: %d, last ID: %d\n", 
+						fmt.Printf("Browser %d: Shard 2 ListRecent returned %d messages, first ID: %d, last ID: %d\n",
 							browseID, len(messages), messages[0].ID.EntryNumber, messages[len(messages)-1].ID.EntryNumber)
 					}
 				}
@@ -648,7 +648,7 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 				})
 				totalFound += count
 				if count > 0 && (shard == 1 || shard == 3) {
-					fmt.Printf("Browser %d: Shard %d ScanAll found %d entries (IDs %d-%d)\n", 
+					fmt.Printf("Browser %d: Shard %d ScanAll found %d entries (IDs %d-%d)\n",
 						browseID, shard, count, firstID, lastID)
 				}
 			}

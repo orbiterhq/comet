@@ -602,7 +602,9 @@ func TestMultiProcessIntegration(t *testing.T) {
 		os.MkdirAll(testDir, 0755)
 
 		// Start a process that will crash while holding lock
-		crashCmd := exec.Command(executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		crashCmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessIntegration$", "-test.v")
 		crashCmd.Env = append(os.Environ(),
 			"COMET_MP_TEST_ROLE=crasher",
 			fmt.Sprintf("COMET_MP_TEST_DIR=%s", testDir),

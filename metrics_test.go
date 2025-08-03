@@ -461,7 +461,7 @@ func TestFileOperationMetrics(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	
+
 	// Force sync to ensure metrics are updated
 	client.Sync(ctx)
 
@@ -591,7 +591,7 @@ func TestWriteMetrics(t *testing.T) {
 func TestIndexMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	config.Storage.CheckpointTime = 10 // Short checkpoint interval
+	config.Storage.CheckpointTime = 10    // Short checkpoint interval
 	config.Indexing.BoundaryInterval = 10 // Create binary index nodes every 10 entries
 
 	client, err := NewClientWithConfig(dir, config)
@@ -613,10 +613,10 @@ func TestIndexMetrics(t *testing.T) {
 
 	// Force a checkpoint
 	client.Sync(ctx)
-	
+
 	// Small delay to ensure async persistence completes
 	time.Sleep(50 * time.Millisecond)
-	
+
 	// Force another sync to ensure binary index nodes are persisted
 	client.Sync(ctx)
 

@@ -17,7 +17,7 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 	// Use multi-process config with small files like the failing test
 	config := MultiProcessConfig()
 	config.Storage.MaxFileSize = 2048 // Small files to force rotation
-	
+
 	streamName := "events:v1:shard:0001"
 
 	// Phase 1: Write 65 entries like the failing test
@@ -61,7 +61,7 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 	initialEntries := shard.index.CurrentEntryNumber
 	t.Logf("Initial state: %d files, %d entries", initialFiles, initialEntries)
 	for i, f := range shard.index.Files {
-		t.Logf("  File %d: entries=%d, start=%d, path=%s", 
+		t.Logf("  File %d: entries=%d, start=%d, path=%s",
 			i, f.Entries, f.StartEntry, filepath.Base(f.Path))
 	}
 	shard.mu.RUnlock()
@@ -93,7 +93,7 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 
 	// Phase 3: Create new client to trigger rebuild
 	t.Log("=== PHASE 3: Rebuilding index ===")
-	
+
 	// DEBUG: Check what files exist on disk before rebuild
 	shardDir := filepath.Join(dir, "shard-0001")
 	files, _ := os.ReadDir(shardDir)
@@ -103,7 +103,7 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 			t.Logf("DEBUG: Data file %s size=%d", f.Name(), info.Size())
 		}
 	}
-	
+
 	client2, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 	rebuiltEntries := shard2.index.CurrentEntryNumber
 	t.Logf("After rebuild: %d files, %d entries", rebuiltFiles, rebuiltEntries)
 	for i, f := range shard2.index.Files {
-		t.Logf("  File %d: entries=%d, start=%d, path=%s", 
+		t.Logf("  File %d: entries=%d, start=%d, path=%s",
 			i, f.Entries, f.StartEntry, filepath.Base(f.Path))
 	}
 	shard2.mu.RUnlock()
@@ -130,32 +130,32 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 
 	// Phase 4: Try reading with consumer - created AFTER index rebuild is complete
 	t.Log("=== PHASE 4: Testing consumer reads ===")
-	
+
 	// Debug: Check what the consumer would see as earliest entry
 	shard2.mu.RLock()
 	if len(shard2.index.Files) > 0 {
 		t.Logf("Consumer logic: Files[0].StartEntry = %d", shard2.index.Files[0].StartEntry)
 	}
 	shard2.mu.RUnlock()
-	
+
 	// Add detailed consumer debugging
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "test-isolated"})
 	defer consumer.Close()
-	
+
 	// Debug: Check consumer state before reading
 	shard2.mu.RLock()
 	actualOffset, exists := shard2.index.ConsumerOffsets["test-isolated"]
 	t.Logf("Before read - ConsumerOffset[test-isolated] exists: %v, value: %d", exists, actualOffset)
 	t.Logf("Before read - CurrentEntryNumber: %d", shard2.index.CurrentEntryNumber)
-	t.Logf("Before read - Files[0] details: entries=%d, start=%d, end=%d", 
-		shard2.index.Files[0].Entries, shard2.index.Files[0].StartEntry, shard2.index.Files[0].StartEntry + shard2.index.Files[0].Entries - 1)
+	t.Logf("Before read - Files[0] details: entries=%d, start=%d, end=%d",
+		shard2.index.Files[0].Entries, shard2.index.Files[0].StartEntry, shard2.index.Files[0].StartEntry+shard2.index.Files[0].Entries-1)
 	shard2.mu.RUnlock()
 
 	messages, err := consumer.Read(ctx, []uint32{1}, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Debug: Check consumer state after reading
 	shard2.mu.RLock()
 	actualOffset2, exists2 := shard2.index.ConsumerOffsets["test-isolated"]
@@ -163,7 +163,7 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 	shard2.mu.RUnlock()
 
 	t.Logf("Consumer read %d messages", len(messages))
-	
+
 	// Show which entries were read
 	var entryNumbers []int64
 	for _, msg := range messages {
@@ -173,7 +173,7 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 
 	// Phase 5: Try direct file reading
 	t.Log("=== PHASE 5: Testing ScanAll ===")
-	
+
 	var scanEntries []int64
 	err = client2.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {
 		scanEntries = append(scanEntries, msg.ID.EntryNumber)
@@ -186,7 +186,7 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 
 	// Phase 6: Analysis - check specific entry access
 	t.Log("=== PHASE 6: Testing specific entry access ===")
-	
+
 	// Test reading specific entries using the consumer one at a time
 	consumer2 := NewConsumer(client2, ConsumerOptions{Group: "test-individual"})
 	defer consumer2.Close()
@@ -211,20 +211,20 @@ func TestIsolatedIndexRebuildIssue(t *testing.T) {
 	// Compare consumer vs ScanAll results
 	if len(messages) != len(scanEntries) {
 		t.Errorf("Mismatch: Consumer=%d, ScanAll=%d", len(messages), len(scanEntries))
-		
+
 		// Find which entries are missing from consumer
 		entryMap := make(map[int64]bool)
 		for _, num := range entryNumbers {
 			entryMap[num] = true
 		}
-		
+
 		var missing []int64
 		for _, num := range scanEntries {
 			if !entryMap[num] {
 				missing = append(missing, num)
 			}
 		}
-		
+
 		if len(missing) > 0 {
 			t.Errorf("Consumer missing entries: %v", missing)
 		}

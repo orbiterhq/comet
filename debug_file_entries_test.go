@@ -78,13 +78,13 @@ func TestFileEntryCountCorruption(t *testing.T) {
 			t.Logf("    Entries: %d", f.Entries)
 			t.Logf("    StartOffset: %d", f.StartOffset)
 			t.Logf("    EndOffset: %d", f.EndOffset)
-			
+
 			if stat, err := os.Stat(f.Path); err != nil {
 				t.Logf("    File ERROR: %v", err)
 			} else {
 				t.Logf("    File size: %d bytes", stat.Size())
 			}
-			
+
 			// Check if entry count makes sense
 			expectedEntries := f.Entries
 			if expectedEntries < 0 {
@@ -97,7 +97,7 @@ func TestFileEntryCountCorruption(t *testing.T) {
 	// Test actual scanning
 	ctx := context.Background()
 	streamName := "test:v1:shard:0001"
-	
+
 	var actualEntries []int64
 	err = client.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {
 		actualEntries = append(actualEntries, msg.ID.EntryNumber)
@@ -109,7 +109,7 @@ func TestFileEntryCountCorruption(t *testing.T) {
 
 	t.Logf("=== SCAN RESULTS ===")
 	t.Logf("Found %d entries: %v", len(actualEntries), actualEntries)
-	
+
 	// Each writer writes 10 entries, so we should have 20 total
 	expectedTotal := 20
 	if len(actualEntries) != expectedTotal {
@@ -126,7 +126,7 @@ func runFileEntriesWorker(t *testing.T, role string) {
 	switch role {
 	case "writer":
 		workerID := os.Getenv("DEBUG_FILE_ENTRIES_WORKER")
-		
+
 		config := MultiProcessConfig()
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
@@ -146,7 +146,7 @@ func runFileEntriesWorker(t *testing.T, role string) {
 			} else {
 				t.Logf("Worker %s: Wrote entry %d", workerID, i)
 			}
-			
+
 			// Get shard state after each write to see progression
 			if shard, err := client.getOrCreateShard(1); err == nil {
 				shard.mu.RLock()
@@ -154,10 +154,10 @@ func runFileEntriesWorker(t *testing.T, role string) {
 					lastEntry := shard.state.GetLastEntryNumber()
 					currentEntry := shard.index.CurrentEntryNumber
 					fileCount := len(shard.index.Files)
-					
-					t.Logf("Worker %s after write %d: LastEntry=%d, CurrentEntry=%d, Files=%d", 
+
+					t.Logf("Worker %s after write %d: LastEntry=%d, CurrentEntry=%d, Files=%d",
 						workerID, i, lastEntry, currentEntry, fileCount)
-					
+
 					// Log file entry counts
 					for fi, f := range shard.index.Files {
 						t.Logf("  File %d: entries=%d (start=%d)", fi, f.Entries, f.StartEntry)
@@ -168,7 +168,7 @@ func runFileEntriesWorker(t *testing.T, role string) {
 				}
 				shard.mu.RUnlock()
 			}
-			
+
 			time.Sleep(10 * time.Millisecond) // Small delay to interleave with other processes
 		}
 

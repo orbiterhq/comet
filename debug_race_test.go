@@ -17,7 +17,7 @@ func TestIsolateRaceCondition(t *testing.T) {
 	// Use multi-process config to trigger the race
 	config := MultiProcessConfig()
 	config.Storage.MaxFileSize = 2048
-	
+
 	streamName := "events:v1:shard:0001"
 
 	// Phase 1: Write data and ensure it's flushed
@@ -64,7 +64,7 @@ func TestIsolateRaceCondition(t *testing.T) {
 	defer client2.Close()
 
 	shard2, _ := client2.getOrCreateShard(1)
-	
+
 	// Capture state immediately after rebuild
 	shard2.mu.RLock()
 	initialFiles0Start := shard2.index.Files[0].StartEntry
@@ -102,12 +102,12 @@ func TestIsolateRaceCondition(t *testing.T) {
 	t.Logf("ISOLATE: After consumer read - Files[0].StartEntry = %d", postConsumerFiles0Start)
 	shard2.mu.RUnlock()
 
-	t.Logf("ISOLATE: Consumer read %d messages starting from entry %d", 
+	t.Logf("ISOLATE: Consumer read %d messages starting from entry %d",
 		len(messages), messages[0].ID.EntryNumber)
 
 	// Analysis
 	if initialFiles0Start != postConsumerFiles0Start {
-		t.Logf("RACE DETECTED: Files[0].StartEntry changed from %d to %d during consumer read", 
+		t.Logf("RACE DETECTED: Files[0].StartEntry changed from %d to %d during consumer read",
 			initialFiles0Start, postConsumerFiles0Start)
 	}
 

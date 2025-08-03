@@ -501,7 +501,6 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()
 
-
 	// In multi-process mode, check if index might be stale by comparing with state
 	if Debug && shard.logger != nil {
 		shard.logger.Debug("Consumer read state check",

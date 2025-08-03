@@ -466,11 +466,11 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 
 	// Debug: Check shard state after rebuild
 	shard2.mu.RLock()
-	t.Logf("After rebuild - Index CurrentEntryNumber: %d, Files: %d", 
+	t.Logf("After rebuild - Index CurrentEntryNumber: %d, Files: %d",
 		shard2.index.CurrentEntryNumber, len(shard2.index.Files))
 	t.Logf("Consumer offsets in index: %v", shard2.index.ConsumerOffsets)
 	for i, f := range shard2.index.Files {
-		t.Logf("  File %d: entries=%d, start=%d, path=%s", 
+		t.Logf("  File %d: entries=%d, start=%d, path=%s",
 			i, f.Entries, f.StartEntry, filepath.Base(f.Path))
 	}
 	shard2.mu.RUnlock()
@@ -488,14 +488,14 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Debug: Check what entries we actually got
 	var entryNumbers []int64
 	for _, msg := range messages {
 		entryNumbers = append(entryNumbers, msg.ID.EntryNumber)
 	}
 	t.Logf("Read %d messages with entry numbers: %v", len(messages), entryNumbers)
-	
+
 	// Check consumer offset after read
 	shard2.mu.RLock()
 	t.Logf("Consumer offsets after read: %v", shard2.index.ConsumerOffsets)
@@ -513,7 +513,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 					found = true
 				} else {
 					if conflictCount < 10 {
-						t.Logf("CONFLICT: Entry %d found in multiple files (file %d: start=%d, entries=%d)", 
+						t.Logf("CONFLICT: Entry %d found in multiple files (file %d: start=%d, entries=%d)",
 							entryNum, i, f.StartEntry, f.Entries)
 					}
 					conflictCount++

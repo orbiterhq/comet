@@ -36,12 +36,12 @@ func (l *IndexLock) Lock(timeout time.Duration) error {
 			l.file = file
 			return nil
 		}
-		
+
 		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
 			file.Close()
 			return err
 		}
-		
+
 		// Wait a bit before retrying
 		time.Sleep(1 * time.Millisecond)
 	}

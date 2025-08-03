@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -235,7 +236,8 @@ func TestTail(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := fmt.Sprintf("tail:v1:shard:%04d", time.Now().UnixNano()%10000) // Unique stream name to avoid test isolation issues
+	// Use test-specific stream name to ensure isolation between test iterations
+	streamName := fmt.Sprintf("tail:v1:shard:%04d", rand.Intn(9000)+1000)
 
 	// Write initial data
 	for i := 0; i < 10; i++ {
@@ -247,6 +249,9 @@ func TestTail(t *testing.T) {
 	}
 
 	t.Run("TailNewEntries", func(t *testing.T) {
+		// Use subtest-specific shard for better isolation
+		subStreamName := fmt.Sprintf("tail:v1:shard:%04d", rand.Intn(8000)+1000)
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -258,7 +263,7 @@ func TestTail(t *testing.T) {
 		// Start tailing in goroutine
 		go func() {
 			defer wg.Done()
-			err := client.Tail(ctx, streamName, func(ctx context.Context, msg StreamMessage) error {
+			err := client.Tail(ctx, subStreamName, func(ctx context.Context, msg StreamMessage) error {
 				mu.Lock()
 				received = append(received, msg)
 				mu.Unlock()
@@ -275,7 +280,7 @@ func TestTail(t *testing.T) {
 		// Write new entries
 		for i := 0; i < 5; i++ {
 			data := []byte(fmt.Sprintf(`{"new": %d}`, i))
-			_, err := client.Append(ctx, streamName, [][]byte{data})
+			_, err := client.Append(ctx, subStreamName, [][]byte{data})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -310,6 +315,9 @@ func TestTail(t *testing.T) {
 	})
 
 	t.Run("TailErrorHandling", func(t *testing.T) {
+		// Use subtest-specific shard for better isolation
+		subStreamName := fmt.Sprintf("tail:v1:shard:%04d", rand.Intn(1000)+9000)
+
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -321,14 +329,14 @@ func TestTail(t *testing.T) {
 		// Start tail first
 		go func() {
 			defer wg.Done()
-			gotErr = client.Tail(ctx, streamName, func(ctx context.Context, msg StreamMessage) error {
+			gotErr = client.Tail(ctx, subStreamName, func(ctx context.Context, msg StreamMessage) error {
 				return expectedErr // Return error immediately
 			})
 		}()
 
 		// Give tail time to start, then write a message to trigger the callback
 		time.Sleep(100 * time.Millisecond)
-		_, err := client.Append(ctx, streamName, [][]byte{[]byte(`{"trigger": true}`)})
+		_, err := client.Append(ctx, subStreamName, [][]byte{[]byte(`{"trigger": true}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
