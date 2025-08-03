@@ -101,7 +101,7 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 				// Verify message contents
 				for i, msg := range msgs {
 					expectedPrefix := fmt.Sprintf("%s-msg-", tt.name)
-					if !contains(string(msg.Data), expectedPrefix) {
+					if !containsPrefix(string(msg.Data), expectedPrefix) {
 						t.Errorf("Batch %d msg %d: expected prefix %s, got %s", currentBatch, i, expectedPrefix, string(msg.Data))
 					}
 				}
@@ -257,7 +257,7 @@ func TestProcessWithDynamicDataAddition(t *testing.T) {
 	}
 }
 
-// contains is a helper function for string matching
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && s[:len(substr)] == substr
+// containsPrefix is a helper function for string prefix matching
+func containsPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -109,7 +108,6 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 	}
 
 	// Step 3: Collect and analyze results
-	var totalProcessed int
 	var successfulWorkers int
 	
 	for result := range results {
@@ -162,13 +160,13 @@ func TestMultiProcessWorker(t *testing.T) {
 
 	workerIDStr := os.Getenv("COMET_TEST_WORKER_ID")
 	batchSizeStr := os.Getenv("COMET_TEST_BATCH_SIZE")
-	stream := os.Getenv("COMET_TEST_STREAM")
+	_ = os.Getenv("COMET_TEST_STREAM") // stream not used in worker test
 
 	workerID, _ := strconv.Atoi(workerIDStr)
 	batchSize, _ := strconv.Atoi(batchSizeStr)
 
-	t.Logf("Worker %d starting: dataDir=%s, batchSize=%d, stream=%s", 
-		workerID, dataDir, batchSize, stream)
+	t.Logf("Worker %d starting: dataDir=%s, batchSize=%d", 
+		workerID, dataDir, batchSize)
 
 	// Initialize client in multi-process mode
 	config := MultiProcessConfig()
@@ -295,7 +293,6 @@ func TestProcessMultiProcessContention(t *testing.T) {
 	}()
 
 	// Collect results
-	var totalProcessedAcrossWorkers int
 	successCount := 0
 
 	for result := range results {
@@ -323,7 +320,7 @@ func TestMultiProcessContentionWorker(t *testing.T) {
 	}
 
 	workerIDStr := os.Getenv("COMET_TEST_WORKER_ID")
-	stream := os.Getenv("COMET_TEST_STREAM")
+	_ = os.Getenv("COMET_TEST_STREAM") // stream not used in contention worker
 	workerID, _ := strconv.Atoi(workerIDStr)
 
 	config := MultiProcessConfig()
