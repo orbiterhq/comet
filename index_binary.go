@@ -34,13 +34,20 @@ const (
 
 // saveBinaryIndex writes the index in binary format
 func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
-	// Create temp file
-	tempPath := s.indexPath + ".tmp"
+	// Create temp file with unique name to avoid race conditions
+	// Use process ID and timestamp to ensure uniqueness
+	tempPath := fmt.Sprintf("%s.tmp.%d.%d", s.indexPath, os.Getpid(), time.Now().UnixNano())
 	f, err := os.Create(tempPath)
 	if err != nil {
 		return fmt.Errorf("failed to create temp index: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		f.Close()
+		// Clean up temp file if it still exists (in case of error)
+		if _, err := os.Stat(tempPath); err == nil {
+			os.Remove(tempPath)
+		}
+	}()
 
 	// Write header
 	if err := binary.Write(f, binary.LittleEndian, uint32(indexMagic)); err != nil {

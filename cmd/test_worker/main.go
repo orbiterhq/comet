@@ -29,6 +29,11 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "index-race" {
+		runIndexRaceWorker()
+		return
+	}
+
 	var (
 		mode     = flag.String("mode", "writer", "Mode: writer, reader, or benchmark")
 		dir      = flag.String("dir", "", "Data directory")
