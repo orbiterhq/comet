@@ -235,7 +235,7 @@ func TestTail(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := fmt.Sprintf("tail:v1:shard:%04d", time.Now().UnixNano()%10000) // Unique stream name to avoid test isolation issues
 
 	// Write initial data
 	for i := 0; i < 10; i++ {
