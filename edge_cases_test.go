@@ -34,7 +34,8 @@ func TestConcurrentRotationStorm(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "storm:v1:shard:0000"
+	// Use a unique shard ID to avoid conflicts with other tests
+	streamName := "storm:v1:shard:9999"
 
 	// Create data that will trigger rotation after a few writes
 	largeData := make([]byte, 10000) // 10KB entries
