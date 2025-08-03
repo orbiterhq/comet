@@ -54,36 +54,46 @@ func TestValidateAndRecoverState(t *testing.T) {
 		{
 			name: "InvalidVersion0",
 			setupFunc: func() {
-				atomic.StoreUint64(&shard.state.Version, 0)
+				if state := shard.loadState(); state != nil {
+					atomic.StoreUint64(&state.Version, 0)
+				}
 			},
 			expectRecover: true,
 		},
 		{
 			name: "InvalidVersionTooHigh",
 			setupFunc: func() {
-				atomic.StoreUint64(&shard.state.Version, 999)
+				if state := shard.loadState(); state != nil {
+					atomic.StoreUint64(&state.Version, 999)
+				}
 			},
 			expectRecover: true,
 		},
 		{
 			name: "WriteOffsetExceedsFileSize",
 			setupFunc: func() {
-				atomic.StoreUint64(&shard.state.WriteOffset, 1000000)
-				atomic.StoreUint64(&shard.state.FileSize, 1000)
+				if state := shard.loadState(); state != nil {
+					atomic.StoreUint64(&state.WriteOffset, 1000000)
+					atomic.StoreUint64(&state.FileSize, 1000)
+				}
 			},
 			expectRecover: true,
 		},
 		{
 			name: "UnreasonablyLargeWriteOffset",
 			setupFunc: func() {
-				atomic.StoreUint64(&shard.state.WriteOffset, 1<<41) // > 1TB
+				if state := shard.loadState(); state != nil {
+					atomic.StoreUint64(&state.WriteOffset, 1<<41) // > 1TB
+				}
 			},
 			expectRecover: true,
 		},
 		{
 			name: "InvalidLastEntryNumber",
 			setupFunc: func() {
-				atomic.StoreInt64(&shard.state.LastEntryNumber, -100)
+				if state := shard.loadState(); state != nil {
+					atomic.StoreInt64(&state.LastEntryNumber, -100)
+				}
 			},
 			expectRecover: true,
 		},
@@ -100,7 +110,11 @@ func TestValidateAndRecoverState(t *testing.T) {
 			tc.setupFunc()
 
 			// Count recovery attempts before
-			recoveryAttemptsBefore := atomic.LoadUint64(&shard.state.RecoveryAttempts)
+			state := shard.loadState()
+			if state == nil {
+				t.Fatal("State is nil after initCometState")
+			}
+			recoveryAttemptsBefore := atomic.LoadUint64(&state.RecoveryAttempts)
 
 			// Run validation
 			err := shard.validateAndRecoverState()
@@ -111,7 +125,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 			}
 
 			// Check if recovery was attempted
-			recoveryAttemptsAfter := atomic.LoadUint64(&shard.state.RecoveryAttempts)
+			recoveryAttemptsAfter := atomic.LoadUint64(&state.RecoveryAttempts)
 			if tc.expectRecover && recoveryAttemptsAfter == recoveryAttemptsBefore {
 				t.Error("Expected recovery attempt but none occurred")
 			}
@@ -179,40 +193,41 @@ func TestRecoverCorruptedState(t *testing.T) {
 	}
 
 	// Verify state was reinitialized
-	if shard.state == nil {
+	state := shard.loadState()
+	if state == nil {
 		t.Fatal("State is nil after recovery")
 	}
 
 	// Check version is set correctly
-	version := atomic.LoadUint64(&shard.state.Version)
+	version := atomic.LoadUint64(&state.Version)
 	if version != CometStateVersion1 {
 		t.Errorf("Expected version %d, got %d", CometStateVersion1, version)
 	}
 
 	// Check that index values were restored
 	// If CurrentEntryNumber=42, then entries 0-41 have been written, so LastEntryNumber should be 41
-	lastEntry := atomic.LoadInt64(&shard.state.LastEntryNumber)
+	lastEntry := atomic.LoadInt64(&state.LastEntryNumber)
 	if lastEntry != 41 {
 		t.Errorf("Expected LastEntryNumber 41, got %d", lastEntry)
 	}
 
-	writeOffset := atomic.LoadUint64(&shard.state.WriteOffset)
+	writeOffset := atomic.LoadUint64(&state.WriteOffset)
 	if writeOffset != 1234 {
 		t.Errorf("Expected WriteOffset 1234, got %d", writeOffset)
 	}
 
-	fileIndex := atomic.LoadUint64(&shard.state.ActiveFileIndex)
+	fileIndex := atomic.LoadUint64(&state.ActiveFileIndex)
 	if fileIndex != 5 {
 		t.Errorf("Expected ActiveFileIndex 5, got %d", fileIndex)
 	}
 
 	// Check metrics were updated
-	recoverySuccesses := atomic.LoadUint64(&shard.state.RecoverySuccesses)
+	recoverySuccesses := atomic.LoadUint64(&state.RecoverySuccesses)
 	if recoverySuccesses != 1 {
 		t.Errorf("Expected RecoverySuccesses 1, got %d", recoverySuccesses)
 	}
 
-	corruptionDetected := atomic.LoadUint64(&shard.state.CorruptionDetected)
+	corruptionDetected := atomic.LoadUint64(&state.CorruptionDetected)
 	if corruptionDetected != 1 {
 		t.Errorf("Expected CorruptionDetected 1, got %d", corruptionDetected)
 	}
@@ -294,12 +309,16 @@ func TestStateCorruptionEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recoveryAttempts := atomic.LoadUint64(&shard.state.RecoveryAttempts)
+	state := shard.loadState()
+	if state == nil {
+		t.Fatal("State is nil")
+	}
+	recoveryAttempts := atomic.LoadUint64(&state.RecoveryAttempts)
 	if recoveryAttempts == 0 {
 		t.Error("Expected RecoveryAttempts > 0")
 	}
 
-	corruptionDetected := atomic.LoadUint64(&shard.state.CorruptionDetected)
+	corruptionDetected := atomic.LoadUint64(&state.CorruptionDetected)
 	if corruptionDetected == 0 {
 		t.Error("Expected CorruptionDetected > 0")
 	}
@@ -494,8 +513,12 @@ func TestPartialStateCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	atomic.StoreUint64(&shard.state.WriteOffset, 1<<40)
-	atomic.StoreUint64(&shard.state.FileSize, 1000)
+	state := shard.loadState()
+	if state == nil {
+		t.Fatal("State is nil")
+	}
+	atomic.StoreUint64(&state.WriteOffset, 1<<40)
+	atomic.StoreUint64(&state.FileSize, 1000)
 
 	// This should trigger recovery on next validation
 	err = shard.validateAndRecoverState()
@@ -504,7 +527,7 @@ func TestPartialStateCorruption(t *testing.T) {
 	}
 
 	// Verify recovery happened
-	recoveryAttempts := atomic.LoadUint64(&shard.state.RecoveryAttempts)
+	recoveryAttempts := atomic.LoadUint64(&state.RecoveryAttempts)
 	if recoveryAttempts == 0 {
 		t.Error("Expected recovery attempt for critical corruption")
 	}
@@ -564,8 +587,8 @@ func TestStateFilePermissions(t *testing.T) {
 		return
 	}
 
-	if shard.state != nil {
-		version := atomic.LoadUint64(&shard.state.Version)
+	if state := shard.loadState(); state != nil {
+		version := atomic.LoadUint64(&state.Version)
 		if version != CometStateVersion1 {
 			t.Errorf("Expected version %d, got %d", CometStateVersion1, version)
 		}
@@ -679,9 +702,13 @@ func TestSuspiciousMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	state := shard.loadState()
+	if state == nil {
+		t.Fatal("State is nil")
+	}
 	// Set suspicious metrics (many entries but no writes)
-	atomic.StoreInt64(&shard.state.TotalEntries, 1000)
-	atomic.StoreUint64(&shard.state.TotalWrites, 0)
+	atomic.StoreInt64(&state.TotalEntries, 1000)
+	atomic.StoreUint64(&state.TotalWrites, 0)
 
 	// This should NOT trigger recovery (just suspicious, not corrupted)
 	err = shard.validateAndRecoverState()
@@ -690,7 +717,7 @@ func TestSuspiciousMetrics(t *testing.T) {
 	}
 
 	// Verify metrics were not reset
-	if atomic.LoadInt64(&shard.state.TotalEntries) != 1000 {
+	if atomic.LoadInt64(&state.TotalEntries) != 1000 {
 		t.Error("TotalEntries should not be reset for suspicious metrics")
 	}
 }
@@ -798,7 +825,11 @@ func TestStateWithEmptyCurrentFile(t *testing.T) {
 	}
 
 	// ActiveFileIndex should remain 0 when CurrentFile is empty
-	fileIndex := atomic.LoadUint64(&shard.state.ActiveFileIndex)
+	state := shard.loadState()
+	if state == nil {
+		t.Fatal("State is nil after recovery")
+	}
+	fileIndex := atomic.LoadUint64(&state.ActiveFileIndex)
 	if fileIndex != 0 {
 		t.Errorf("Expected ActiveFileIndex 0 for empty CurrentFile, got %d", fileIndex)
 	}
@@ -838,7 +869,11 @@ func TestStateWithInvalidFilename(t *testing.T) {
 	}
 
 	// ActiveFileIndex should remain unchanged when filename is invalid
-	fileIndex := atomic.LoadUint64(&shard.state.ActiveFileIndex)
+	state := shard.loadState()
+	if state == nil {
+		t.Fatal("State is nil after recovery")
+	}
+	fileIndex := atomic.LoadUint64(&state.ActiveFileIndex)
 	t.Logf("ActiveFileIndex after invalid filename: %d", fileIndex)
 }
 
@@ -1078,10 +1113,14 @@ func BenchmarkStateValidation(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// Just validate, don't actually recover
-		version := atomic.LoadUint64(&shard.state.Version)
-		writeOffset := atomic.LoadUint64(&shard.state.WriteOffset)
-		fileSize := atomic.LoadUint64(&shard.state.FileSize)
-		lastEntry := atomic.LoadInt64(&shard.state.LastEntryNumber)
+		state := shard.loadState()
+		if state == nil {
+			continue
+		}
+		version := atomic.LoadUint64(&state.Version)
+		writeOffset := atomic.LoadUint64(&state.WriteOffset)
+		fileSize := atomic.LoadUint64(&state.FileSize)
+		lastEntry := atomic.LoadInt64(&state.LastEntryNumber)
 
 		// Simulate validation checks
 		_ = version == 0 || version > CometStateVersion1

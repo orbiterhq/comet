@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -303,6 +304,27 @@ func TestTail(t *testing.T) {
 
 		if count != 5 {
 			t.Errorf("Expected to receive 5 new messages, got %d", count)
+			
+			// DEBUG: Log shard state when test fails
+			shardID, _ := parseShardFromStream(subStreamName)
+			shard, _ := client.getOrCreateShard(shardID)
+			shard.mu.RLock()
+			t.Logf("DEBUG: Shard state on failure:")
+			t.Logf("  Files: %d", len(shard.index.Files))
+			t.Logf("  CurrentEntryNumber: %d", shard.index.CurrentEntryNumber)
+			for i, f := range shard.index.Files {
+				t.Logf("  File[%d]: %s, entries=%d, start=%d", 
+					i, filepath.Base(f.Path), f.Entries, f.StartEntry)
+			}
+			shard.mu.RUnlock()
+			
+			// Log received messages
+			mu.Lock()
+			t.Logf("DEBUG: Received messages:")
+			for i, msg := range received {
+				t.Logf("  [%d]: entry=%d, data=%s", i, msg.ID.EntryNumber, string(msg.Data))
+			}
+			mu.Unlock()
 		}
 
 		// Verify messages

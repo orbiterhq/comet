@@ -3,6 +3,8 @@ package comet
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -194,6 +196,32 @@ func TestConcurrentMultiProcessWrites(t *testing.T) {
 	if totalLength < expectedMinEntries {
 		t.Errorf("Stream length should include all entries: expected >= %d, got %d",
 			expectedMinEntries, totalLength)
+		
+		// DEBUG: Log detailed state when test fails
+		shard, _ := clients[0].getOrCreateShard(1)
+		shard.mu.RLock()
+		t.Logf("DEBUG: Shard state on failure:")
+		t.Logf("  Files: %d", len(shard.index.Files))
+		t.Logf("  CurrentEntryNumber: %d", shard.index.CurrentEntryNumber)
+		for i, f := range shard.index.Files {
+			stat, _ := os.Stat(f.Path)
+			size := int64(0)
+			if stat != nil {
+				size = stat.Size()
+			}
+			t.Logf("  File[%d]: %s, entries=%d, start=%d, size=%d", 
+				i, filepath.Base(f.Path), f.Entries, f.StartEntry, size)
+		}
+		shard.mu.RUnlock()
+		
+		// Check directory contents
+		shardDir := filepath.Join(baseDir, "shard-0001")
+		entries, _ := os.ReadDir(shardDir)
+		t.Logf("DEBUG: Files in shard directory:")
+		for _, e := range entries {
+			info, _ := e.Info()
+			t.Logf("  %s (size=%d)", e.Name(), info.Size())
+		}
 	}
 
 	// Check that CometState is tracking data in each process

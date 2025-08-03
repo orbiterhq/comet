@@ -66,8 +66,8 @@ func TestFileEntryCountCorruption(t *testing.T) {
 	// Log detailed shard state
 	shard.mu.RLock()
 	t.Logf("=== FINAL SHARD STATE ===")
-	if shard.state != nil {
-		t.Logf("State LastEntryNumber: %d", shard.state.GetLastEntryNumber())
+	if state := shard.loadState(); state != nil {
+		t.Logf("State LastEntryNumber: %d", state.GetLastEntryNumber())
 	}
 	if shard.index != nil {
 		t.Logf("Index CurrentEntryNumber: %d", shard.index.CurrentEntryNumber)
@@ -150,8 +150,11 @@ func runFileEntriesWorker(t *testing.T, role string) {
 			// Get shard state after each write to see progression
 			if shard, err := client.getOrCreateShard(1); err == nil {
 				shard.mu.RLock()
-				if shard.state != nil && shard.index != nil {
-					lastEntry := shard.state.GetLastEntryNumber()
+				if shard.loadState() != nil && shard.index != nil {
+					var lastEntry int64 = -1
+					if state := shard.loadState(); state != nil {
+						lastEntry = state.GetLastEntryNumber()
+					}
 					currentEntry := shard.index.CurrentEntryNumber
 					fileCount := len(shard.index.Files)
 

@@ -486,7 +486,10 @@ func TestMmapTimestampUpdates(t *testing.T) {
 
 	// Get the shard and check initial timestamp
 	shard, _ := client.getOrCreateShard(1)
-	initialTimestamp := shard.state.GetLastIndexUpdate()
+	var initialTimestamp int64
+	if state := shard.loadState(); state != nil {
+		initialTimestamp = state.GetLastIndexUpdate()
+	}
 	t.Logf("Initial mmap timestamp: %d", initialTimestamp)
 
 	// Write something
@@ -504,7 +507,10 @@ func TestMmapTimestampUpdates(t *testing.T) {
 	}
 
 	// Check timestamp was updated
-	updatedTimestamp := shard.state.GetLastIndexUpdate()
+	var updatedTimestamp int64
+	if state := shard.loadState(); state != nil {
+		updatedTimestamp = state.GetLastIndexUpdate()
+	}
 	t.Logf("Updated mmap timestamp: %d", updatedTimestamp)
 
 	if updatedTimestamp <= initialTimestamp {
@@ -525,7 +531,10 @@ func TestMmapTimestampUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	finalTimestamp := shard.state.GetLastIndexUpdate()
+	var finalTimestamp int64
+	if state := shard.loadState(); state != nil {
+		finalTimestamp = state.GetLastIndexUpdate()
+	}
 	t.Logf("Final mmap timestamp: %d", finalTimestamp)
 
 	if finalTimestamp <= updatedTimestamp {
