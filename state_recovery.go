@@ -26,7 +26,7 @@ func (s *Shard) validateAndRecoverState() error {
 	lastEntry := atomic.LoadInt64(&state.LastEntryNumber)
 
 	// Debug logging for CurrentEntryNumber changes
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		var indexBefore int64 = -1
 		if s.index != nil {
 			indexBefore = s.index.CurrentEntryNumber
@@ -156,7 +156,7 @@ func (s *Shard) validateAndRecoverState() error {
 		state := s.loadState()
 		atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber-1)
 
-		if Debug && s.logger != nil {
+		if IsDebug() && s.logger != nil {
 			s.logger.Debug("TRACE: Setting LastEntryNumber from index",
 				"location", "state_recovery.go:154",
 				"indexCurrentEntryNumber", s.index.CurrentEntryNumber,
@@ -178,7 +178,7 @@ func (s *Shard) validateAndRecoverState() error {
 
 		// Trust the state over the index since state is updated atomically
 		// State.LastEntryNumber is the last allocated entry, index.CurrentEntryNumber is the next to allocate
-		if Debug && s.logger != nil {
+		if IsDebug() && s.logger != nil {
 			s.logger.Debug("TRACE: Setting CurrentEntryNumber from state recovery",
 				"location", "state_recovery.go:156",
 				"oldValue", s.index.CurrentEntryNumber,
@@ -199,7 +199,7 @@ func (s *Shard) validateAndRecoverState() error {
 	}
 
 	// Debug logging for CurrentEntryNumber changes
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		var indexAfter int64 = -1
 		if s.index != nil {
 			indexAfter = s.index.CurrentEntryNumber

@@ -191,7 +191,7 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 
 	rawValue := binary.LittleEndian.Uint64(data[offset:])
 	index.CurrentEntryNumber = int64(rawValue)
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		s.logger.Debug("TRACE: Setting CurrentEntryNumber from binary load",
 			"location", "index_binary.go:185",
 			"rawValue", rawValue,

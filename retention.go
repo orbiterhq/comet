@@ -120,7 +120,7 @@ func (c *Client) runRetentionCleanup() {
 	}
 
 	// Debug log retention summary
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		var totalFiles, deletedFiles int
 		for _, shard := range shards {
 			shard.mu.RLock()

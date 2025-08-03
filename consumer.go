@@ -456,7 +456,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 
 					// In multi-process mode, check if we need to rebuild index from files
 					shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
-					if Debug && shard.logger != nil {
+					if IsDebug() && shard.logger != nil {
 						shard.logger.Debug("Consumer triggering index rebuild check",
 							"shard", shard.shardID,
 							"multiProcessMode", c.client.config.Concurrency.EnableMultiProcessMode,
@@ -506,7 +506,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	shard.mu.RUnlock()
 
 	// In multi-process mode, check if index might be stale by comparing with state
-	if Debug && shard.logger != nil {
+	if IsDebug() && shard.logger != nil {
 		shard.logger.Debug("Consumer read state check",
 			"shard", shard.shardID,
 			"stateExists", shard.loadState() != nil,

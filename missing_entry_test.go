@@ -123,7 +123,7 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 
 	// Second process reads
 	{
-		if Debug {
+		if IsDebug() {
 			t.Logf("TRACE: Debug is enabled, about to create second client")
 		}
 		client, err := NewClientWithConfig(dir, config)
@@ -132,9 +132,9 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 		}
 		defer client.Close()
 
-		if Debug && client.logger != nil {
+		if IsDebug() && client.logger != nil {
 			t.Logf("TRACE: Client 2 logger is not nil")
-		} else if Debug {
+		} else if IsDebug() {
 			t.Logf("TRACE: Client 2 logger is nil!")
 		}
 
@@ -144,7 +144,7 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 		// Get shard state after loading
 		shard, _ := client.getOrCreateShard(1)
 		shard.mu.RLock()
-		if Debug {
+		if IsDebug() {
 			t.Logf("TRACE: Got shard pointer %p, index pointer %p", shard, shard.index)
 		}
 		t.Logf("Process 2: After load - Index CurrentEntryNumber: %d", shard.index.CurrentEntryNumber)

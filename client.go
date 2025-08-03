@@ -764,7 +764,7 @@ func (c *Client) Sync(ctx context.Context) error {
 
 					// Always use the highest entry number and write offset
 					if diskIndex.CurrentEntryNumber > indexCopy.CurrentEntryNumber {
-						if Debug && shard.logger != nil {
+						if IsDebug() && shard.logger != nil {
 							shard.logger.Debug("TRACE: Setting CurrentEntryNumber from diskIndex",
 								"location", "client.go:735",
 								"oldValue", indexCopy.CurrentEntryNumber,
@@ -945,7 +945,7 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 			"shardDir", shardDir)
 	}
 
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		c.logger.Debug("TRACE: Creating shard with CurrentEntryNumber=0",
 			"location", "loadExistingShard:844",
 			"shardID", shardID)
@@ -979,7 +979,7 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 		return nil, fmt.Errorf("failed to initialize state: %w", err)
 	}
 
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		c.logger.Debug("TRACE: After initCometState",
 			"shardID", shardID,
 			"currentEntryNumber", shard.index.CurrentEntryNumber)
@@ -1046,7 +1046,7 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 	}
 
 	// Load existing index
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		c.logger.Debug("TRACE: loadExistingShard about to load index",
 			"shardID", shardID,
 			"indexBeforeLoad", shard.index.CurrentEntryNumber)
@@ -1054,7 +1054,7 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 	if err := shard.loadIndex(); err != nil {
 		return nil, fmt.Errorf("failed to load index: %w", err)
 	}
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		c.logger.Debug("TRACE: loadExistingShard after loading index",
 			"shardID", shardID,
 			"indexAfterLoad", shard.index.CurrentEntryNumber)
@@ -1105,7 +1105,7 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 	}
 
 	// Run recovery
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		c.logger.Debug("TRACE: Before recoverFromCrash",
 			"shardID", shardID,
 			"currentEntryNumber", shard.index.CurrentEntryNumber)
@@ -1116,7 +1116,7 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 	if err := shard.recoverFromCrash(); err != nil {
 		return nil, fmt.Errorf("failed to recover: %w", err)
 	}
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		c.logger.Debug("TRACE: After recoverFromCrash",
 			"shardID", shardID,
 			"currentEntryNumber", shard.index.CurrentEntryNumber)
@@ -1127,7 +1127,7 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 
 	// Note: checkpoint goroutine is started elsewhere if needed
 
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		c.logger.Debug("TRACE: loadExistingShard about to return",
 			"shardID", shardID,
 			"finalCurrentEntryNumber", shard.index.CurrentEntryNumber)
@@ -1146,7 +1146,7 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	processID := os.Getpid()
 
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		c.logger.Debug("TRACE: getOrCreateShard entry",
 			"shardID", shardID,
 			"pid", processID)
@@ -1401,7 +1401,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	c.shards[shardID] = shard
 
 	// Debug log shard creation
-	if Debug && c.logger != nil {
+	if IsDebug() && c.logger != nil {
 		c.logger.Debug("Created new shard",
 			"shardID", shardID,
 			"path", shardDir,
@@ -1545,7 +1545,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				}
 			} else {
 				// Fallback if state not available (shouldn't happen in normal operation)
-				if Debug && s.logger != nil {
+				if IsDebug() && s.logger != nil {
 					s.logger.Warn("State not available, using index fallback",
 						"shard", s.shardID)
 				}
@@ -1694,7 +1694,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			finalWriteOffset := writeOffset
 
 			// DEBUG: Log entry number calculation
-			if Debug && s.logger != nil {
+			if IsDebug() && s.logger != nil {
 				s.logger.Debug("Entry number calculation",
 					"shard", s.shardID,
 					"entryNumbers", entryNumbers,
@@ -1716,7 +1716,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				}
 
 				// Apply the index updates
-				if Debug && s.logger != nil {
+				if IsDebug() && s.logger != nil {
 					s.logger.Debug("TRACE: Setting CurrentEntryNumber to final in multiprocess",
 						"location", "client.go:1530",
 						"oldValue", s.index.CurrentEntryNumber,
@@ -1768,7 +1768,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 
 	// Check if critical section failed
 	if criticalErr != nil {
-		if Debug && s.logger != nil {
+		if IsDebug() && s.logger != nil {
 			s.logger.Debug("Critical section failed",
 				"shard", s.shardID,
 				"error", criticalErr)
@@ -1927,7 +1927,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			}
 
 			// Rollback index and state on write failure
-			if Debug && s.logger != nil {
+			if IsDebug() && s.logger != nil {
 				s.logger.Debug("Write failed, rolling back",
 					"shard", s.shardID,
 					"error", writeErr)
@@ -2136,7 +2136,7 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 						// Merge our changes with the disk state
 						// Keep the highest entry number and write offset
 						if diskIndex.CurrentEntryNumber > indexCopy.CurrentEntryNumber {
-							if Debug && s.logger != nil {
+							if IsDebug() && s.logger != nil {
 								s.logger.Debug("TRACE: Setting CurrentEntryNumber from diskIndex (2)",
 									"location", "client.go:1927",
 									"oldValue", indexCopy.CurrentEntryNumber,
@@ -2579,7 +2579,7 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 	// Update write offset to match last file
 	if len(s.index.Files) > 0 {
 		lastFile := &s.index.Files[len(s.index.Files)-1]
-		if Debug && s.logger != nil {
+		if IsDebug() && s.logger != nil {
 			s.logger.Debug("TRACE: Setting CurrentWriteOffset in rebuildIndexFromDataFiles",
 				"shardID", s.shardID,
 				"oldWriteOffset", s.index.CurrentWriteOffset,
@@ -2793,7 +2793,7 @@ func (s *Shard) cloneIndex() *ShardIndex {
 func (s *Shard) persistIndex() error {
 	// Clone the index - caller already holds lock
 	indexCopy := s.cloneIndex()
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		s.logger.Debug("persistIndex called",
 			"shardID", s.shardID,
 			"originalNodes", len(s.index.BinaryIndex.Nodes),
@@ -2824,13 +2824,13 @@ func (s *Shard) persistIndex() error {
 			// Update binary index node count
 			nodeCount := uint64(len(indexCopy.BinaryIndex.Nodes))
 			atomic.StoreUint64(&state.BinaryIndexNodes, nodeCount)
-			if Debug && s.logger != nil {
+			if IsDebug() && s.logger != nil {
 				s.logger.Debug("persistIndex updated BinaryIndexNodes metric",
 					"shardID", s.shardID,
 					"nodeCount", nodeCount)
 			}
 		} else {
-			if Debug && s.logger != nil {
+			if IsDebug() && s.logger != nil {
 				s.logger.Debug("persistIndex loadState() returned nil", "shardID", s.shardID)
 			}
 		}
@@ -3008,13 +3008,13 @@ func (s *Shard) loadIndex() error {
 	maxIndexEntries := s.index.BinaryIndex.MaxNodes
 
 	// Load binary index
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		s.logger.Debug("loadIndex: about to load binary index",
 			"shardID", s.shardID,
 			"currentEntryNumberBefore", s.index.CurrentEntryNumber)
 	}
 	index, err := s.loadBinaryIndexWithConfig(boundaryInterval, maxIndexEntries)
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		if err == nil && index != nil {
 			s.logger.Debug("loadIndex: loaded binary index",
 				"shardID", s.shardID,
@@ -3069,7 +3069,7 @@ func (s *Shard) loadIndex() error {
 		return fmt.Errorf("failed to load binary index: %w", err)
 	}
 
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		s.logger.Debug("loadIndex: about to assign loaded index",
 			"shardID", s.shardID,
 			"beforeAssign", s.index.CurrentEntryNumber,
@@ -3199,7 +3199,7 @@ func (s *Shard) loadIndex() error {
 		}
 	}
 
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		s.logger.Debug("Preserved index data after reload",
 			"shardID", s.shardID,
 			"preservedNodes", len(existingNodes),
@@ -3220,7 +3220,7 @@ func (s *Shard) loadIndex() error {
 		if stateLastEntry >= 0 {
 			expectedCurrentEntry := stateLastEntry + 1
 			if s.index.CurrentEntryNumber != expectedCurrentEntry {
-				if Debug && s.logger != nil {
+				if IsDebug() && s.logger != nil {
 					s.logger.Debug("loadIndex: correcting CurrentEntryNumber with state",
 						"shardID", s.shardID,
 						"indexCurrentEntry", s.index.CurrentEntryNumber,
@@ -3353,7 +3353,7 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 		// Always use state if available, since file scanning can be unreliable
 		if state := s.loadState(); state != nil {
 			lastEntryFromState := atomic.LoadInt64(&state.LastEntryNumber)
-			if Debug && s.logger != nil {
+			if IsDebug() && s.logger != nil {
 				s.logger.Debug("rebuildIndexFromDataFiles: using state for CurrentEntryNumber",
 					"shardID", s.shardID,
 					"stateLastEntry", lastEntryFromState,
@@ -3362,7 +3362,7 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 			}
 			if lastEntryFromState >= 0 {
 				// State.LastEntryNumber is the last allocated entry, CurrentEntryNumber is next to allocate
-				if Debug && s.logger != nil {
+				if IsDebug() && s.logger != nil {
 					s.logger.Debug("TRACE: Setting CurrentEntryNumber from state in rebuild",
 						"location", "client.go:2893",
 						"oldValue", s.index.CurrentEntryNumber,
@@ -3375,7 +3375,7 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 				if expectedEntries > 0 {
 					lastFile.Entries = expectedEntries
 				}
-				if Debug && s.logger != nil {
+				if IsDebug() && s.logger != nil {
 					s.logger.Debug("rebuildIndexFromDataFiles: corrected file metadata",
 						"shardID", s.shardID,
 						"newCurrentEntryNumber", s.index.CurrentEntryNumber,
@@ -3383,7 +3383,7 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 				}
 			} else {
 				// Fall back to file-based calculation
-				if Debug && s.logger != nil {
+				if IsDebug() && s.logger != nil {
 					s.logger.Debug("TRACE: Setting CurrentEntryNumber from file calculation",
 						"location", "client.go:2914",
 						"oldValue", s.index.CurrentEntryNumber,
@@ -3394,7 +3394,7 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 			}
 		} else {
 			// No state available: use file-based calculation
-			if Debug && s.logger != nil {
+			if IsDebug() && s.logger != nil {
 				s.logger.Debug("TRACE: Setting CurrentEntryNumber from file calculation (no state)",
 					"location", "client.go:2925",
 					"oldValue", s.index.CurrentEntryNumber,
@@ -3528,7 +3528,7 @@ func (s *Shard) scanDataFileForRebuild(filePath string, startEntry int64) (*File
 		offset += entrySize
 		entryCount++
 
-		if Debug && s.logger != nil {
+		if IsDebug() && s.logger != nil {
 			s.logger.Debug("REBUILD_SCAN: Found entry",
 				"entryNumber", entryCount-1,
 				"offset", offset-entrySize,
@@ -3584,7 +3584,7 @@ func (s *Shard) openDataFileWithConfig(shardDir string, config *CometConfig) err
 			Entries:     0,
 		})
 
-		if Debug && s.logger != nil {
+		if IsDebug() && s.logger != nil {
 			s.logger.Debug("Created first data file",
 				"shard", s.shardID,
 				"filePath", s.index.CurrentFile,
@@ -3646,7 +3646,7 @@ func (s *Shard) recoverFromCrash() error {
 		expectedCurrentEntry := stateLastEntry + 1
 		if s.index.CurrentEntryNumber == expectedCurrentEntry && actualSize <= s.index.CurrentWriteOffset {
 			// Index and state are in sync and file size matches, no recovery needed
-			if Debug && s.logger != nil {
+			if IsDebug() && s.logger != nil {
 				s.logger.Debug("TRACE: recoverFromCrash - index and state in sync, no recovery needed",
 					"shardID", s.shardID,
 					"stateLastEntry", stateLastEntry,
@@ -3659,7 +3659,7 @@ func (s *Shard) recoverFromCrash() error {
 		}
 	}
 
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		s.logger.Debug("TRACE: recoverFromCrash values",
 			"shardID", s.shardID,
 			"actualSize", actualSize,
@@ -3722,7 +3722,7 @@ func (s *Shard) recoverFromCrash() error {
 	// Update state
 	s.index.CurrentWriteOffset = offset
 
-	if Debug && s.logger != nil {
+	if IsDebug() && s.logger != nil {
 		s.logger.Debug("TRACE: recoverFromCrash found entries",
 			"shardID", s.shardID,
 			"validEntries", validEntries,
@@ -3805,7 +3805,7 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 		}
 
 		// Debug log file rotation
-		if Debug && s.logger != nil {
+		if IsDebug() && s.logger != nil {
 			var oldFile string
 			if len(s.index.Files) > 1 {
 				oldFile = s.index.Files[len(s.index.Files)-2].Path

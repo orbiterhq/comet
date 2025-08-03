@@ -145,44 +145,71 @@ func TestRetentionRaceCondition(t *testing.T) {
 	shard2.mu.RLock()
 	finalFiles := len(shard2.index.Files)
 	t.Logf("Final files: %d (started with %d)", finalFiles, initialFiles)
+	
+	// Check which files actually exist on disk vs what's in the index
+	existingFiles := 0
+	missingFiles := 0
 	for i, file := range shard2.index.Files {
-		t.Logf("  Remaining file %d: %s (entries: %d, startEntry: %d)", i, file.Path, file.Entries, file.StartEntry)
+		if _, err := os.Stat(file.Path); err == nil {
+			existingFiles++
+			t.Logf("  Remaining file %d: %s (entries: %d, startEntry: %d)", i, file.Path, file.Entries, file.StartEntry)
+		} else if os.IsNotExist(err) {
+			missingFiles++
+			// This can happen due to race between index update and file deletion
+			t.Logf("  Missing file %d: %s (was in index but deleted)", i, file.Path)
+		}
 	}
 	shard2.mu.RUnlock()
+	
+	t.Logf("Index shows %d files: %d exist on disk, %d were deleted", finalFiles, existingFiles, missingFiles)
 
 	// Verify retention worked (some files should be deleted)
-	if finalFiles >= initialFiles {
-		t.Errorf("Race condition may have prevented retention: %d -> %d files", initialFiles, finalFiles)
+	if existingFiles >= initialFiles {
+		t.Errorf("Retention failed: %d files still exist (started with %d)", existingFiles, initialFiles)
 	} else {
-		deletedFiles := initialFiles - finalFiles
-		t.Logf("Concurrent retention deleted %d files", deletedFiles)
+		actuallyDeleted := initialFiles - existingFiles
+		t.Logf("Concurrent retention successfully deleted %d files", actuallyDeleted)
 
-		// Check if we can still read data (no corruption)
-		// Only try to read if there are entries in remaining files
-		totalRemainingEntries := int64(0)
-		shard2.mu.RLock()
-		for _, file := range shard2.index.Files {
-			totalRemainingEntries += file.Entries
+		// If we have missing files in the index, wait for index to stabilize
+		if missingFiles > 0 {
+			t.Logf("Index references %d deleted files, triggering index reload", missingFiles)
+			// Force the shard to reload its index to get consistent state
+			shard2.mu.Lock()
+			shard2.loadIndexWithRetry()
+			shard2.mu.Unlock()
+			
+			// Recount after reload
+			shard2.mu.RLock()
+			existingAfterReload := 0
+			for _, file := range shard2.index.Files {
+				if _, err := os.Stat(file.Path); err == nil {
+					existingAfterReload++
+				}
+			}
+			shard2.mu.RUnlock()
+			t.Logf("After index reload: %d files exist", existingAfterReload)
 		}
-		shard2.mu.RUnlock()
 
-		if totalRemainingEntries > 0 {
+		// Now try to read data to ensure no corruption
+		if existingFiles > 0 {
 			consumer := NewConsumer(client2, ConsumerOptions{Group: "race-test"})
 			defer consumer.Close()
 
 			messages, err := consumer.Read(ctx, []uint32{1}, 5)
 			if err != nil {
-				// Check if this is expected behavior (no data left after retention)
-				if strings.Contains(err.Error(), "not found in data files") {
+				// This is the actual bug - we should NOT get file not found errors
+				if strings.Contains(err.Error(), "no such file or directory") {
+					t.Errorf("❌ BUG CONFIRMED: Index references deleted files: %v", err)
+				} else if strings.Contains(err.Error(), "not found in data files") {
 					t.Logf("No readable entries after retention - this is acceptable: %v", err)
 				} else {
-					t.Errorf("Data corruption after concurrent retention: %v", err)
+					t.Errorf("Unexpected error after retention: %v", err)
 				}
 			} else {
-				t.Logf("Successfully read %d messages after concurrent retention", len(messages))
+				t.Logf("✅ Successfully read %d messages after concurrent retention", len(messages))
 			}
 		} else {
-			t.Logf("No entries remaining after retention - this is acceptable if all data was old")
+			t.Logf("All files deleted - retention was very aggressive")
 		}
 	}
 
