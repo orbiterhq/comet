@@ -407,6 +407,7 @@ func TestTail(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		client.Sync(ctx)
 
 		// Wait for error with timeout
 		done := make(chan struct{})
@@ -418,7 +419,7 @@ func TestTail(t *testing.T) {
 		select {
 		case <-done:
 			// Success
-		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
 			t.Fatal("Test timed out waiting for tail error")
 		}
 
