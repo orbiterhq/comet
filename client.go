@@ -1173,13 +1173,13 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 
 	// For multi-process mode, we need to ensure only one process initializes the shard
 	shardDir := filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shardID))
-	
+
 	// Check if shard already exists and detect mode mismatch
 	if stat, err := os.Stat(shardDir); err == nil && stat.IsDir() {
 		// Shard directory exists - check for mode compatibility
 		statePath := filepath.Join(shardDir, "comet.state")
 		_, stateErr := os.Stat(statePath)
-		
+
 		if c.config.Concurrency.EnableMultiProcessMode && os.IsNotExist(stateErr) {
 			// Check if there are any data files (indicating single-process mode shard)
 			if files, _ := filepath.Glob(filepath.Join(shardDir, "*.comet")); len(files) > 0 {

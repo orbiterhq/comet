@@ -1728,7 +1728,7 @@ func TestBulletproofMultiProcess(t *testing.T) {
 	if os.Getenv("CI") != "" {
 		t.Skip("Skipping flaky multi-process stress test in CI")
 	}
-	
+
 	tests := []struct {
 		name         string
 		workers      int

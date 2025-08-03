@@ -50,7 +50,7 @@ func TestModeSwitchDetection(t *testing.T) {
 	// Test 2: Create shard in multi-process mode, try to open in single-process mode
 	t.Run("MultiToSingle", func(t *testing.T) {
 		dir2 := t.TempDir()
-		
+
 		// Create in multi-process mode
 		config1 := DefaultCometConfig()
 		config1.Concurrency.EnableMultiProcessMode = true

@@ -67,7 +67,7 @@ func TestRetentionConcurrentDebug(t *testing.T) {
 	t.Logf("=== PHASE 2: Marking files as old ===")
 	// Mark all non-current files as old
 	shard.mu.Lock()
-	oldTime := time.Now().Add(-500 * time.Millisecond)  
+	oldTime := time.Now().Add(-500 * time.Millisecond)
 	filesMarked := 0
 	for i := range shard.index.Files {
 		if shard.index.Files[i].Path != currentFile {
@@ -117,7 +117,7 @@ func TestRetentionConcurrentDebug(t *testing.T) {
 		if errors[i] != nil {
 			t.Logf("Worker %d error: %v", i, errors[i])
 		}
-		
+
 		// Parse deleted count if possible
 		// This is crude parsing but helps with debugging
 		if len(output) > 0 {
@@ -137,7 +137,7 @@ func TestRetentionConcurrentDebug(t *testing.T) {
 	shard2.mu.RLock()
 	finalFiles := len(shard2.index.Files)
 	t.Logf("Final files in index: %d (started with %d)", finalFiles, initialFiles)
-	
+
 	// Check each file in the index
 	for i, file := range shard2.index.Files {
 		exists := "EXISTS"
@@ -155,10 +155,10 @@ func TestRetentionConcurrentDebug(t *testing.T) {
 	messages, err := consumer.Read(context.Background(), []uint32{1}, 25)
 	if err != nil {
 		t.Logf("❌ REPRODUCTION CONFIRMED: %v", err)
-		
+
 		// Let's see what specific file it's trying to access
 		t.Logf("This is exactly the bug we need to fix!")
-		
+
 		// Check if it's trying to read from a deleted file referenced in the index
 		shard2.mu.RLock()
 		t.Logf("Debug: Index still has %d files after retention:", len(shard2.index.Files))
@@ -170,7 +170,7 @@ func TestRetentionConcurrentDebug(t *testing.T) {
 			}
 		}
 		shard2.mu.RUnlock()
-		
+
 	} else {
 		t.Logf("✅ Unexpectedly succeeded: read %d messages", len(messages))
 	}
@@ -304,7 +304,7 @@ func TestRetentionRaceConditionSimplified(t *testing.T) {
 		if _, statErr := os.Stat(file.Path); statErr != nil {
 			exists = "DELETED"
 		}
-		t.Logf("  Remaining file %d: %s (%s, entries: %d, startEntry: %d)", 
+		t.Logf("  Remaining file %d: %s (%s, entries: %d, startEntry: %d)",
 			i, file.Path, exists, file.Entries, file.StartEntry)
 	}
 	shard2.mu.RUnlock()

@@ -52,7 +52,7 @@ func TestRetentionIndexConsistency(t *testing.T) {
 	initialFiles := len(shard.index.Files)
 	t.Logf("Created %d files:", initialFiles)
 	for i, file := range shard.index.Files {
-		t.Logf("  File %d: %s (entries: %d, startEntry: %d)", 
+		t.Logf("  File %d: %s (entries: %d, startEntry: %d)",
 			i, file.Path, file.Entries, file.StartEntry)
 	}
 	currentFile := shard.index.CurrentFile
@@ -94,7 +94,7 @@ func TestRetentionIndexConsistency(t *testing.T) {
 
 	// Get stats after retention
 	statsAfter := client2.GetRetentionStats()
-	t.Logf("Files after retention: %d (deleted %d)", 
+	t.Logf("Files after retention: %d (deleted %d)",
 		statsAfter.TotalFiles, statsBefore.TotalFiles-statsAfter.TotalFiles)
 
 	t.Logf("=== PHASE 4: Checking index consistency ===")
@@ -141,7 +141,7 @@ func TestRetentionWithLogging(t *testing.T) {
 	defer client.Close()
 
 	streamName := "events:v1:shard:0001"
-	
+
 	// Create some files
 	for i := 0; i < 6; i++ {
 		data := [][]byte{[]byte(fmt.Sprintf(`{"id": %d}`, i))}
@@ -168,7 +168,7 @@ func TestRetentionWithLogging(t *testing.T) {
 	client.Sync(context.Background())
 
 	t.Logf("=== RUNNING RETENTION WITH DETAILED LOGGING ===")
-	
+
 	// Log retention process step by step
 	// This will help us see exactly what happens during retention
 	client.ForceRetentionCleanup()
@@ -232,19 +232,19 @@ func TestRetentionMinimal(t *testing.T) {
 	defer client2.Close()
 
 	t.Logf("Files before retention: %d", filesBeforeRetention)
-	
+
 	// Run retention
 	client2.ForceRetentionCleanup()
-	
+
 	// Check result
 	shard2, _ := client2.getOrCreateShard(1)
 	shard2.mu.RLock()
 	filesAfterRetention := len(shard2.index.Files)
 	t.Logf("Files after retention: %d", filesAfterRetention)
-	
+
 	// THE KEY TEST: Can we still read data?
 	shard2.mu.RUnlock()
-	
+
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "minimal-test"})
 	defer consumer.Close()
 

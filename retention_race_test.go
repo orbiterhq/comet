@@ -21,7 +21,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
-	
+
 	// Skip in CI due to timing-dependent behavior
 	if os.Getenv("CI") != "" {
 		t.Skip("Skipping flaky multi-process retention test in CI")
