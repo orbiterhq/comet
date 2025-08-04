@@ -63,6 +63,10 @@ type Consumer struct {
 	highestReadMu sync.RWMutex
 	highestRead   map[uint32]int64 // shardID -> highest entry read
 
+	// Idempotent processing: track processed messages to prevent duplicates
+	processedMsgsMu sync.RWMutex
+	processedMsgs   map[string]bool // messageID -> processed flag
+
 	// Strings last
 	group string
 }
@@ -259,9 +263,10 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 	client.registerConsumerGroup(group)
 
 	return &Consumer{
-		client:      client,
-		group:       group,
-		highestRead: make(map[uint32]int64),
+		client:        client,
+		group:         group,
+		highestRead:   make(map[uint32]int64),
+		processedMsgs: make(map[string]bool),
 		// readers sync.Map is zero-initialized and ready to use
 	}
 }
@@ -331,6 +336,43 @@ func (c *Consumer) Close() error {
 	c.client.deregisterConsumerGroup(c.group)
 
 	return nil
+}
+
+// isMessageProcessed checks if a message has already been processed by this consumer group
+func (c *Consumer) isMessageProcessed(messageID MessageID) bool {
+	c.processedMsgsMu.RLock()
+	defer c.processedMsgsMu.RUnlock()
+	return c.processedMsgs[messageID.String()]
+}
+
+// markMessageProcessed marks a message as processed by this consumer group
+func (c *Consumer) markMessageProcessed(messageID MessageID) {
+	c.processedMsgsMu.Lock()
+	defer c.processedMsgsMu.Unlock()
+	c.processedMsgs[messageID.String()] = true
+}
+
+// FilterDuplicates removes already-processed messages from a batch, returning only new messages
+func (c *Consumer) FilterDuplicates(messages []StreamMessage) []StreamMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	var filteredMessages []StreamMessage
+	for _, msg := range messages {
+		if !c.isMessageProcessed(msg.ID) {
+			filteredMessages = append(filteredMessages, msg)
+		}
+	}
+
+	return filteredMessages
+}
+
+// MarkBatchProcessed marks all messages in a batch as processed
+func (c *Consumer) MarkBatchProcessed(messages []StreamMessage) {
+	for _, msg := range messages {
+		c.markMessageProcessed(msg.ID)
+	}
 }
 
 // Read reads up to count entries from the specified shards starting from the consumer group's current offset.
@@ -462,11 +504,36 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 			}
 		}
 
+		// Filter out any duplicate messages that we've already processed
+		originalCount := len(messages)
+		messages = c.FilterDuplicates(messages)
+		filteredCount := len(messages)
+
+		if originalCount > filteredCount && IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Filtered duplicate messages",
+				"original", originalCount,
+				"filtered", filteredCount,
+				"duplicates", originalCount-filteredCount,
+				"group", c.group)
+		}
+
+		// If all messages were duplicates, continue to next iteration
+		if len(messages) == 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(cfg.pollInterval):
+				continue
+			}
+		}
+
 		// Process batch with retries
 		var processErr error
 		for retry := 0; retry <= cfg.maxRetries; retry++ {
 			processErr = cfg.handler(ctx, messages)
 			if processErr == nil {
+				// Mark messages as processed only after successful processing
+				c.MarkBatchProcessed(messages)
 				break
 			}
 
@@ -1046,6 +1113,17 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	// Mark that we need a checkpoint
 	shard.writesSinceCheckpoint++
 	shard.mu.Unlock()
+
+	// Clear processed messages cache when offset is reset
+	// This allows messages to be re-processed after a reset
+	c.processedMsgsMu.Lock()
+	for msgID := range c.processedMsgs {
+		// Only clear messages from this shard
+		if parsed, err := ParseMessageID(msgID); err == nil && parsed.ShardID == shardID {
+			delete(c.processedMsgs, msgID)
+		}
+	}
+	c.processedMsgsMu.Unlock()
 
 	// Persist consumer offset change immediately to prevent data loss
 	if err := shard.persistIndex(); err != nil && c.client.logger != nil {
