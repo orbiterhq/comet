@@ -117,13 +117,6 @@ func TestReadMetrics(t *testing.T) {
 	for i, f := range shard.index.Files {
 		t.Logf("  File[%d]: %s (entries=%d)", i, f.Path, f.Entries)
 	}
-	// Also check what the mmap writer has
-	if shard.mmapWriter != nil {
-		shard.mmapWriter.mu.Lock()
-		t.Logf("MmapWriter dataPath: %s", shard.mmapWriter.dataPath)
-		t.Logf("MmapWriter index files: %d", len(shard.mmapWriter.index.Files))
-		shard.mmapWriter.mu.Unlock()
-	}
 	// Check if index file exists
 	if _, err := os.Stat(shard.indexPath); os.IsNotExist(err) {
 		t.Logf("Index file does not exist: %s", shard.indexPath)
@@ -697,46 +690,41 @@ func TestWriteErrorMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	// Force an error by corrupting the mmap writer state
-	if shard.mmapWriter != nil {
-		// Close the mmap writer's file to cause write errors
-		shard.mmapWriter.mu.Lock()
-		if shard.mmapWriter.dataFile != nil {
-			shard.mmapWriter.dataFile.Close()
-			shard.mmapWriter.dataFile = nil
-		}
-		shard.mmapWriter.mu.Unlock()
-
-		// Try to write - this should fail
-		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("should fail")})
-		if err == nil {
-			t.Fatal("Expected write to fail after closing mmap file")
-		}
-
-		// Check error metrics
-		errorCount := atomic.LoadUint64(&state.ErrorCount)
-		failedWrites := atomic.LoadUint64(&state.FailedWrites)
-		lastErrorNanos := atomic.LoadInt64(&state.LastErrorNanos)
-
-		if errorCount == 0 {
-			t.Error("ErrorCount = 0, want > 0 after write error")
-		}
-
-		if failedWrites == 0 {
-			t.Error("FailedWrites = 0, want > 0 after write error")
-		}
-
-		if lastErrorNanos == 0 {
-			t.Error("LastErrorNanos = 0, want > 0 after write error")
-		}
-
-		t.Logf("Write error metrics after failure:")
-		t.Logf("  Error count: %d", errorCount)
-		t.Logf("  Failed writes: %d", failedWrites)
-		t.Logf("  Last error time: %v", time.Unix(0, lastErrorNanos))
-	} else {
-		t.Skip("mmap writer not available - cannot test write errors")
+	// Force an error by closing the data file
+	shard.mu.Lock()
+	if shard.dataFile != nil {
+		shard.dataFile.Close()
+		shard.dataFile = nil
 	}
+	shard.mu.Unlock()
+
+	// Try to write - this should fail
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("should fail")})
+	if err == nil {
+		t.Fatal("Expected write to fail after closing data file")
+	}
+
+	// Check error metrics
+	errorCount := atomic.LoadUint64(&state.ErrorCount)
+	failedWrites := atomic.LoadUint64(&state.FailedWrites)
+	lastErrorNanos := atomic.LoadInt64(&state.LastErrorNanos)
+
+	if errorCount == 0 {
+		t.Error("ErrorCount = 0, want > 0 after write error")
+	}
+
+	if failedWrites == 0 {
+		t.Error("FailedWrites = 0, want > 0 after write error")
+	}
+
+	if lastErrorNanos == 0 {
+		t.Error("LastErrorNanos = 0, want > 0 after write error")
+	}
+
+	t.Logf("Write error metrics after failure:")
+	t.Logf("  Error count: %d", errorCount)
+	t.Logf("  Failed writes: %d", failedWrites)
+	t.Logf("  Last error time: %v", time.Unix(0, lastErrorNanos))
 }
 
 // TestReadErrorMetrics tests read error tracking

@@ -29,7 +29,6 @@ func TestStructAlignment(t *testing.T) {
 		// Frequently allocated structs
 		{"AtomicSlice", AtomicSlice{}},
 		{"CometState", CometState{}},
-		{"MmapWriter", MmapWriter{}},
 		{"EntryIndexNode", EntryIndexNode{}},
 		{"BinarySearchableIndex", BinarySearchableIndex{}},
 		// Hot path structs

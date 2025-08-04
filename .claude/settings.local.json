@@ -15,6 +15,7 @@
       "Bash(go run:*)",
       "Bash(mise run test:*)",
       "Bash(mise run lint:*)",
+      "Bash(mise run bench:*)",
       "Bash(git stash:*)",
       "Bash(git diff:*)",
       "Bash(dprint fmt:*)",

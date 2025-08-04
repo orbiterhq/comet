@@ -1920,12 +1920,7 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 			b.Fatal(err)
 		}
 
-		// Force disable mmap writer for this test
-		shard, _ := client.getOrCreateShard(0)
-		if shard.mmapWriter != nil {
-			shard.mmapWriter.Close()
-			shard.mmapWriter = nil
-		}
+		// No longer need to disable mmap writer since we use buffered writes everywhere
 
 		b.ResetTimer()
 		b.ReportAllocs()
@@ -2191,7 +2186,7 @@ func BenchmarkMultiProcess(b *testing.B) {
 
 	for _, numProcs := range []int{1, 2, 4} {
 		b.Run(fmt.Sprintf("procs_%d", numProcs), func(b *testing.B) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			var wg sync.WaitGroup
@@ -2209,15 +2204,20 @@ func BenchmarkMultiProcess(b *testing.B) {
 						fmt.Sprintf("COMET_BENCH_WORKER=%d", id),
 						fmt.Sprintf("COMET_BENCH_DIR=%s", dir),
 						fmt.Sprintf("COMET_BENCH_N=%d", b.N),
+						fmt.Sprintf("COMET_BENCH_TOTAL_PROCS=%d", numProcs),
 					)
-					cmd.Run()
+					cmd.Stdout = os.Stdout
+					cmd.Stderr = os.Stderr
+					if err := cmd.Run(); err != nil {
+						b.Errorf("Worker %d failed: %v", id, err)
+					}
 				}(i)
 			}
 
 			wg.Wait()
 
 			// Read final stats
-			config := DefaultCometConfig()
+			config := MultiProcessConfig(0, numProcs)
 			client, err := NewClientWithConfig(dir, config)
 			if err != nil {
 				b.Fatal(err)
@@ -2233,20 +2233,35 @@ func BenchmarkMultiProcess(b *testing.B) {
 
 func runBenchmarkWorker(b *testing.B) {
 	dir := os.Getenv("COMET_BENCH_DIR")
+	workerID, _ := strconv.Atoi(os.Getenv("COMET_BENCH_WORKER"))
+	totalProcs, _ := strconv.Atoi(os.Getenv("COMET_BENCH_TOTAL_PROCS"))
 	n, _ := strconv.Atoi(os.Getenv("COMET_BENCH_N"))
 	if n == 0 {
 		n = b.N
 	}
 
-	config := MultiProcessConfig(0, 2)
+	// Debug output
+	fmt.Fprintf(os.Stderr, "Worker %d starting (total procs: %d, n: %d)\n", workerID, totalProcs, n)
+
+	// Each worker needs its own process ID and total process count
+	config := MultiProcessConfig(workerID, totalProcs)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Worker %d failed to create client: %v\n", workerID, err)
 		b.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "bench:v1:shard:0000"
+	
+	// In multi-process mode, each process writes to shards it owns
+	// Use multiple stream names to distribute across shards
+	streamNames := []string{
+		"bench:v1:user:0",
+		"bench:v1:user:1", 
+		"bench:v1:user:2",
+		"bench:v1:user:3",
+	}
 
 	batch := make([][]byte, 100)
 	for i := 0; i < 100; i++ {
@@ -2254,6 +2269,13 @@ func runBenchmarkWorker(b *testing.B) {
 	}
 
 	for i := 0; i < n; i++ {
-		client.Append(ctx, streamName, batch)
+		// Round-robin across stream names to hit different shards
+		streamName := streamNames[i%len(streamNames)]
+		if _, err := client.Append(ctx, streamName, batch); err != nil {
+			fmt.Fprintf(os.Stderr, "Worker %d append failed on stream %s: %v\n", workerID, streamName, err)
+			b.Fatal(err)
+		}
 	}
+	
+	fmt.Fprintf(os.Stderr, "Worker %d completed %d iterations\n", workerID, n)
 }

@@ -650,12 +650,10 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		shard.logger.Debug("Consumer read state check",
 			"shard", shard.shardID,
 			"stateExists", shard.state != nil,
-			"mmapWriterExists", shard.mmapWriter != nil,
-			"mmapWriterStateExists", shard.mmapWriter != nil && shard.mmapWriter.state != nil,
 			"endEntryNum", endEntryNum)
 	}
-	if shard.state != nil && shard.mmapWriter != nil && shard.mmapWriter.state != nil {
-		totalWrites := shard.mmapWriter.state.GetTotalWrites()
+	if shard.state != nil {
+		totalWrites := atomic.LoadUint64(&shard.state.TotalWrites)
 		if totalWrites > uint64(endEntryNum) {
 			// Need write lock for rebuild
 			shard.mu.Lock()

@@ -427,7 +427,6 @@ type Shard struct {
 	compressor *zstd.Encoder // Compression engine
 	index      *ShardIndex   // Shard metadata
 	// Lock files removed - processes own their shards exclusively
-	mmapWriter *MmapWriter // Memory-mapped writer for ultra-fast multi-process writes
 	state      *CometState // Unified memory-mapped state for all metrics and coordination
 	logger     Logger      // Logger for this shard
 
@@ -839,7 +838,6 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	// to their owned shards without locking.
 
 	// Load existing index if present
-	// IMPORTANT: Must load index BEFORE initializing mmapWriter to allow rebuild from data files
 	if c.logger != nil {
 		c.logger.Debug("getOrCreateShard: before loadIndex",
 			"shardID", shardID,
@@ -879,24 +877,6 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		}
 	}
 
-	// If we have an mmap writer, sync the index with the state
-	if shard.mmapWriter != nil && shard.mmapWriter.state != nil {
-		writeOffset := shard.mmapWriter.state.GetWriteOffset()
-		if writeOffset > uint64(shard.index.CurrentWriteOffset) {
-			shard.index.CurrentWriteOffset = int64(writeOffset)
-		}
-	}
-
-	// Initialize mmapWriter AFTER loading index to ensure rebuild works correctly
-	if c.config.Concurrency.IsMultiProcess() {
-		// Initialize memory-mapped writer for ultra-fast writes
-		// Pass nil for rotation lock since processes own their shards exclusively
-		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, shard.state)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize mmap writer: %w", err)
-		}
-		shard.mmapWriter = mmapWriter
-	}
 
 	// Open or create current data file
 	if err := shard.openDataFileWithConfig(shardDir, &c.config); err != nil {
@@ -1306,104 +1286,36 @@ func (s *Shard) calculateEntryPosition(entrySize int64) EntryPosition {
 func (s *Shard) performWrite(writeReq WriteRequest, config *CometConfig, clientMetrics *ClientMetrics) error {
 	var writeErr error
 
-	// Check if this shard is owned by the current process
-	isOwnedByProcess := config.Concurrency.Owns(s.shardID)
-
-	// Use memory-mapped writer for ultra-fast multi-process writes if available
-	if config.Concurrency.IsMultiProcess() && s.mmapWriter != nil {
-		// Extract entry numbers from IDs
-		entryNumbers := make([]uint64, len(writeReq.IDs))
-		for i, id := range writeReq.IDs {
-			entryNumbers[i] = uint64(id.EntryNumber)
+	// Unified buffered write path for both single and multi-process modes
+	s.writeMu.Lock()
+	
+	// Speed-optimized: only flush when absolutely necessary
+	// Check BEFORE writing if this would exceed file size
+	if s.writer != nil {
+		bytesToWrite := int64(0)
+		for _, buf := range writeReq.WriteBuffers {
+			bytesToWrite += int64(len(buf))
 		}
-
-		// Extract raw data from write buffers (skip headers, they will be recreated)
-		rawEntries := make([][]byte, len(writeReq.IDs))
-		for i := 0; i < len(writeReq.IDs); i++ {
-			// WriteBuffers contains [header, data, header, data, ...]
-			// Skip the header (index i*2) and get the data (index i*2+1)
-			rawEntries[i] = writeReq.WriteBuffers[i*2+1]
+		
+		// If this write would exceed max file size, flush the buffer first
+		if s.index.CurrentWriteOffset+bytesToWrite > config.Storage.MaxFileSize {
+			if err := s.writer.Flush(); err != nil {
+				writeErr = err
+			}
 		}
-
-		// Memory-mapped write (handles its own coordination)
-		writeErr = s.mmapWriter.Write(rawEntries, entryNumbers)
-
-		// Handle rotation needed error
-		if writeErr != nil && strings.Contains(writeErr.Error(), "rotation needed") {
-			// Must acquire mutex before rotating to avoid race conditions
-			s.mu.Lock()
-			rotErr := s.rotateFile(clientMetrics, config)
-			s.mu.Unlock()
-
-			if rotErr != nil {
-				return fmt.Errorf("failed to rotate file: %w", rotErr)
-			}
-
-			// Retry the write after rotation
-			writeErr = s.mmapWriter.Write(rawEntries, entryNumbers)
-		}
-
-		// Handle missing directory errors in mmap mode
-		if writeErr != nil && s.handleMissingShardDirectory(writeErr) {
-			// Directory was recovered, need to reinitialize the mmap writer
-			s.mu.Lock()
-			if err := s.initializeMmapWriter(config); err != nil {
-				s.mu.Unlock()
-				return fmt.Errorf("failed to reinitialize mmap writer after recovery: %w", err)
-			}
-			s.mu.Unlock()
-
-			// Retry the write operation once after recovery
-			writeErr = s.mmapWriter.Write(rawEntries, entryNumbers)
-		}
-
-		// Update index after successful mmap write - must be protected by mutex
-		if writeErr == nil {
-			s.mu.Lock()
-			if s.mmapWriter.state != nil {
-				s.index.CurrentWriteOffset = int64(s.mmapWriter.state.GetWriteOffset())
-			}
-
-			// Add binary index nodes for entries that were written
-			for _, entryNum := range entryNumbers {
-				if int64(entryNum)%int64(s.index.BoundaryInterval) == 0 || entryNum == 0 {
-					// Calculate position for this entry
-					// In mmap mode, we don't track exact positions, so use entry number
-					position := EntryPosition{
-						FileIndex:  0,               // Will be updated during scan
-						ByteOffset: int64(entryNum), // Use entry number as placeholder
-					}
-					s.index.BinaryIndex.AddIndexNode(int64(entryNum), position)
-				}
-			}
-
-			// Update metric if state is available
-			if state := s.state; state != nil {
-				atomic.StoreUint64(&state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
-			}
-
-			s.mu.Unlock()
-		}
-	} else {
-		// Regular write path - no locking needed since processes own their shards
-
-		s.writeMu.Lock()
-		// Write all buffers
+	}
+	
+	// Write all buffers (only if no flush error)
+	if writeErr == nil {
 		for _, buf := range writeReq.WriteBuffers {
 			if _, err := s.writer.Write(buf); err != nil {
 				writeErr = err
 				break
 			}
 		}
-		if writeErr == nil {
-			writeErr = s.writer.Flush()
-			// In multi-process mode, sync to ensure data hits disk before releasing lock (skip for owned shards)
-			if writeErr == nil && config.Concurrency.IsMultiProcess() && s.dataFile != nil && !isOwnedByProcess {
-				writeErr = s.dataFile.Sync()
-			}
-		}
-		s.writeMu.Unlock()
 	}
+	
+	s.writeMu.Unlock()
 
 	// Handle write error
 	if writeErr != nil {
@@ -1426,11 +1338,16 @@ func (s *Shard) performWrite(writeReq WriteRequest, config *CometConfig, clientM
 					break
 				}
 			}
-			if writeErr == nil {
-				writeErr = s.writer.Flush()
-				// In multi-process mode, sync to ensure data hits disk before releasing lock (skip for owned shards)
-				if writeErr == nil && config.Concurrency.IsMultiProcess() && s.dataFile != nil && !isOwnedByProcess {
-					writeErr = s.dataFile.Sync()
+			
+			// Speed-optimized: only flush when absolutely necessary
+			if writeErr == nil && s.writer != nil {
+				bytesJustWritten := int64(0)
+				for _, buf := range writeReq.WriteBuffers {
+					bytesJustWritten += int64(len(buf))
+				}
+				
+				if s.index.CurrentWriteOffset+bytesJustWritten > config.Storage.MaxFileSize {
+					writeErr = s.writer.Flush()
 				}
 			}
 			s.writeMu.Unlock()
@@ -1836,30 +1753,6 @@ func (s *Shard) ensureWriter(config *CometConfig) error {
 
 // initializeMmapWriter initializes the memory-mapped writer after recovery
 // This function should be called with the shard mutex held
-func (s *Shard) initializeMmapWriter(config *CometConfig) error {
-	// Get the shard directory from the index path
-	shardDir := filepath.Dir(s.indexPath)
-
-	// Make sure the shard directory exists
-	if err := os.MkdirAll(shardDir, 0755); err != nil {
-		return fmt.Errorf("failed to create shard directory during mmap recovery: %w", err)
-	}
-
-	// Close existing mmap writer if it exists
-	if s.mmapWriter != nil {
-		s.mmapWriter.Close() // Ignore error since we're recovering
-		s.mmapWriter = nil
-	}
-
-	// Create new mmap writer - use existing state
-	mmapWriter, err := NewMmapWriter(shardDir, config.Storage.MaxFileSize, s.index, s.state)
-	if err != nil {
-		return fmt.Errorf("failed to create mmap writer: %w", err)
-	}
-
-	s.mmapWriter = mmapWriter
-	return nil
-}
 
 // loadIndexWithRetry loads the index with retry logic for EOF errors
 // This handles the race condition between file writes and mmap state updates
@@ -1889,14 +1782,8 @@ func (s *Shard) loadIndexWithRetry() error {
 // checkIfRebuildNeeded checks if the index needs rebuilding without acquiring locks
 // Must be called while holding at least a read lock
 func (s *Shard) checkIfRebuildNeeded() bool {
-	if s.mmapWriter == nil || s.mmapWriter.state == nil {
-		return false
-	}
-
-	currentTotalWrites := s.mmapWriter.state.GetTotalWrites()
-
-	// Check if total writes in state exceed what we have in index
-	return currentTotalWrites > uint64(s.index.CurrentEntryNumber)
+	// No longer needed without mmap writer
+	return false
 }
 
 func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
@@ -2033,15 +1920,6 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 						// Use file scan - this handles large pre-allocated files
 					}
 				}
-			} else if s.mmapWriter != nil {
-				// Fallback to local mmapWriter if available
-				if s.mmapWriter.state != nil {
-					writeOffset := s.mmapWriter.state.GetWriteOffset()
-					if writeOffset > 0 && writeOffset < uint64(actualSize) {
-						scanSize = int64(writeOffset)
-					}
-				}
-			}
 		}
 
 		// Always scan the entire file in multi-process mode
@@ -2113,6 +1991,7 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 		}
 		s.index.CurrentWriteOffset = lastFile.EndOffset
 	}
+}
 }
 
 // scanFileResult holds the results of scanning a data file
@@ -2530,41 +2409,7 @@ func (s *Shard) loadIndex() error {
 	s.index.BinaryIndex.IndexInterval = boundaryInterval
 	s.index.BinaryIndex.MaxNodes = maxIndexEntries
 
-	// In multi-process mode, always trust state over index for CurrentEntryNumber
-	if s.mmapWriter != nil && s.state != nil {
-		state := s.state
-		stateLastEntry := atomic.LoadInt64(&state.LastEntryNumber)
-		if stateLastEntry >= 0 {
-			expectedCurrentEntry := stateLastEntry + 1
-			if s.index.CurrentEntryNumber != expectedCurrentEntry {
-				if IsDebug() && s.logger != nil {
-					s.logger.Debug("loadIndex: correcting CurrentEntryNumber with state",
-						"shardID", s.shardID,
-						"indexCurrentEntry", s.index.CurrentEntryNumber,
-						"stateLastEntry", stateLastEntry,
-						"correctedCurrentEntry", expectedCurrentEntry)
-				}
-				s.index.CurrentEntryNumber = expectedCurrentEntry
-			}
-		}
-	}
 
-	// In multi-process mode, verify and update file sizes
-	if s.mmapWriter != nil {
-		for i := range s.index.Files {
-			file := &s.index.Files[i]
-			if info, err := os.Stat(file.Path); err == nil {
-				actualSize := info.Size()
-				if actualSize > file.EndOffset {
-					file.EndOffset = actualSize
-				}
-			}
-		}
-
-		// Don't update current write offset based on file size
-		// The index already has the correct write offset from when it was saved
-		// For mmap files, the file size doesn't reflect the actual data written
-	}
 
 	// Update state metrics after loading index
 	if state := s.state; state != nil {
@@ -2577,13 +2422,6 @@ func (s *Shard) loadIndex() error {
 		atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
 	}
 
-	// IMPORTANT: If we have an mmap writer, update its index pointer since we replaced the index
-	// This ensures the mmap writer sees the same index as the shard
-	if s.mmapWriter != nil {
-		s.mmapWriter.mu.Lock()
-		s.mmapWriter.index = s.index
-		s.mmapWriter.mu.Unlock()
-	}
 
 	return nil
 }
@@ -2919,13 +2757,9 @@ func (s *Shard) openDataFileWithConfig(shardDir string, config *CometConfig) err
 		atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
 	}
 
-	// Create buffered writer
-	// In multi-process mode, use smaller buffer for more frequent flushes
-	bufSize := defaultBufSize
-	if s.mmapWriter != nil { // Multi-process mode
-		bufSize = 8192 // 8KB buffer for more frequent flushes
-	}
-	s.writer = bufio.NewWriterSize(s.dataFile, bufSize)
+	// Create buffered writer with consistent buffer size
+	// Speed-optimized: 1MB buffer for maximum throughput
+	s.writer = bufio.NewWriterSize(s.dataFile, defaultBufSize)
 
 	// Set up compressor with fastest level for better throughput
 	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
@@ -3070,81 +2904,7 @@ func (s *Shard) recoverFromCrash() error {
 // rotateFile closes current file and starts a new one
 // NOTE: This method assumes the caller holds s.mu (main shard mutex)
 func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) error {
-	// Handle mmap writer rotation
-	if s.mmapWriter != nil {
-		// Update final stats for current file BEFORE rotation
-		if len(s.index.Files) > 0 {
-			current := &s.index.Files[len(s.index.Files)-1]
-			current.EndOffset = s.index.CurrentWriteOffset
-			current.EndTime = time.Now()
-		}
-
-		// Ensure the shard directory exists before rotation
-		shardDir := filepath.Dir(s.index.CurrentFile)
-		if err := os.MkdirAll(shardDir, 0755); err != nil {
-			return fmt.Errorf("failed to create shard directory during mmap rotation: %w", err)
-		}
-
-		// Let mmap writer handle its own file rotation
-		if err := s.mmapWriter.rotateFile(); err != nil {
-			return fmt.Errorf("failed to rotate mmap file: %w", err)
-		}
-
-		// Update index to reflect new file from mmap writer
-		// Use the actual path that mmap writer created
-		newPath := s.mmapWriter.dataPath
-		s.index.CurrentFile = newPath
-
-		// Add new file to index
-		s.index.Files = append(s.index.Files, FileInfo{
-			Path:        newPath,
-			StartOffset: 0, // Mmap files always start at 0
-			StartEntry:  s.index.CurrentEntryNumber,
-			StartTime:   time.Now(),
-			Entries:     0,
-		})
-
-		// Track file rotation
-		clientMetrics.FileRotations.Add(1)
-		clientMetrics.TotalFiles.Add(1)
-		if state := s.state; state != nil {
-			atomic.AddUint64(&state.FileRotations, 1)
-		}
-
-		// Debug log file rotation
-		if IsDebug() && s.logger != nil {
-			var oldFile string
-			if len(s.index.Files) > 1 {
-				oldFile = s.index.Files[len(s.index.Files)-2].Path
-			}
-			s.logger.Debug("File rotated",
-				"oldFile", filepath.Base(oldFile),
-				"newFile", filepath.Base(newPath),
-				"totalFiles", len(s.index.Files))
-		}
-
-		// Force a checkpoint after rotation to ensure index is persisted
-		// This is critical in multi-process mode so other processes see the new files
-		s.lastCheckpoint = time.Time{} // Reset to force checkpoint
-		s.maybeCheckpoint(clientMetrics, config)
-
-		// Update the metrics that would have been updated by persistIndex
-		if state := s.state; state != nil {
-			// Update file count metric
-			atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
-
-			// Calculate and update total file size
-			var totalBytes uint64
-			for _, file := range s.index.Files {
-				totalBytes += uint64(file.EndOffset - file.StartOffset)
-			}
-			atomic.StoreUint64(&state.TotalFileBytes, totalBytes)
-		}
-
-		return nil
-	}
-
-	// Regular file writer rotation - acquire write lock to ensure no writes are in progress
+	// Acquire write lock to ensure no writes are in progress
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -3294,17 +3054,8 @@ func (c *Client) Close() error {
 
 		// Final checkpoint - pass nil for metrics since we're shutting down
 		// Use the actual config for final checkpoint
-		// Force checkpoint on close in multi-process mode to ensure index is persisted
-		if c.config.Concurrency.IsMultiProcess() && shard.mmapWriter != nil {
-			// Always persist index on close to ensure files are visible to next process
-			if err := shard.persistIndex(); err != nil {
-				if c.logger != nil {
-					c.logger.Warn("Failed to persist index on close", "shard", shard.shardID, "error", err)
-				}
-			}
-		} else {
-			shard.maybeCheckpoint(&c.metrics, &c.config)
-		}
+		// Always checkpoint on close to ensure index is persisted
+		shard.maybeCheckpoint(&c.metrics, &c.config)
 
 		// Acquire write lock to ensure no writes are in progress
 		shard.writeMu.Lock()
@@ -3324,10 +3075,6 @@ func (c *Client) Close() error {
 			shard.dataFile.Close()
 		}
 
-		// Close memory-mapped writer
-		if shard.mmapWriter != nil {
-			shard.mmapWriter.Close()
-		}
 
 		shard.writeMu.Unlock()
 		shard.mu.Unlock()

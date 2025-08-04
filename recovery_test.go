@@ -84,11 +84,11 @@ func TestInitializeMmapWriterRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Simulate a corrupted state by closing the mmap writer
+	// Simulate a corrupted state by closing the data file
 	shard.mu.Lock()
-	if shard.mmapWriter != nil {
-		shard.mmapWriter.Close()
-		shard.mmapWriter = nil
+	if shard.dataFile != nil {
+		shard.dataFile.Close()
+		shard.dataFile = nil
 	}
 
 	// Make sure we have state initialized before recovery
@@ -98,12 +98,12 @@ func TestInitializeMmapWriterRecovery(t *testing.T) {
 		return
 	}
 
-	// Now call initializeMmapWriter to recover
-	err = shard.initializeMmapWriter(&config)
+	// Now recover by reopening the data file
+	err = shard.openDataFileWithConfig(filepath.Join(dir, "shard-0000"), &config)
 	shard.mu.Unlock()
 
 	if err != nil {
-		t.Fatalf("initializeMmapWriter failed: %v", err)
+		t.Fatalf("openDataFileWithConfig failed: %v", err)
 	}
 
 	// Verify we can write after recovery

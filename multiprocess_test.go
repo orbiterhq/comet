@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -372,12 +373,11 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 			t.Logf("  File[%d]: %s (entries=%d, startEntry=%d)", i, f.Path, f.Entries, f.StartEntry)
 		}
 
-		// DEBUG: Check what the actual data in the file is
-		if shard1.mmapWriter != nil {
-			if shard1.mmapWriter.state != nil {
-				t.Logf("MmapWriter state: WriteOffset=%d, FileSize=%d",
-					shard1.mmapWriter.state.GetWriteOffset(), shard1.mmapWriter.state.GetFileSize())
-			}
+		// DEBUG: Check state metrics
+		if shard1.state != nil {
+			t.Logf("State metrics: WriteOffset=%d, TotalWrites=%d",
+				atomic.LoadUint64(&shard1.state.WriteOffset), 
+				atomic.LoadUint64(&shard1.state.TotalWrites))
 		}
 
 		shard1.persistIndex()
@@ -404,10 +404,8 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 			t.Logf("  File[%d]: %s (entries=%d, startEntry=%d)", i, f.Path, f.Entries, f.StartEntry)
 		}
 
-		if shard2.mmapWriter != nil {
-			if shard2.mmapWriter.state != nil {
-				t.Logf("Reader mmap state: WriteOffset=%d", shard2.mmapWriter.state.GetWriteOffset())
-			}
+		if shard2.state != nil {
+			t.Logf("Reader state: WriteOffset=%d", atomic.LoadUint64(&shard2.state.WriteOffset))
 		}
 
 		// Try to read the data written by the first client
