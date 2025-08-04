@@ -2533,7 +2533,7 @@ func (s *Shard) lazyRebuildIndexIfNeeded(config CometConfig, shardDir string) {
 						// In stress test scenarios, reduce wait time
 						maxAttempts := 10
 						waitTime := 50 * time.Millisecond
-						
+
 						// If we're in a test environment, reduce wait times
 						if os.Getenv("CI") != "" || os.Getenv("TEST_FAST_MODE") != "" {
 							maxAttempts = 3

@@ -287,7 +287,7 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 		if processedThisSession == 0 {
 			break
 		}
-		
+
 		// Also check if we've now processed all messages
 		totalProcessedSoFar := atomic.LoadInt64(totalProcessed)
 		if totalProcessedSoFar >= int64(totalMessages) {
