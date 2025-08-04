@@ -17,7 +17,7 @@ import (
 // TestMmapCoordinationAtomicity verifies that WriteOffset.Add() gives unique, non-overlapping ranges
 func TestMmapCoordinationAtomicity(t *testing.T) {
 	testDir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Write init entry
 	client, err := NewClientWithConfig(testDir, config)
@@ -68,7 +68,7 @@ func TestMmapCoordinationAtomicity(t *testing.T) {
 // TestMmapDataIntegrity verifies that actual writes don't corrupt each other
 func TestMmapDataIntegrity(t *testing.T) {
 	testDir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Write init entry
 	client, err := NewClientWithConfig(testDir, config)
@@ -180,7 +180,7 @@ func init() {
 
 func testCoordinationAllocator(role string) {
 	dir := os.Getenv("COMET_COORD_TEST_DIR")
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -230,7 +230,7 @@ func testCoordinationAllocator(role string) {
 
 func testDataIntegrityWriter(role string) {
 	dir := os.Getenv("COMET_COORD_TEST_DIR")
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

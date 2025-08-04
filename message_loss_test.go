@@ -14,7 +14,7 @@ import (
 // TestMessageLoss tests for message loss with multiple concurrent consumers
 func TestMessageLoss(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "loss:v1:shard:0000"
 
 	// Enable debug logging

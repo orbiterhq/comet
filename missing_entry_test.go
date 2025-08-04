@@ -75,7 +75,7 @@ func TestMissingEntry_FirstWrite(t *testing.T) {
 func TestMissingEntry_StateVsIndex(t *testing.T) {
 	dir := t.TempDir()
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Log.EnableDebug = true
 
 	// First process writes

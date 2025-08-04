@@ -15,7 +15,7 @@ import (
 // TestValidateAndRecoverState tests state validation logic
 func TestValidateAndRecoverState(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Create client to initialize state
 	client, err := NewClientWithConfig(dir, config)
@@ -154,7 +154,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 // TestRecoverCorruptedState tests the corruption recovery mechanism
 func TestRecoverCorruptedState(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Create client and shard
 	client, err := NewClientWithConfig(dir, config)
@@ -254,7 +254,7 @@ func TestRecoverCorruptedState(t *testing.T) {
 // TestStateCorruptionEndToEnd tests full corruption recovery flow
 func TestStateCorruptionEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Create initial client and write data
 	client, err := NewClientWithConfig(dir, config)
@@ -343,7 +343,7 @@ func TestStateCorruptionEndToEnd(t *testing.T) {
 // TestMigrateStateVersion tests future version migration paths
 func TestMigrateStateVersion(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -382,7 +382,7 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Process 1: Create and write data
 	client1, err := NewClientWithConfig(dir, config)
@@ -475,7 +475,7 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 // TestPartialStateCorruption tests recovery from partial corruption
 func TestPartialStateCorruption(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -556,7 +556,7 @@ func TestStateFilePermissions(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -653,7 +653,7 @@ func TestValidateNilState(t *testing.T) {
 // TestRecoverWithNoIndex tests recovery when index is nil
 func TestRecoverWithNoIndex(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -699,7 +699,7 @@ func TestRecoverWithNoIndex(t *testing.T) {
 // TestSuspiciousMetrics tests the suspicious metrics check
 func TestSuspiciousMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -747,7 +747,7 @@ func TestRecoveryFailure(t *testing.T) {
 	// Both behaviors are acceptable as our recovery code handles both cases.
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -810,7 +810,7 @@ func TestRecoveryFailure(t *testing.T) {
 // TestStateWithEmptyCurrentFile tests recovery with empty CurrentFile
 func TestStateWithEmptyCurrentFile(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -854,7 +854,7 @@ func TestStateWithEmptyCurrentFile(t *testing.T) {
 // TestStateWithInvalidFilename tests recovery with invalid filename format
 func TestStateWithInvalidFilename(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -1054,7 +1054,7 @@ func TestKillProcessMidWrite(t *testing.T) {
 // TestErrorHandlingInsteadOfPanic verifies we return errors instead of panicking
 func TestErrorHandlingInsteadOfPanic(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -1106,7 +1106,7 @@ func TestErrorHandlingInsteadOfPanic(t *testing.T) {
 // BenchmarkStateValidation benchmarks the validation overhead
 func BenchmarkStateValidation(b *testing.B) {
 	dir := b.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

@@ -16,7 +16,7 @@ func TestIsolatedACKPersistence(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "isolated:v1:shard:0000"
 	totalMessages := 100
 

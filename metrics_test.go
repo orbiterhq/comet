@@ -14,7 +14,7 @@ import (
 // TestBatchMetrics tests batch-related metrics tracking
 func TestBatchMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 1024 * 1024 // High threshold to effectively disable
 
 	client, err := NewClientWithConfig(dir, config)
@@ -170,7 +170,7 @@ func TestReadMetrics(t *testing.T) {
 // TestRecoveryMetrics tests recovery and corruption detection metrics
 func TestRecoveryMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Create initial client and write data
 	client1, err := NewClientWithConfig(dir, config)
@@ -222,7 +222,7 @@ func TestRecoveryMetrics(t *testing.T) {
 // TestConsumerGroupMetrics tests consumer group related metrics
 func TestConsumerGroupMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -304,7 +304,7 @@ func TestConsumerGroupMetrics(t *testing.T) {
 // TestWriteLatencyMetrics tests write latency tracking including percentiles
 func TestWriteLatencyMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -396,7 +396,7 @@ func TestWriteLatencyMetrics(t *testing.T) {
 // TestCompressionMetrics tests compression-related metrics
 func TestCompressionMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 100 // Low threshold for testing
 
 	client, err := NewClientWithConfig(dir, config)
@@ -465,7 +465,7 @@ func TestCompressionMetrics(t *testing.T) {
 // TestFileOperationMetrics tests file-related metrics
 func TestFileOperationMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 1024 // Small files to force rotation
 
 	client, err := NewClientWithConfig(dir, config)
@@ -534,7 +534,7 @@ func TestFileOperationMetrics(t *testing.T) {
 // TestWriteMetrics tests basic write-related metrics
 func TestWriteMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -607,7 +607,7 @@ func TestWriteMetrics(t *testing.T) {
 // TestIndexMetrics tests index and checkpoint metrics
 func TestIndexMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Storage.CheckpointTime = 10    // Short checkpoint interval
 	config.Indexing.BoundaryInterval = 10 // Create binary index nodes every 10 entries
 
@@ -679,7 +679,7 @@ func TestIndexMetrics(t *testing.T) {
 // TestWriteErrorMetrics verifies that write errors are tracked
 func TestWriteErrorMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -742,7 +742,7 @@ func TestWriteErrorMetrics(t *testing.T) {
 // TestReadErrorMetrics tests read error tracking
 func TestReadErrorMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -798,7 +798,7 @@ func TestReadErrorMetrics(t *testing.T) {
 // TestMultiProcessMetrics tests multi-process coordination metrics
 func TestMultiProcessMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Create first client
 	client1, err := NewClientWithConfig(dir, config)

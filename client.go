@@ -326,11 +326,10 @@ func HighCompressionConfig() CometConfig {
 
 // MultiProcessConfig returns a config suitable for multi-process deployments
 // Enable this for prefork servers or when multiple processes write to the same stream
-// Deprecated: Set ProcessCount > 1 instead
-func MultiProcessConfig() CometConfig {
+func MultiProcessConfig(processID, processCount int) CometConfig {
 	cfg := DefaultCometConfig()
-	cfg.Concurrency.ProcessCount = 2 // Default to 2 processes
-	cfg.Concurrency.ProcessID = 0    // Caller should set this appropriately
+	cfg.Concurrency.ProcessID = processID
+	cfg.Concurrency.ProcessCount = processCount
 	cfg.Storage.CheckpointTime = 100 // More frequent checkpoints for multi-process coordination
 	return cfg
 }
@@ -628,27 +627,6 @@ func NewClientWithConfig(dataDir string, config CometConfig) (*Client, error) {
 	return c, nil
 }
 
-// registerConsumerGroup registers a consumer group as active for this client
-func (c *Client) registerConsumerGroup(group string) {
-	if group == "" {
-		group = "default"
-	}
-
-	c.activeGroupsMu.Lock()
-	c.activeGroups[group] = true
-	c.activeGroupsMu.Unlock()
-}
-
-// deregisterConsumerGroup removes a consumer group from the active set
-func (c *Client) deregisterConsumerGroup(group string) {
-	if group == "" {
-		group = "default"
-	}
-
-	c.activeGroupsMu.Lock()
-	delete(c.activeGroups, group)
-	c.activeGroupsMu.Unlock()
-}
 
 // getActiveGroups returns a copy of active consumer groups for this client
 func (c *Client) getActiveGroups() map[string]bool {
@@ -934,7 +912,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	if c.config.Concurrency.IsMultiProcess() {
 		// Initialize memory-mapped writer for ultra-fast writes
 		// Pass nil for rotation lock since processes own their shards exclusively
-		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, shard.state, nil)
+		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, shard.state)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize mmap writer: %w", err)
 		}
@@ -981,9 +959,6 @@ type CompressedEntry struct {
 }
 
 // storeState atomically stores the state pointer
-func (s *Shard) storeState(state *CometState) {
-	s.state = state
-}
 
 // preCompressEntries compresses entries outside of any locks to reduce contention
 func (s *Shard) preCompressEntries(entries [][]byte, config *CometConfig) []CompressedEntry {
@@ -1847,8 +1822,8 @@ func (s *Shard) loadIndexWithRecovery() error {
 				return fmt.Errorf("index corrupt and rebuild failed: original=%w, rebuild=%w", err, rebuildErr)
 			}
 
-			if s.logger != nil {
-				s.logger.Info("Successfully rebuilt index after corruption")
+			if IsDebug() && s.logger != nil {
+				s.logger.Debug("Successfully rebuilt index after corruption")
 			}
 			return nil // Rebuild succeeded
 		}
@@ -1901,7 +1876,7 @@ func (s *Shard) initializeMmapWriter(config *CometConfig) error {
 	}
 
 	// Create new mmap writer - use existing state
-	mmapWriter, err := NewMmapWriter(shardDir, config.Storage.MaxFileSize, s.index, s.state, nil)
+	mmapWriter, err := NewMmapWriter(shardDir, config.Storage.MaxFileSize, s.index, s.state)
 	if err != nil {
 		return fmt.Errorf("failed to create mmap writer: %w", err)
 	}
@@ -2443,8 +2418,8 @@ func (s *Shard) loadIndex() error {
 		// Since processes own their shards exclusively, if mmap writer added files, keep them
 		if len(s.index.Files) == 0 {
 			shardDir := filepath.Dir(s.indexPath)
-			if s.logger != nil {
-				s.logger.Info("loadIndex: No index file exists, attempting rebuild",
+			if IsDebug() && s.logger != nil {
+				s.logger.Debug("loadIndex: No index file exists, attempting rebuild",
 					"shardDir", shardDir,
 					"indexPath", s.indexPath)
 			}
@@ -2655,8 +2630,8 @@ func (s *Shard) getNextSequence() int64 {
 // rebuildIndexFromDataFiles scans data files to rebuild the index
 // Since processes own shards exclusively, this is only used for disaster recovery
 func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
-	if s.logger != nil {
-		s.logger.Info("rebuildIndexFromDataFiles: Starting rebuild", "shardDir", shardDir)
+	if IsDebug() && s.logger != nil {
+		s.logger.Debug("rebuildIndexFromDataFiles: Starting rebuild", "shardDir", shardDir)
 	}
 	// Find all data files
 	entries, err := os.ReadDir(shardDir)
@@ -2669,8 +2644,8 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 		return fmt.Errorf("failed to read shard directory: %w", err)
 	}
 
-	if s.logger != nil {
-		s.logger.Info("rebuildIndexFromDataFiles: Read directory",
+	if IsDebug() && s.logger != nil {
+		s.logger.Debug("rebuildIndexFromDataFiles: Read directory",
 			"shardDir", shardDir,
 			"entryCount", len(entries))
 	}

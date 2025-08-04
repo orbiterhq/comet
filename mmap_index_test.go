@@ -35,7 +35,7 @@ func TestMmapIndexFilesIssue(t *testing.T) {
 	})
 
 	t.Run("MultiProcess", func(t *testing.T) {
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		config.Concurrency.ProcessID = 0
 		config.Concurrency.ProcessCount = 2
 
@@ -83,7 +83,7 @@ func TestMmapIndexFilesIssue(t *testing.T) {
 // TestMmapWriterFileAddition tests that mmap writer correctly adds files to index
 func TestMmapWriterFileAddition(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -126,7 +126,7 @@ func TestMmapWriterFileAddition(t *testing.T) {
 // TestLoadIndexBehavior tests what happens when loadIndex is called
 func TestLoadIndexBehavior(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

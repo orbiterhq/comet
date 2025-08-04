@@ -191,7 +191,7 @@ func runBrowseStressWorker(t *testing.T, role string) {
 		t.Fatal("COMET_BROWSE_STRESS_DIR not set")
 	}
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)

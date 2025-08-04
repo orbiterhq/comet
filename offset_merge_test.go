@@ -13,7 +13,7 @@ import (
 // TestOffsetMergeLogic tests the offset merge logic that might cause message loss
 func TestOffsetMergeLogic(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "merge:v1:shard:0000"
 
 	// Enable debug

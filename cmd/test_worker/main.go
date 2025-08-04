@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/orbiterhq/comet"
@@ -54,7 +55,11 @@ func main() {
 }
 
 func runWriter(dir, id string, duration time.Duration) {
-	config := comet.MultiProcessConfig()
+	processID, err := strconv.Atoi(id)
+	if err != nil {
+		log.Fatalf("invalid process ID '%s': %v", id, err)
+	}
+	config := comet.MultiProcessConfig(processID, 2)
 	client, err := comet.NewClientWithConfig(dir, config)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
@@ -98,7 +103,11 @@ func runWriter(dir, id string, duration time.Duration) {
 }
 
 func runReader(dir, id string, duration time.Duration) {
-	config := comet.MultiProcessConfig()
+	processID, err := strconv.Atoi(id)
+	if err != nil {
+		log.Fatalf("invalid process ID '%s': %v", id, err)
+	}
+	config := comet.MultiProcessConfig(processID, 2)
 	client, err := comet.NewClientWithConfig(dir, config)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
@@ -160,7 +169,11 @@ func runReader(dir, id string, duration time.Duration) {
 }
 
 func runBenchmark(dir, id string, duration time.Duration) {
-	config := comet.MultiProcessConfig()
+	processID, err := strconv.Atoi(id)
+	if err != nil {
+		log.Fatalf("invalid process ID '%s': %v", id, err)
+	}
+	config := comet.MultiProcessConfig(processID, 2)
 	client, err := comet.NewClientWithConfig(dir, config)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
@@ -216,7 +229,7 @@ func runRetentionTest() {
 	}
 
 	// Use same config as test
-	config := comet.MultiProcessConfig()
+	config := comet.MultiProcessConfig(*workerID, 2)
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0
 
@@ -273,7 +286,7 @@ func runIndexRebuildTest() {
 	log.Printf("Starting index rebuild test in separate process")
 	log.Printf("Expected: %d files, %d entries", *initialFiles, *initialEntries)
 
-	config := comet.MultiProcessConfig()
+	config := comet.MultiProcessConfig(0, 1)
 	client, err := comet.NewClientWithConfig(*dir, config)
 	if err != nil {
 		log.Fatalf("Failed to create client (this should trigger index rebuild): %v", err)
@@ -328,7 +341,7 @@ func runRetentionDebug() {
 
 	log.Printf("=== RETENTION DEBUG WORKER ===")
 
-	config := comet.MultiProcessConfig()
+	config := comet.MultiProcessConfig(0, 1)
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0
 	config.Retention.ProtectUnconsumed = false

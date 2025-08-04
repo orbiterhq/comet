@@ -11,7 +11,7 @@ import (
 // TestProcessMultiProcessMode tests Process() in multi-process mode
 func TestProcessMultiProcessMode(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig() // Use multi-process config
+	config := MultiProcessConfig(0, 2) // Use multi-process config
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

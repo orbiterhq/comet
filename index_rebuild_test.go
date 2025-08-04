@@ -364,7 +364,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	ctx := context.Background()
 
 	// Create initial client in multi-process mode and write data
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 2048 // Small files to force rotation
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

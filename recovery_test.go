@@ -64,7 +64,7 @@ func TestEnsureWriterRecovery(t *testing.T) {
 // TestInitializeMmapWriterRecovery tests the initializeMmapWriter recovery function
 func TestInitializeMmapWriterRecovery(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig() // Use multi-process mode to test mmap path
+	config := MultiProcessConfig(0, 2) // Use multi-process mode to test mmap path
 
 	// Create initial client and write data
 	client, err := NewClientWithConfig(dir, config)
@@ -184,7 +184,7 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 		config CometConfig
 	}{
 		{"SingleProcess", DefaultCometConfig()},
-		{"MultiProcess", MultiProcessConfig()},
+		{"MultiProcess", MultiProcessConfig(0, 2)},
 	}
 
 	for _, tc := range testCases {
@@ -333,7 +333,7 @@ func TestConcurrentRecovery(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Retention.CleanupInterval = 50 * time.Millisecond
 
 	// Create initial client

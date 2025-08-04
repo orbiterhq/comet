@@ -9,7 +9,7 @@ import (
 // maintain isolated offsets and don't pollute each other
 func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	SetDebug(true)
 	defer SetDebug(false)
 

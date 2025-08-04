@@ -29,9 +29,8 @@ type MmapWriter struct {
 	maxFileSize     int64 // Max file size before rotation (default: 1GB)
 
 	// References
-	index            *ShardIndex
-	state            *CometState // Unified state includes metrics and coordination
-	rotationLockFile *os.File    // File lock for rotation coordination
+	index *ShardIndex
+	state *CometState // Unified state includes metrics and coordination
 
 	// Local metrics
 	remapCount    int64
@@ -39,16 +38,15 @@ type MmapWriter struct {
 }
 
 // NewMmapWriter creates a new memory-mapped writer for a shard
-func NewMmapWriter(shardDir string, maxFileSize int64, index *ShardIndex, state *CometState, rotationLockFile *os.File) (*MmapWriter, error) {
+func NewMmapWriter(shardDir string, maxFileSize int64, index *ShardIndex, state *CometState) (*MmapWriter, error) {
 	w := &MmapWriter{
-		shardDir:         shardDir,
-		initialSize:      4 * 1024,        // 4KB initial
-		growthIncrement:  1 * 1024 * 1024, // 1MB growth
-		mappingWindow:    1 * 1024 * 1024, // 1MB active window
-		maxFileSize:      maxFileSize,
-		index:            index,
-		state:            state,
-		rotationLockFile: rotationLockFile,
+		shardDir:        shardDir,
+		initialSize:     4 * 1024,        // 4KB initial
+		growthIncrement: 1 * 1024 * 1024, // 1MB growth
+		mappingWindow:   1 * 1024 * 1024, // 1MB active window
+		maxFileSize:     maxFileSize,
+		index:           index,
+		state:           state,
 	}
 
 	// Open or create current data file

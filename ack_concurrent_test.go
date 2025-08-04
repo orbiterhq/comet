@@ -13,7 +13,7 @@ import (
 // TestACKConcurrentPersistence tests concurrent ACK persistence
 func TestACKConcurrentPersistence(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "concurrent:v1:shard:0000"
 
 	// Write messages

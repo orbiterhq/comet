@@ -217,7 +217,7 @@ func runBrowseTestWorker(t *testing.T, role string) {
 		t.Fatal("COMET_BROWSE_TEST_DIR not set")
 	}
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
@@ -433,7 +433,7 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Verify final state using main process
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -501,7 +501,7 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 		t.Fatal("COMET_BROWSE_CONCURRENT_DIR not set")
 	}
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)

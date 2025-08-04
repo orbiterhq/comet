@@ -12,7 +12,7 @@ import (
 // TestSimpleRead tests basic read functionality
 func TestSimpleRead(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Enable debug
 	SetDebug(true)

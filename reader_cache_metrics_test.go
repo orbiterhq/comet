@@ -14,7 +14,7 @@ func TestReaderCacheMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Create client with multi-process config to get state
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 512 // Small files to create multiple
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -170,7 +170,7 @@ func TestReaderCacheEviction(t *testing.T) {
 	ctx := context.Background()
 
 	// Create client
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)

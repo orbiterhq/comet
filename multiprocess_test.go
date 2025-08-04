@@ -15,7 +15,7 @@ func TestMultiProcessInSameProcess(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create two clients with multi-process config
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Retention.CleanupInterval = 0 // Disable retention to prevent interference
 
 	client1, err := NewClientWithConfig(dir, config)
@@ -90,7 +90,7 @@ func TestMultiProcessInSameProcess(t *testing.T) {
 // TestMultiProcessMmapSize verifies the mmap state file is exactly 8 bytes
 func TestMultiProcessMmapSize(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -271,7 +271,7 @@ func TestMultiWriter_Configuration(t *testing.T) {
 	}{
 		{
 			name:   "locking_enabled",
-			config: MultiProcessConfig(),
+			config: MultiProcessConfig(0, 2),
 		},
 		{
 			name: "locking_disabled",
@@ -438,7 +438,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 // TestCometStateFile tests the unified state file creation and format
 func TestCometStateFile(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -473,7 +473,7 @@ func TestCometStateFile(t *testing.T) {
 // TestMmapTimestampUpdates tests that mmap timestamps are updated correctly
 func TestMmapTimestampUpdates(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

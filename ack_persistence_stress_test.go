@@ -75,7 +75,7 @@ func TestACKPersistenceStress(t *testing.T) {
 
 func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, processDelayMs, restartFreq int, sameGroup bool) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := fmt.Sprintf("stress:v1:shard:0000")
 
 	// Step 1: Write all test messages
@@ -236,7 +236,7 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 		}
 
 		// Create new client for each "restart"
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dataDir, config)
 		if err != nil {
 			results <- stressResult{consumerID: consumerID, err: err}
@@ -342,7 +342,7 @@ func TestACKPersistenceRaceConditions(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "race:v1:shard:0000"
 	totalMessages := 1000
 
@@ -423,7 +423,7 @@ func TestACKRaceWorker(t *testing.T) {
 	_ = os.Getenv("COMET_RACE_STREAM") // stream not used in worker
 	workerID, _ := strconv.Atoi(workerIDStr)
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dataDir, config)
 	if err != nil {
 		t.Fatalf("Race worker %d failed to create client: %v", workerID, err)
@@ -476,7 +476,7 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Use small files to trigger more rotations
 	config.Storage.MaxFileSize = 1024 * 1024 // 1MB files

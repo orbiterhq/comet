@@ -14,7 +14,7 @@ import (
 // TestQuickACKStress is a faster version for regular testing
 func TestQuickACKStress(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "quick:v1:shard:0000"
 	totalMessages := 200
 
@@ -133,7 +133,7 @@ func TestACKEdgeCases(t *testing.T) {
 
 func testEmptyBatchACK(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -153,7 +153,7 @@ func testEmptyBatchACK(t *testing.T) {
 
 func testDuplicateACK(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "dup:v1:shard:0000"
 
 	// Write message
@@ -220,7 +220,7 @@ func testDuplicateACK(t *testing.T) {
 
 func testOutOfOrderACK(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "order:v1:shard:0000"
 
 	// Write messages
@@ -281,7 +281,7 @@ func testOutOfOrderACK(t *testing.T) {
 func testRapidACKUnACK(t *testing.T) {
 	// Test rapid ACK operations that could cause race conditions
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "rapid:v1:shard:0000"
 
 	// Write messages
@@ -344,7 +344,7 @@ func testRapidACKUnACK(t *testing.T) {
 
 func testACKDuringRotation(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 1024 // Very small files to force rotation
 	stream := "rotation:v1:shard:0000"
 

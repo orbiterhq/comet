@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+var (
+	// Pre-compiled regex for parsing log file indices
+	logFileRegex = regexp.MustCompile(`log-(\d+)\.comet`)
+)
+
 // validateAndRecoverState validates the state file and recovers from corruption
 func (s *Shard) validateAndRecoverState() error {
 	if s.state == nil {
@@ -156,7 +161,7 @@ func (s *Shard) recoverCorruptedState(reason string) error {
 		if len(s.index.Files) > 0 && s.index.CurrentFile != "" {
 			// Extract file index from last file name (log-NNNNNNNNNNNNNNNN.comet)
 			lastFile := s.index.Files[len(s.index.Files)-1].Path
-			if matches := regexp.MustCompile(`log-(\d+)\.comet`).FindStringSubmatch(lastFile); len(matches) > 1 {
+			if matches := logFileRegex.FindStringSubmatch(lastFile); len(matches) > 1 {
 				if fileIndex, err := strconv.ParseUint(matches[1], 10, 64); err == nil {
 					atomic.StoreUint64(&state.ActiveFileIndex, fileIndex)
 				}

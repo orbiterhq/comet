@@ -39,7 +39,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 	streamName := "events:v1:shard:0000"
 
 	// Create initial data with multiple files
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0
 	config.Storage.MaxFileSize = 200 // Small files to force frequent rotations

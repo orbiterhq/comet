@@ -18,7 +18,7 @@ func TestMultiProcessCometStateStats(t *testing.T) {
 	streamName := "events:v1:shard:0000"
 
 	// Create multi-process config
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Process 1: Write some data and check initial stats
 	client1, err := NewClientWithConfig(baseDir, config)
@@ -148,7 +148,7 @@ func TestCometStateDirectAccess(t *testing.T) {
 
 	baseDir := t.TempDir()
 	streamName := "events:v1:shard:0000"
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Process 1: Create and write data
 	client1, err := NewClientWithConfig(baseDir, config)

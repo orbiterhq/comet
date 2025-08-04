@@ -14,7 +14,7 @@ import (
 // TestACKDebug tests ACK persistence with detailed logging
 func TestACKDebug(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "debug:v1:shard:0000"
 
 	// Enable debug logging

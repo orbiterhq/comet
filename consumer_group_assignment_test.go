@@ -15,7 +15,7 @@ import (
 // TestConsumerGroupShardAssignment tests that only one consumer per group can claim a shard
 func TestConsumerGroupShardAssignment(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Write test data to shard 1
 	client, err := NewClientWithConfig(dir, config)
@@ -144,7 +144,7 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 // TestConsumerFailover tests that when a consumer dies, another can take over
 func TestConsumerFailover(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Write test data
 	client, err := NewClientWithConfig(dir, config)
@@ -228,7 +228,7 @@ func TestConsumerFailover(t *testing.T) {
 // TestMultiShardConsumerGroup tests consumer group behavior across multiple shards
 func TestMultiShardConsumerGroup(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Write data to multiple shards
 	client, err := NewClientWithConfig(dir, config)
@@ -338,7 +338,7 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 // TestDebugMessageLoss - isolate and debug the 20 missing messages
 func TestDebugMessageLoss(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	SetDebug(true)
 	defer SetDebug(false)

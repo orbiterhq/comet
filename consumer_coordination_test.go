@@ -14,7 +14,7 @@ import (
 // TestConsumerCoordination tests message loss in high-contention scenarios
 func TestConsumerCoordination(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	stream := "coord:v1:shard:0000"
 
 	// Enable debug

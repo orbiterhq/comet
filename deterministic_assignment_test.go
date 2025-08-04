@@ -13,7 +13,7 @@ import (
 // TestDeterministicAssignment tests that deterministic shard assignment works
 func TestDeterministicAssignment(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Write test data to multiple shards
 	client, err := NewClientWithConfig(dir, config)
@@ -132,7 +132,7 @@ func TestDeterministicAssignment(t *testing.T) {
 // TestHybridACKBatching tests that hybrid ACK batching works correctly
 func TestHybridACKBatching(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Write test data
 	client, err := NewClientWithConfig(dir, config)

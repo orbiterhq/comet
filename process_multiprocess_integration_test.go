@@ -27,7 +27,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 
 	// Step 1: Write test data using main process
 	t.Logf("Writing %d messages to %s", totalMessages, stream)
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -169,7 +169,7 @@ func TestMultiProcessWorker(t *testing.T) {
 		workerID, dataDir, batchSize)
 
 	// Initialize client in multi-process mode
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dataDir, config)
 	if err != nil {
 		t.Fatalf("Worker %d failed to create client: %v", workerID, err)
@@ -242,7 +242,7 @@ func TestProcessMultiProcessContention(t *testing.T) {
 	stream := "contention:v1:shard:0042"
 
 	// Write test data
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +323,7 @@ func TestMultiProcessContentionWorker(t *testing.T) {
 	_ = os.Getenv("COMET_TEST_STREAM") // stream not used in contention worker
 	workerID, _ := strconv.Atoi(workerIDStr)
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dataDir, config)
 	if err != nil {
 		t.Fatalf("Contention worker %d failed to create client: %v", workerID, err)

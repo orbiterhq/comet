@@ -1859,7 +1859,7 @@ func BenchmarkMultiWriter_NoLocking(b *testing.B) {
 // BenchmarkMultiProcessMode_MmapWriter benchmarks the memory-mapped writer performance
 func BenchmarkMultiProcessMode_MmapWriter(b *testing.B) {
 	dir := b.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Create client which will use mmap writer in multi-process mode
 	client, err := NewClientWithConfig(dir, config)
@@ -1912,7 +1912,7 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 
 	b.Run("MultiProcess_AsyncCheckpoint", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 
 		// Temporarily disable mmap writer to test async checkpoint only
 		client, err := NewClientWithConfig(dir, config)
@@ -1942,7 +1942,7 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 
 	b.Run("MultiProcess_MmapWriter", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
@@ -1970,7 +1970,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("SingleEntry", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -1994,7 +1994,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("SmallBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2024,7 +2024,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("LargeBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2054,7 +2054,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("HugeBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2084,7 +2084,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("MegaBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2151,7 +2151,7 @@ func BenchmarkThroughputComparison(b *testing.B) {
 
 	b.Run("MultiProcess_Batch1000", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2238,7 +2238,7 @@ func runBenchmarkWorker(b *testing.B) {
 		n = b.N
 	}
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		b.Fatal(err)

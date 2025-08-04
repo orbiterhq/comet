@@ -353,7 +353,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		os.MkdirAll(testDir, 0755)
 
 		// Initialize with one entry
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(testDir, config)
 		if err != nil {
 			t.Fatal(err)
@@ -430,7 +430,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		os.MkdirAll(testDir, 0755)
 
 		// Initialize shard
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 
 		// Use multi-process config as intended
 		client, err := NewClientWithConfig(testDir, config)
@@ -655,7 +655,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		}
 
 		// Now try to write - should work since OS released the lock
-		config := MultiProcessConfig()
+		config := MultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(testDir, config)
 		if err != nil {
 			t.Fatal("Failed to create client after crash:", err)
@@ -681,7 +681,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 
 	t.Logf("%s process: PID=%d, PPID=%d", role, pid, ppid)
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	switch {
 	case role[:6] == "writer":
@@ -952,7 +952,7 @@ func runTestWorker(t *testing.T, workerID string) {
 		duration = 3 * time.Second
 	}
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("Worker %s (PID %d): failed to create client: %v", workerID, pid, err)
@@ -1033,7 +1033,7 @@ func runTestWorker(t *testing.T, workerID string) {
 
 // verifyMultiProcessResults checks data integrity after multi-process test
 func verifyMultiProcessResults(t *testing.T, dir string, numWriters int) {
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -1365,7 +1365,7 @@ func TestMultiProcessCrashRecovery(t *testing.T) {
 	}
 
 	// Now try to acquire the lock - it should work because OS releases locks on process exit
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client after crash: %v", err)
@@ -1387,7 +1387,7 @@ func TestMultiProcessCrashRecovery(t *testing.T) {
 func runCrashTestWorker(t *testing.T, workerID string) {
 	dir := os.Getenv("COMET_CRASH_TEST_DIR")
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -1435,7 +1435,7 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 	}
 
 	// Initialize shard
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -1664,7 +1664,7 @@ func runContentionWorker(t *testing.T, workerID string) {
 
 	t.Logf("Worker %s (PID %d) starting: will write %d entries", workerID, pid, numWrites)
 
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("Worker %s: failed to create client: %v", workerID, err)
@@ -1745,7 +1745,7 @@ func TestBulletproofMultiProcess(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			testDir := t.TempDir()
-			config := MultiProcessConfig()
+			config := MultiProcessConfig(0, 2)
 
 			// Initialize with first entry
 			client, err := NewClientWithConfig(testDir, config)
@@ -1846,7 +1846,7 @@ func TestBulletproofMultiProcess(t *testing.T) {
 // TestRapidStartupShutdown tests rapid process creation/destruction
 func TestRapidStartupShutdown(t *testing.T) {
 	testDir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Initialize
 	client, err := NewClientWithConfig(testDir, config)
@@ -1931,7 +1931,7 @@ func TestRapidStartupShutdown(t *testing.T) {
 // TestTimeBasedStress tests sustained load over time
 func TestTimeBasedStress(t *testing.T) {
 	testDir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Initialize
 	client, err := NewClientWithConfig(testDir, config)
@@ -2078,7 +2078,7 @@ func TestTimeBasedStress(t *testing.T) {
 // during index reloading due to race conditions between file writes and mmap state updates
 func TestEOFRetryLogic(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Create initial client and write some data
 	client, err := NewClientWithConfig(dir, config)
@@ -2187,7 +2187,7 @@ func TestEOFRetryLogic(t *testing.T) {
 // TestEOFRetryRaceCondition creates a specific test for the EOF race condition
 func TestEOFRetryRaceCondition(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	// Create two clients to simulate multi-process scenario
 	client1, err := NewClientWithConfig(dir, config)
@@ -2283,7 +2283,7 @@ func TestEOFRetryRaceCondition(t *testing.T) {
 // by simulating what would happen without it
 func TestRetryLogicVerification(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := MultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
