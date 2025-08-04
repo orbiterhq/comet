@@ -27,7 +27,8 @@ func TestACKPersistenceStress(t *testing.T) {
 		batchSize      int
 		numConsumers   int
 		processDelayMs int
-		restartFreq    int // Restart every N batches
+		restartFreq    int  // Restart every N batches
+		sameGroup      bool // Whether all consumers share the same group
 	}{
 		{
 			name:           "HighVolume_SmallBatches",
@@ -46,12 +47,13 @@ func TestACKPersistenceStress(t *testing.T) {
 			restartFreq:    5,
 		},
 		{
-			name:           "MultiConsumer_Contention",
+			name:           "MultiConsumer_SameGroup",
 			totalMessages:  2000,
 			batchSize:      25,
 			numConsumers:   3,
 			processDelayMs: 2,
 			restartFreq:    10,
+			sameGroup:      true, // All consumers share the same group
 		},
 		{
 			name:           "RapidRestart_Torture",
@@ -66,12 +68,12 @@ func TestACKPersistenceStress(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			runACKStressTest(t, tt.totalMessages, tt.batchSize, tt.numConsumers,
-				tt.processDelayMs, tt.restartFreq)
+				tt.processDelayMs, tt.restartFreq, tt.sameGroup)
 		})
 	}
 }
 
-func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, processDelayMs, restartFreq int) {
+func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, processDelayMs, restartFreq int, sameGroup bool) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
 	stream := fmt.Sprintf("stress:v1:shard:0001")
@@ -110,7 +112,7 @@ func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, proc
 		go func(id int) {
 			defer wg.Done()
 			runStressConsumer(t, dir, stream, id, batchSize, processDelayMs,
-				restartFreq, totalMessages, &processedMessages, &totalProcessed,
+				restartFreq, totalMessages, sameGroup, &processedMessages, &totalProcessed,
 				&totalDuplicates, &totalRestarts, results)
 		}(consumerID)
 	}
@@ -176,10 +178,6 @@ finished:
 		t.Fatal("No consumers completed successfully")
 	}
 
-	if finalDuplicates > 0 {
-		t.Errorf("CRITICAL: Found %d duplicate messages - ACK persistence is broken!", finalDuplicates)
-	}
-
 	// Count unique messages processed
 	uniqueCount := 0
 	processedMessages.Range(func(key, value interface{}) bool {
@@ -187,9 +185,31 @@ finished:
 		return true
 	})
 
-	if uniqueCount < totalMessages {
-		t.Errorf("CRITICAL: Only %d/%d unique messages processed - some were lost!",
-			uniqueCount, totalMessages)
+	// Verify based on whether consumers share the same group
+	if sameGroup {
+		// Same group: no duplicates expected, all messages should be processed exactly once
+		if finalDuplicates > 0 {
+			t.Errorf("CRITICAL: Found %d duplicate messages in same group - ACK persistence is broken!", finalDuplicates)
+		}
+
+		if uniqueCount < totalMessages {
+			t.Errorf("CRITICAL: Only %d/%d unique messages processed - some were lost!",
+				uniqueCount, totalMessages)
+		}
+	} else {
+		// Different groups: each consumer should process all messages
+		// So we expect (numConsumers-1) * totalMessages "duplicates"
+		expectedDuplicates := int64((numConsumers - 1) * totalMessages)
+		if finalDuplicates != expectedDuplicates {
+			t.Errorf("Different groups: expected %d cross-group overlaps, got %d",
+				expectedDuplicates, finalDuplicates)
+		}
+
+		// All messages should still be seen
+		if uniqueCount < totalMessages {
+			t.Errorf("CRITICAL: Only %d/%d unique messages seen across all groups!",
+				uniqueCount, totalMessages)
+		}
 	}
 
 	// Performance check
@@ -201,7 +221,7 @@ finished:
 }
 
 func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSize,
-	processDelayMs, restartFreq, totalMessages int, processedMessages *sync.Map,
+	processDelayMs, restartFreq, totalMessages int, sameGroup bool, processedMessages *sync.Map,
 	totalProcessed, totalDuplicates, totalRestarts *int64, results chan<- stressResult) {
 
 	var localProcessed int64
@@ -223,8 +243,14 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 			return
 		}
 
+		// Use same group for all consumers if sameGroup is true
+		groupName := fmt.Sprintf("stress-consumer-%d", consumerID)
+		if sameGroup {
+			groupName = "stress-consumer-shared"
+		}
+
 		consumer := NewConsumer(client, ConsumerOptions{
-			Group: fmt.Sprintf("stress-consumer-%d", consumerID),
+			Group: groupName,
 		})
 
 		// Process for a limited number of batches before "restarting"

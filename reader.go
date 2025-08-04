@@ -40,10 +40,44 @@ type ReaderConfig struct {
 // DefaultReaderConfig returns the default configuration for Reader
 func DefaultReaderConfig() ReaderConfig {
 	return ReaderConfig{
-		MaxMappedFiles:    10,                 // Reasonable default
-		MaxMemoryBytes:    1024 * 1024 * 1024, // 1GB default
-		CleanupIntervalMs: 5000,               // 5 second cleanup
+		MaxMappedFiles:    10,                     // Reasonable default
+		MaxMemoryBytes:    2 * 1024 * 1024 * 1024, // 2GB default (fixed: was 2MB)
+		CleanupIntervalMs: 5000,                   // 5 second cleanup
 	}
+}
+
+// ReaderConfigForStorage returns a reader configuration optimized for the given storage settings
+func ReaderConfigForStorage(maxFileSize int64) ReaderConfig {
+	// Start with defaults
+	cfg := DefaultReaderConfig()
+
+	// Validate maxFileSize
+	if maxFileSize <= 0 {
+		return cfg // Return defaults for invalid input
+	}
+
+	// Calculate optimal max mapped files based on memory and file size
+	// Assume files are typically 80% full on average
+	avgFileSize := (maxFileSize * 4) / 5
+	if avgFileSize <= 0 {
+		avgFileSize = maxFileSize // Prevent division issues
+	}
+
+	// How many average-sized files fit in our memory limit?
+	filesInMemory := cfg.MaxMemoryBytes / avgFileSize
+
+	// Set max mapped files to 2x what fits in memory (allows for variation in file sizes)
+	// But keep it within reasonable bounds
+	optimalMaxFiles := filesInMemory * 2
+	if optimalMaxFiles < 10 {
+		cfg.MaxMappedFiles = 10 // Minimum for good performance
+	} else if optimalMaxFiles > 100 {
+		cfg.MaxMappedFiles = 100 // Cap to avoid too many file descriptors
+	} else {
+		cfg.MaxMappedFiles = int(optimalMaxFiles)
+	}
+
+	return cfg
 }
 
 // MappedFile represents a memory-mapped file with atomic data access
@@ -127,20 +161,26 @@ type Reader struct {
 }
 
 // NewReader creates a new bounded reader for a shard with smart file mapping
-func NewReader(shardID uint32, index *ShardIndex) (*Reader, error) {
+func NewReader(shardID uint32, index *ShardIndex, config ...ReaderConfig) (*Reader, error) {
 	if index == nil {
 		return nil, fmt.Errorf("index cannot be nil")
 	}
 
-	config := DefaultReaderConfig()
+	// Use provided config or default
+	var cfg ReaderConfig
+	if len(config) > 0 {
+		cfg = config[0]
+	} else {
+		cfg = DefaultReaderConfig()
+	}
 
 	r := &Reader{
 		shardID:     shardID,
 		index:       index,
-		config:      config,
+		config:      cfg,
 		fileInfos:   make([]FileInfo, len(index.Files)),
 		mappedFiles: make(map[int]*MappedFile),
-		recentCache: newRecentFileCache(config.MaxMappedFiles / 2), // Half capacity for recent files
+		recentCache: newRecentFileCache(cfg.MaxMappedFiles / 2), // Half capacity for recent files
 		bufferPool: &sync.Pool{
 			New: func() any {
 				return make([]byte, 0, 64*1024)

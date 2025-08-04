@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -53,8 +55,9 @@ type Consumer struct {
 	client *Client
 
 	// Composite types
-	readers sync.Map // Cached readers per shard (optimized for read-heavy workload)
-	shards  sync.Map // Track shards that have been accessed (for Close persistence)
+	readers       sync.Map // Cached readers per shard (optimized for read-heavy workload)
+	shards        sync.Map // Track shards that have been accessed (for Close persistence)
+	claimedShards sync.Map // Track claimed shards for this consumer group (shardID -> *os.File)
 
 	// Track highest read entry per shard for AckRange validation
 	highestReadMu sync.RWMutex
@@ -67,6 +70,56 @@ type Consumer struct {
 // ConsumerOptions configures a consumer
 type ConsumerOptions struct {
 	Group string
+}
+
+// tryClaimShard attempts to claim exclusive access to a shard for this consumer group
+func (c *Consumer) tryClaimShard(shardID uint32) bool {
+	// Check if already claimed
+	if _, exists := c.claimedShards.Load(shardID); exists {
+		return true
+	}
+
+	// Create claim lock file
+	claimPath := filepath.Join(c.client.dataDir,
+		fmt.Sprintf("consumer-group-%s-shard-%d.claim", c.group, shardID))
+
+	claimFile, err := os.OpenFile(claimPath, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return false
+	}
+
+	// Try to acquire exclusive lock (non-blocking)
+	if err := syscall.Flock(int(claimFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		claimFile.Close()
+		return false
+	}
+
+	// Successfully claimed - store the lock file
+	c.claimedShards.Store(shardID, claimFile)
+	return true
+}
+
+// releaseShardClaims releases all claimed shards
+func (c *Consumer) releaseShardClaims() {
+	c.claimedShards.Range(func(key, value interface{}) bool {
+		if claimFile, ok := value.(*os.File); ok {
+			syscall.Flock(int(claimFile.Fd()), syscall.LOCK_UN)
+			claimFile.Close()
+		}
+		c.claimedShards.Delete(key)
+		return true
+	})
+}
+
+// getClaimedShards returns list of shards claimed by this consumer
+func (c *Consumer) getClaimedShards(candidateShards []uint32) []uint32 {
+	var claimed []uint32
+	for _, shardID := range candidateShards {
+		if c.tryClaimShard(shardID) {
+			claimed = append(claimed, shardID)
+		}
+	}
+	return claimed
 }
 
 // ProcessFunc handles a batch of messages, returning error to trigger retry
@@ -271,6 +324,9 @@ func (c *Consumer) Close() error {
 		return true
 	})
 
+	// Release all shard claims for this consumer group
+	c.releaseShardClaims()
+
 	// Deregister this consumer group
 	c.client.deregisterConsumerGroup(c.group)
 
@@ -346,17 +402,17 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 		return fmt.Errorf("handler is required")
 	}
 
-	// Determine shards to process
-	var shards []uint32
+	// Determine candidate shards to process
+	var candidateShards []uint32
 	if len(cfg.shards) > 0 {
-		shards = cfg.shards
+		candidateShards = cfg.shards
 	} else if cfg.stream != "" {
 		// Auto-discover shards from stream pattern
 		discoveredShards, err := c.discoverShards(cfg.stream, cfg.consumerID, cfg.consumerCount)
 		if err != nil {
 			return fmt.Errorf("failed to discover shards: %w", err)
 		}
-		shards = discoveredShards
+		candidateShards = discoveredShards
 	} else {
 		return fmt.Errorf("either Shards or Stream must be specified")
 	}
@@ -367,6 +423,18 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+
+		// Consumer group coordination: claim shards we can exclusively access
+		shards := c.getClaimedShards(candidateShards)
+		if len(shards) == 0 {
+			// No shards available for this consumer group - wait and retry
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(cfg.pollInterval):
+				continue
+			}
 		}
 
 		start := time.Now()
@@ -490,7 +558,7 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 	maps.Copy(indexCopy.ConsumerOffsets, shard.index.ConsumerOffsets)
 	shard.mu.RUnlock()
 
-	newReader, err := NewReader(shard.shardID, indexCopy)
+	newReader, err := NewReader(shard.shardID, indexCopy, c.client.config.Reader)
 	if err != nil {
 		return nil, err
 	}
@@ -576,17 +644,6 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	startEntryNum, exists := shard.index.ConsumerOffsets[c.group]
 	if !exists {
 		startEntryNum = 0
-	}
-
-	// DEBUG: Log the read position determination
-	if IsDebug() {
-		if logger := shard.logger; logger != nil {
-			logger.Debug("Consumer read position",
-				"consumerGroup", c.group,
-				"startEntryNum", startEntryNum,
-				"exists", exists,
-				"allOffsets", shard.index.ConsumerOffsets)
-		}
 	}
 
 	// After retention, the requested start entry might no longer exist
@@ -779,29 +836,53 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 				atomic.AddUint64(&state.ConsumerGroups, 1)
 			}
 		}
-		// Update consumer offset to the next entry number
-		// This ensures we won't re-read this entry
+		// Update consumer offset only if this is the next expected message
+		// This ensures exactly-once semantics for consumer groups
 		oldOffset := shard.index.ConsumerOffsets[c.group]
-		nextEntry := messageID.EntryNumber + 1
-		shard.index.ConsumerOffsets[c.group] = nextEntry
+		expectedEntryNum := oldOffset
+		var nextEntry int64
 
-		if IsDebug() && c.client.logger != nil {
-			c.client.logger.Debug("Updating consumer offset",
-				"group", c.group,
-				"messageID", messageID.EntryNumber,
-				"oldOffset", oldOffset,
-				"newOffset", nextEntry)
-		}
+		if messageID.EntryNumber == expectedEntryNum {
+			// This is the next expected message, we can advance the offset
+			nextEntry = messageID.EntryNumber + 1
+			shard.index.ConsumerOffsets[c.group] = nextEntry
 
-		// DEBUG: Log the ACK operation
-		if IsDebug() {
-			if logger := shard.logger; logger != nil {
-				logger.Debug("Consumer ACK",
-					"consumerGroup", c.group,
-					"messageID", messageID.String(),
-					"nextEntry", nextEntry,
-					"allOffsets", shard.index.ConsumerOffsets)
+			if IsDebug() && c.client.logger != nil {
+				c.client.logger.Debug("Updating consumer offset",
+					"group", c.group,
+					"messageID", messageID.EntryNumber,
+					"oldOffset", oldOffset,
+					"newOffset", nextEntry)
 			}
+
+			// DEBUG: Log the ACK operation
+			if IsDebug() {
+				if logger := shard.logger; logger != nil {
+					logger.Debug("Consumer ACK",
+						"consumerGroup", c.group,
+						"messageID", messageID.String(),
+						"nextEntry", nextEntry,
+						"allOffsets", shard.index.ConsumerOffsets)
+				}
+			}
+		} else if messageID.EntryNumber < expectedEntryNum {
+			// This message was already processed, ignore the ACK
+			if IsDebug() && c.client.logger != nil {
+				c.client.logger.Debug("Ignoring duplicate ACK",
+					"group", c.group,
+					"messageID", messageID.EntryNumber,
+					"expectedEntryNum", expectedEntryNum)
+			}
+		} else {
+			// This message is from the future, we can't ACK it yet
+			if IsDebug() && c.client.logger != nil {
+				c.client.logger.Debug("Cannot ACK future message",
+					"group", c.group,
+					"messageID", messageID.EntryNumber,
+					"expectedEntryNum", expectedEntryNum)
+			}
+			shard.mu.Unlock()
+			return fmt.Errorf("cannot ACK message %d: expected %d", messageID.EntryNumber, expectedEntryNum)
 		}
 		// Mark that we need a checkpoint
 		shard.writesSinceCheckpoint++

@@ -248,11 +248,16 @@ type CometConfig struct {
 	Retention RetentionConfig `json:"retention"`
 	// Logging configuration
 	Log LogConfig `json:"log"`
+
+	// Reader settings
+	Reader ReaderConfig `json:"reader"`
 }
 
 // DefaultCometConfig returns sensible defaults optimized for logging workloads
 func DefaultCometConfig() CometConfig {
-	return CometConfig{
+	maxFileSize := int64(256 << 20) // 256MB per file
+
+	cfg := CometConfig{
 		// Compression - optimized for logging workloads
 		Compression: CompressionConfig{
 			MinCompressSize: 4096, // Only compress entries >4KB to avoid latency hit on typical logs
@@ -264,10 +269,10 @@ func DefaultCometConfig() CometConfig {
 			MaxIndexEntries:  10000, // Limit index memory growth
 		},
 
-		// Storage - optimized for 1GB files
+		// Storage - optimized for 256MB files
 		Storage: StorageConfig{
-			MaxFileSize:    1 << 30, // 1GB per file
-			CheckpointTime: 2000,    // Checkpoint every 2 seconds
+			MaxFileSize:    maxFileSize,
+			CheckpointTime: 2000, // Checkpoint every 2 seconds
 		},
 
 		// Concurrency - disabled by default for performance
@@ -286,7 +291,12 @@ func DefaultCometConfig() CometConfig {
 			ProtectUnconsumed: true,             // Don't delete unread data by default
 			ForceDeleteAfter:  24 * time.Hour,   // Force delete after 24 hours
 		},
+
+		// Reader - dynamic defaults based on storage settings
+		Reader: ReaderConfigForStorage(maxFileSize),
 	}
+
+	return cfg
 }
 
 // HighCompressionConfig returns a config optimized for high compression ratios
@@ -4469,7 +4479,7 @@ func (c *Client) ListRecent(ctx context.Context, streamName string, limit int) (
 		c.logger.WithFields("totalEntries", totalEntries, "limit", limit).Debug("ListRecent scanning entries")
 	}
 
-	reader, err := NewReader(shardID, indexCopy)
+	reader, err := NewReader(shardID, indexCopy, c.config.Reader)
 	if err != nil {
 		return nil, err
 	}
@@ -4547,7 +4557,7 @@ func (c *Client) ScanAll(ctx context.Context, streamName string, fn func(context
 		c.logger.WithFields("totalEntries", totalEntries, "numFiles", len(indexCopy.Files)).Debug("ScanAll starting")
 	}
 
-	reader, err := NewReader(shardID, indexCopy)
+	reader, err := NewReader(shardID, indexCopy, c.config.Reader)
 	if err != nil {
 		return err
 	}
