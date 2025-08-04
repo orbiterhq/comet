@@ -2,6 +2,7 @@ package comet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"path/filepath"
@@ -11,6 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// ErrStopProcessing is a sentinel error that can be returned from ProcessFunc
+// to gracefully stop processing while still ACKing the current batch
+var ErrStopProcessing = errors.New("stop processing")
 
 // MessageID represents a structured message ID
 // Fields ordered for optimal memory alignment: int64 first, then uint32
@@ -49,6 +54,7 @@ type Consumer struct {
 
 	// Composite types
 	readers sync.Map // Cached readers per shard (optimized for read-heavy workload)
+	shards  sync.Map // Track shards that have been accessed (for Close persistence)
 
 	// Track highest read entry per shard for AckRange validation
 	highestReadMu sync.RWMutex
@@ -220,6 +226,47 @@ func (c *Consumer) Close() error {
 					atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
 				}
 			}
+		}
+		return true
+	})
+
+	// Persist any pending consumer offsets before closing
+	// This is critical to prevent ACK loss when consumer restarts
+	// In multiprocess mode, we need to ensure all pending checkpoints complete
+	if c.client.config.Concurrency.EnableMultiProcessMode {
+		// Wait for any pending async checkpoints to complete
+		c.shards.Range(func(key, value any) bool {
+			shardID := key.(uint32)
+			if shard, err := c.client.getOrCreateShard(shardID); err == nil {
+				// Wait for the wait group which tracks async operations
+				shard.wg.Wait()
+			}
+			return true
+		})
+	}
+
+	// Now persist any remaining changes synchronously
+	c.shards.Range(func(key, value any) bool {
+		shardID := key.(uint32)
+		if shard, err := c.client.getOrCreateShard(shardID); err == nil {
+			shard.mu.Lock()
+
+			// Always persist on close, regardless of writesSinceCheckpoint
+			// This ensures any recent ACKs are saved
+			if IsDebug() && c.client.logger != nil {
+				c.client.logger.Debug("Consumer close: persisting index",
+					"shardID", shardID,
+					"group", c.group,
+					"offset", shard.index.ConsumerOffsets[c.group],
+					"writesSinceCheckpoint", shard.writesSinceCheckpoint)
+			}
+
+			if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+				c.client.logger.Warn("Failed to persist consumer offsets on close",
+					"error", err, "shard", shardID, "group", c.group)
+			}
+
+			shard.mu.Unlock()
 		}
 		return true
 	})
@@ -471,6 +518,8 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 
 // readFromShard reads entries from a single shard using entry-based positioning
 func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int) ([]StreamMessage, error) {
+	// Track this shard for persistence on close
+	c.shards.Store(shard.shardID, true)
 	// Lock-free reader tracking
 	atomic.AddInt64(&shard.readerCount, 1)
 	defer atomic.AddInt64(&shard.readerCount, -1)
@@ -719,6 +768,9 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 			return err
 		}
 
+		// Track this shard for persistence on close
+		c.shards.Store(shard.shardID, true)
+
 		shard.mu.Lock()
 		// Check if this is a new consumer group
 		_, groupExists := shard.index.ConsumerOffsets[c.group]
@@ -729,8 +781,17 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		}
 		// Update consumer offset to the next entry number
 		// This ensures we won't re-read this entry
+		oldOffset := shard.index.ConsumerOffsets[c.group]
 		nextEntry := messageID.EntryNumber + 1
 		shard.index.ConsumerOffsets[c.group] = nextEntry
+
+		if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Updating consumer offset",
+				"group", c.group,
+				"messageID", messageID.EntryNumber,
+				"oldOffset", oldOffset,
+				"newOffset", nextEntry)
+		}
 
 		// DEBUG: Log the ACK operation
 		if IsDebug() {
@@ -749,12 +810,19 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 			atomic.AddUint64(&state.AckedEntries, 1)
 		}
 
-		// Persist consumer offsets immediately to prevent data loss
-		// In single-process mode, this prevents ACK loss if process crashes
-		// In multi-process mode, this ensures other processes see the update
-		// Note: persistIndex must be called while holding the lock
-		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-			c.client.logger.Warn("Failed to persist consumer offset after ACK", "error", err)
+		// Always persist consumer offsets immediately to prevent data loss
+		// The index lock in persistIndex() prevents contention in multiprocess mode
+		if err := shard.persistIndex(); err != nil {
+			if c.client.logger != nil {
+				c.client.logger.Warn("Failed to persist consumer offset after ACK", "error", err)
+			}
+		} else {
+			if IsDebug() && c.client.logger != nil {
+				c.client.logger.Debug("ACK persisted successfully",
+					"consumerGroup", c.group,
+					"shardID", shard.shardID,
+					"offset", shard.index.ConsumerOffsets[c.group])
+			}
 		}
 
 		shard.mu.Unlock()
@@ -780,6 +848,9 @@ func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 		if err != nil {
 			return err
 		}
+
+		// Track this shard for persistence on close
+		c.shards.Store(shardID, true)
 
 		shard.mu.Lock()
 
@@ -809,8 +880,8 @@ func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 			}
 		}
 
-		// Persist consumer offsets immediately to prevent data loss
-		// Note: persistIndex must be called while holding the lock
+		// Always persist consumer offsets immediately to prevent data loss
+		// The index lock in persistIndex() prevents contention in multiprocess mode
 		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
 			c.client.logger.Warn("Failed to persist consumer offsets after batch ACK", "error", err)
 		}

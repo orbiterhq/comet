@@ -170,6 +170,13 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 		return nil, err
 	}
 
+	if IsDebug() && s.logger != nil {
+		s.logger.Debug("Loading binary index",
+			"shardID", s.shardID,
+			"indexPath", s.indexPath,
+			"fileSize", len(data))
+	}
+
 	if len(data) < 32 { // Minimum header size
 		return nil, fmt.Errorf("index file too small")
 	}
@@ -251,6 +258,12 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 		offset += 8
 
 		index.ConsumerOffsets[group] = consumerOffset
+	}
+
+	if IsDebug() && s.logger != nil && len(index.ConsumerOffsets) > 0 {
+		s.logger.Debug("Loaded consumer offsets from index",
+			"shardID", s.shardID,
+			"offsets", index.ConsumerOffsets)
 	}
 
 	// Read binary index nodes

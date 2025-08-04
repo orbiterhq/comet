@@ -110,7 +110,7 @@ func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, proc
 		go func(id int) {
 			defer wg.Done()
 			runStressConsumer(t, dir, stream, id, batchSize, processDelayMs,
-				restartFreq, &processedMessages, &totalProcessed,
+				restartFreq, totalMessages, &processedMessages, &totalProcessed,
 				&totalDuplicates, &totalRestarts, results)
 		}(consumerID)
 	}
@@ -201,7 +201,7 @@ finished:
 }
 
 func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSize,
-	processDelayMs, restartFreq int, processedMessages *sync.Map,
+	processDelayMs, restartFreq, totalMessages int, processedMessages *sync.Map,
 	totalProcessed, totalDuplicates, totalRestarts *int64, results chan<- stressResult) {
 
 	var localProcessed int64
@@ -210,6 +210,11 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 
 	// Consumer will restart every restartFreq batches
 	for {
+		// Check if all messages are already processed before starting
+		if atomic.LoadInt64(totalProcessed) >= int64(totalMessages) {
+			break
+		}
+
 		// Create new client for each "restart"
 		config := MultiProcessConfig()
 		client, err := NewClientWithConfig(dataDir, config)
@@ -226,7 +231,8 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 		batchesBeforeRestart := restartFreq + rand.Intn(3) // Add some randomness
 		processedThisSession := 0
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Use a shorter timeout to prevent hanging when no messages are left
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
 		processFunc := func(ctx context.Context, msgs []StreamMessage) error {
 			batchCount++
@@ -243,7 +249,7 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 					// Duplicate detected!
 					atomic.AddInt64(totalDuplicates, 1)
 					atomic.AddInt64(&localDuplicates, 1)
-					t.Logf("DUPLICATE detected by consumer %d: %s", consumerID, msgKey)
+					// t.Logf("DUPLICATE detected by consumer %d: %s", consumerID, msgKey)
 				}
 			}
 
@@ -270,8 +276,21 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 		client.Close()
 		cancel()
 
+		// Check if we've processed all messages before this session
+		totalProcessedBeforeSession := atomic.LoadInt64(totalProcessed) - int64(processedThisSession)
+		if totalProcessedBeforeSession >= int64(totalMessages) {
+			// All messages were already processed, we're done
+			break
+		}
+
 		// If we processed nothing, we're probably done
 		if processedThisSession == 0 {
+			break
+		}
+		
+		// Also check if we've now processed all messages
+		totalProcessedSoFar := atomic.LoadInt64(totalProcessed)
+		if totalProcessedSoFar >= int64(totalMessages) {
 			break
 		}
 
