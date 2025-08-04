@@ -41,10 +41,6 @@ func TestReaderCacheMetrics(t *testing.T) {
 		t.Fatal("Failed to get shard:", err)
 	}
 
-	if shard.state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
 	// Check initial state - no reader cache activity yet
 	state := shard.state
 	initialFileMaps := atomic.LoadUint64(&state.ReaderFileMaps)
@@ -196,10 +192,6 @@ func TestReaderCacheEviction(t *testing.T) {
 	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	if shard.state == nil {
-		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Create reader directly

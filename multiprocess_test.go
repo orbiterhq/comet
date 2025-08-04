@@ -109,11 +109,11 @@ func TestMultiProcessMmapSize(t *testing.T) {
 
 	// Check the mmap state file size
 	client.mu.RLock()
-	shard, exists := client.shards[1]
+	shard, exists := client.shards[0]
 	client.mu.RUnlock()
 
 	if !exists {
-		t.Fatal("Shard 1 not found")
+		t.Fatal("Shard 0 not found")
 	}
 
 	if shard.state == nil {

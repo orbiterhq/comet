@@ -81,7 +81,7 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 	// For this test, we'll clear the cache to simulate a client restart scenario, which is
 	// a common case where recovery is needed.
 	client.mu.Lock()
-	delete(client.shards, 1) // Remove shard 1 from the cache to force recreation
+	delete(client.shards, 0) // Remove shard 0 from the cache to force recreation
 	client.mu.Unlock()
 	t.Logf("Cleared shard from cache to simulate client restart scenario")
 
@@ -138,6 +138,9 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 	}
 
 	t.Logf("Write succeeded, checking if shard directory was recreated...")
+
+	// Force a sync to ensure directory is created
+	client.Sync(ctx)
 
 	// Verify the shard directory was recreated
 	if _, err := os.Stat(shardDir); os.IsNotExist(err) {

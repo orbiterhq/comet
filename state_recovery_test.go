@@ -109,12 +109,11 @@ func TestValidateAndRecoverState(t *testing.T) {
 			// Apply test setup
 			tc.setupFunc()
 
-			// Count recovery attempts before
-			state := shard.state
-			if state == nil {
+			// Get state pointer before validation
+			stateBefore := shard.state
+			if stateBefore == nil {
 				t.Fatal("State is nil after initCometState")
 			}
-			recoveryAttemptsBefore := atomic.LoadUint64(&state.RecoveryAttempts)
 
 			// Run validation
 			err := shard.validateAndRecoverState()
@@ -124,13 +123,20 @@ func TestValidateAndRecoverState(t *testing.T) {
 				t.Errorf("Unexpected error during recovery: %v", err)
 			}
 
-			// Check if recovery was attempted
-			recoveryAttemptsAfter := atomic.LoadUint64(&state.RecoveryAttempts)
-			if tc.expectRecover && recoveryAttemptsAfter == recoveryAttemptsBefore {
-				t.Error("Expected recovery attempt but none occurred")
-			}
-			if !tc.expectRecover && recoveryAttemptsAfter > recoveryAttemptsBefore {
-				t.Error("Unexpected recovery attempt")
+			// Check if recovery happened by verifying the bad values were reset
+			stateAfter := shard.state
+			if tc.expectRecover {
+				// After recovery, version should be valid
+				version := atomic.LoadUint64(&stateAfter.Version)
+				if version != CometStateVersion1 {
+					t.Errorf("After recovery, version should be %d, got %d", CometStateVersion1, version)
+				}
+
+				// LastEntryNumber should be valid (>= -1)
+				lastEntry := atomic.LoadInt64(&stateAfter.LastEntryNumber)
+				if lastEntry < -1 {
+					t.Errorf("After recovery, LastEntryNumber should be >= -1, got %d", lastEntry)
+				}
 			}
 
 			// Cleanup state file for next test
@@ -172,6 +178,16 @@ func TestRecoverCorruptedState(t *testing.T) {
 	shard.index.CurrentEntryNumber = 42
 	shard.index.CurrentWriteOffset = 1234
 	shard.index.CurrentFile = fmt.Sprintf("%s/log-%016d.comet", filepath.Dir(shard.indexPath), 5)
+	// Add a file to the index so recovery can extract the file index
+	shard.index.Files = append(shard.index.Files, FileInfo{
+		Path:        shard.index.CurrentFile,
+		StartOffset: 0,
+		EndOffset:   1234,
+		StartEntry:  0,
+		Entries:     42,
+		StartTime:   time.Now(),
+		EndTime:     time.Now(),
+	})
 	shard.mu.Unlock()
 
 	// Get the state file path

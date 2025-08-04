@@ -258,12 +258,10 @@ func (s *CometState) GetMinWriteLatency() uint64 {
 	return atomic.LoadUint64(&s.MinWriteLatency)
 }
 
-
 // MaxWriteLatency methods
 func (s *CometState) GetMaxWriteLatency() uint64 {
 	return atomic.LoadUint64(&s.MaxWriteLatency)
 }
-
 
 // WriteLatencySum methods
 func (s *CometState) AddWriteLatencySum(delta uint64) uint64 {

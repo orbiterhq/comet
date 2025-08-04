@@ -703,31 +703,18 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 		return 0, err
 	}
 
+	// Handle potential index rebuild in multi-process mode
+	if shard.state != nil && shard.checkIfRebuildNeeded() {
+		shard.mu.Lock()
+		if shard.checkIfRebuildNeeded() {
+			shard.lazyRebuildIndexIfNeeded(c.config, filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shard.shardID)))
+		}
+		shard.mu.Unlock()
+	}
+
+	// Now get the length with read lock
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()
-
-	// Since processes own their shards exclusively, no need to reload for other processes
-	// Each process maintains its own view of the shard it owns
-
-	// In multi-process mode, check if we need to rebuild index AFTER reloading
-	if shard.state != nil {
-		// Check if rebuild needed while holding read lock
-		needsRebuild := shard.checkIfRebuildNeeded()
-		shard.mu.RUnlock()
-
-		if needsRebuild {
-			// Acquire write lock for rebuild
-			shard.mu.Lock()
-			// Double-check after acquiring write lock
-			if shard.checkIfRebuildNeeded() {
-				shard.lazyRebuildIndexIfNeeded(c.config, filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shard.shardID)))
-			}
-			shard.mu.Unlock()
-		}
-
-		// Re-acquire read lock
-		shard.mu.RLock()
-	}
 
 	var total int64
 	for _, file := range shard.index.Files {
@@ -777,20 +764,6 @@ func (c *Client) Sync(ctx context.Context) error {
 					current := &shard.index.Files[len(shard.index.Files)-1]
 					current.EndOffset = shard.index.CurrentWriteOffset
 					current.EndTime = time.Now()
-				}
-			}
-		}
-
-		// In multi-process mode, also sync all file EndOffsets with actual file sizes
-		if c.config.Concurrency.IsMultiProcess() {
-			for i := range shard.index.Files {
-				file := &shard.index.Files[i]
-				if stat, err := os.Stat(file.Path); err == nil {
-					actualSize := stat.Size()
-					// Only update if the file is larger than recorded
-					if actualSize > file.EndOffset {
-						file.EndOffset = actualSize
-					}
 				}
 			}
 		}
@@ -854,18 +827,8 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 
 	// Check if shard already exists and detect mode mismatch
 	if stat, err := os.Stat(shardDir); err == nil && stat.IsDir() {
-		// Shard directory exists - check for mode compatibility
-		statePath := filepath.Join(shardDir, "comet.state")
-		_, stateErr := os.Stat(statePath)
-
-		if c.config.Concurrency.IsMultiProcess() && os.IsNotExist(stateErr) {
-			// Check if there are any data files (indicating single-process mode shard)
-			if files, _ := filepath.Glob(filepath.Join(shardDir, "*.comet")); len(files) > 0 {
-				return nil, fmt.Errorf("shard %d was created in single-process mode but client is in multi-process mode - mode switching is not supported", shardID)
-			}
-		} else if !c.config.Concurrency.IsMultiProcess() && stateErr == nil {
-			return nil, fmt.Errorf("shard %d was created in multi-process mode but client is in single-process mode - mode switching is not supported", shardID)
-		}
+		// Since we now always use state files, we don't need to check for mode mismatches
+		// The state file will exist for both single and multi-process modes
 	}
 
 	// Create shard directory if it doesn't exist
@@ -918,21 +881,8 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	// we don't need lock files for coordination. Processes can directly write
 	// to their owned shards without locking.
 
-	// NOTE: Old mmapState and sequenceState initialization removed - replaced by CometState
-	if c.config.Concurrency.IsMultiProcess() {
-		// CometState initialization already handled above
-
-		// Initialize memory-mapped writer for ultra-fast writes
-		// Pass nil for rotation lock since processes own their shards exclusively
-		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, shard.state, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize mmap writer: %w", err)
-		}
-		shard.mmapWriter = mmapWriter
-
-	}
-
 	// Load existing index if present
+	// IMPORTANT: Must load index BEFORE initializing mmapWriter to allow rebuild from data files
 	if c.logger != nil {
 		c.logger.Debug("getOrCreateShard: before loadIndex",
 			"shardID", shardID,
@@ -940,9 +890,8 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 			"currentEntryNumber", shard.index.CurrentEntryNumber)
 	}
 
-	// Filter index loading to only include active consumer groups
-	activeGroups := c.getActiveGroups()
-	if err := shard.loadIndexWithActiveGroups(activeGroups); err != nil {
+	// Load the index with recovery support - handles rebuild if index is missing/corrupted
+	if err := shard.loadIndexWithRecovery(); err != nil {
 		return nil, err
 	}
 
@@ -979,6 +928,17 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		if writeOffset > uint64(shard.index.CurrentWriteOffset) {
 			shard.index.CurrentWriteOffset = int64(writeOffset)
 		}
+	}
+
+	// Initialize mmapWriter AFTER loading index to ensure rebuild works correctly
+	if c.config.Concurrency.IsMultiProcess() {
+		// Initialize memory-mapped writer for ultra-fast writes
+		// Pass nil for rotation lock since processes own their shards exclusively
+		mmapWriter, err := NewMmapWriter(shardDir, c.config.Storage.MaxFileSize, shard.index, shard.state, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize mmap writer: %w", err)
+		}
+		shard.mmapWriter = mmapWriter
 	}
 
 	// Open or create current data file
@@ -1079,281 +1039,317 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	compressedEntries := s.preCompressEntries(entries, config)
 
 	// Prepare write request while holding lock
-	var writeReq WriteRequest
-	var totalOriginalBytes, totalCompressedBytes uint64
-	var compressedCount, skippedCount uint64
-
-	// Single-process mode: Define rollback function for write failures
-	// Don't reuse UpdateFunc for rollback - that's a design flaw
-	var rollbackFunc func() error
-
-	// Critical section: prepare write data and update indices
-	var criticalErr error
-	func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		// Since processes own their shards exclusively, no need to check for changes
-
-		writeReq.IDs = make([]MessageID, len(entries))
-		now := startTime.UnixNano()
-
-		// Build write buffers from pre-compressed data (minimal work under lock)
-		writeReq.WriteBuffers = make([][]byte, 0, len(entries)*2) // headers + data
-
-		// Allocate header buffer for this specific request (no sharing)
-		requiredSize := len(entries) * headerSize
-		allHeaders := make([]byte, requiredSize)
-
-		// Store initial state for rollback if write fails
-		initialEntryNumber := s.index.CurrentEntryNumber
-		initialWriteOffset := s.index.CurrentWriteOffset
-		initialWritesSinceCheckpoint := s.writesSinceCheckpoint
-
-		// Pre-allocate entry numbers - different approaches for single vs multi-process
-		entryNumbers := make([]int64, len(entries))
-
-		if config.Concurrency.IsMultiProcess() {
-			// Multi-process mode: use atomic state operations for thread safety
-			state := s.state
-			if state != nil {
-				for i := range entries {
-					entryNumbers[i] = state.IncrementLastEntryNumber()
-				}
-			} else {
-				// Fallback if state not available (shouldn't happen in normal operation)
-				if IsDebug() && s.logger != nil {
-					s.logger.Warn("State not available, using index fallback",
-						"shard", s.shardID)
-				}
-				baseEntry := s.index.CurrentEntryNumber
-				for i := range entries {
-					entryNumbers[i] = baseEntry + int64(i)
-				}
-			}
-		} else {
-			// Single-process mode: direct index access for maximum performance
-			baseEntry := s.index.CurrentEntryNumber
-			for i := range entries {
-				entryNumbers[i] = baseEntry + int64(i)
-			}
-		}
-
-		// Build write request with allocated entry numbers
-		if !config.Concurrency.IsMultiProcess() {
-			for i, compressedEntry := range compressedEntries {
-				totalOriginalBytes += compressedEntry.OriginalSize
-				totalCompressedBytes += compressedEntry.CompressedSize
-
-				if compressedEntry.WasCompressed {
-					compressedCount++
-				} else {
-					skippedCount++
-				}
-
-				// Use slice of pre-allocated header buffer
-				headerStart := i * headerSize
-				header := allHeaders[headerStart : headerStart+headerSize]
-				binary.LittleEndian.PutUint32(header[0:4], uint32(len(compressedEntry.Data)))
-				binary.LittleEndian.PutUint64(header[4:12], uint64(now))
-
-				// Add to vectored write batch
-				writeReq.WriteBuffers = append(writeReq.WriteBuffers, header, compressedEntry.Data)
-
-				// Track entry in binary index - only store at intervals for memory efficiency
-				entryNumber := entryNumbers[i]
-				entrySize := int64(headerSize + len(compressedEntry.Data))
-
-				// Calculate the correct file index and offset for this entry
-				fileIndex := len(s.index.Files) - 1
-				byteOffset := s.index.CurrentWriteOffset
-
-				// If this entry will cause rotation and we're not at the start of a file,
-				// it will be written to the NEXT file at offset 0
-				willCauseRotation := s.index.CurrentWriteOffset+entrySize > config.Storage.MaxFileSize
-				if willCauseRotation && s.index.CurrentWriteOffset > 0 {
-					fileIndex = len(s.index.Files) // Will be the next file after rotation
-					byteOffset = 0
-				}
-
-				position := EntryPosition{
-					FileIndex:  fileIndex,
-					ByteOffset: byteOffset,
-				}
-
-				// Add to binary searchable index (it handles intervals and pruning internally)
-				s.index.BinaryIndex.AddIndexNode(entryNumber, position)
-
-				// Update metric if state is available
-				if state := s.state; state != nil {
-					atomic.StoreUint64(&state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
-				}
-
-				// Generate ID for this entry
-				writeReq.IDs[i] = MessageID{EntryNumber: entryNumber, ShardID: s.shardID}
-
-				s.index.CurrentEntryNumber = entryNumber + 1
-				s.index.CurrentWriteOffset += entrySize
-				s.writesSinceCheckpoint++
-			}
-		} else {
-			// Multi-process mode: Track binary index updates for deferred application
-			type binaryIndexUpdate struct {
-				entryNumber int64
-				position    EntryPosition
-			}
-			var binaryIndexUpdates []binaryIndexUpdate
-
-			// Track write position
-			writeOffset := s.index.CurrentWriteOffset
-
-			for i, compressedEntry := range compressedEntries {
-				totalOriginalBytes += compressedEntry.OriginalSize
-				totalCompressedBytes += compressedEntry.CompressedSize
-
-				if compressedEntry.WasCompressed {
-					compressedCount++
-				} else {
-					skippedCount++
-				}
-
-				// Use slice of pre-allocated header buffer
-				headerStart := i * headerSize
-				header := allHeaders[headerStart : headerStart+headerSize]
-				binary.LittleEndian.PutUint32(header[0:4], uint32(len(compressedEntry.Data)))
-				binary.LittleEndian.PutUint64(header[4:12], uint64(now))
-
-				// Add to vectored write batch
-				writeReq.WriteBuffers = append(writeReq.WriteBuffers, header, compressedEntry.Data)
-
-				// Track entry in binary index - only store at intervals for memory efficiency
-				entrySize := int64(headerSize + len(compressedEntry.Data))
-				entryNumber := entryNumbers[i]
-
-				// Calculate the correct file index and offset for this entry
-				fileIndex := len(s.index.Files) - 1
-				byteOffset := writeOffset
-
-				// If this entry will cause rotation and we're not at the start of a file,
-				// it will be written to the NEXT file at offset 0
-				willCauseRotation := writeOffset+entrySize > config.Storage.MaxFileSize
-				if willCauseRotation && writeOffset > 0 {
-					fileIndex = len(s.index.Files) // Will be the next file after rotation
-					byteOffset = 0
-				}
-
-				position := EntryPosition{
-					FileIndex:  fileIndex,
-					ByteOffset: byteOffset,
-				}
-
-				// Store for later update - only at boundary intervals for memory efficiency
-				if entryNumber%int64(s.index.BoundaryInterval) == 0 || entryNumber == 0 {
-					binaryIndexUpdates = append(binaryIndexUpdates, binaryIndexUpdate{
-						entryNumber: entryNumber,
-						position:    position,
-					})
-				}
-
-				// Generate ID for this entry
-				writeReq.IDs[i] = MessageID{EntryNumber: entryNumber, ShardID: s.shardID}
-
-				// Track write position for next entry
-				writeOffset += entrySize
-			}
-
-			// Multi-process mode: set up deferred update function
-			// Calculate final entry number (highest allocated + 1)
-			finalEntryNumber := int64(0)
-			if len(entryNumbers) > 0 {
-				finalEntryNumber = entryNumbers[len(entryNumbers)-1] + 1
-			}
-			finalWriteOffset := writeOffset
-
-			// DEBUG: Log entry number calculation
-			if IsDebug() && s.logger != nil {
-				s.logger.Debug("Entry number calculation",
-					"shard", s.shardID,
-					"entryNumbers", entryNumbers,
-					"finalEntryNumber", finalEntryNumber,
-					"initialEntryNumber", initialEntryNumber)
-			}
-			writeReq.UpdateFunc = func() error {
-				s.mu.Lock()
-				defer s.mu.Unlock()
-
-				// Apply the binary index updates
-				for _, update := range binaryIndexUpdates {
-					s.index.BinaryIndex.AddIndexNode(update.entryNumber, update.position)
-				}
-
-				// Update metric if state is available
-				if state := s.state; state != nil {
-					atomic.StoreUint64(&state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
-				}
-
-				// Apply the index updates
-				if IsDebug() && s.logger != nil {
-					s.logger.Debug("TRACE: Setting CurrentEntryNumber to final in multiprocess",
-						"location", "client.go:1530",
-						"oldValue", s.index.CurrentEntryNumber,
-						"newValue", finalEntryNumber,
-						"shardID", s.shardID)
-				}
-				s.index.CurrentEntryNumber = finalEntryNumber
-				s.index.CurrentWriteOffset = finalWriteOffset
-				s.writesSinceCheckpoint = initialWritesSinceCheckpoint + len(entries)
-
-				// Update the current file's end offset
-				// Note: Don't increment file entry counts here in multi-process mode
-				// as this causes race conditions. Entry counts are calculated accurately
-				// during index reloads from the authoritative state.
-				if len(s.index.Files) > 0 {
-					s.index.Files[len(s.index.Files)-1].EndOffset = finalWriteOffset
-				}
-
-				// Update mmap state to notify readers
-				if s.state != nil {
-					s.updateMmapState()
-				}
-
-				// Schedule async checkpoint instead of synchronous
-				if s.writesSinceCheckpoint > 0 && time.Since(s.lastCheckpoint) > 10*time.Millisecond {
-					s.scheduleAsyncCheckpoint(clientMetrics, config)
-				}
-
-				return nil
-			}
-		}
-
-		// Initialize rollback function for single-process mode
-		if !config.Concurrency.IsMultiProcess() {
-			rollbackFunc = func() error {
-				// On failure, rollback both index state and unified state
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				s.index.CurrentEntryNumber = initialEntryNumber
-				s.index.CurrentWriteOffset = initialWriteOffset
-				s.writesSinceCheckpoint = initialWritesSinceCheckpoint
-
-				// In single-process mode, no need to rollback state since we didn't modify it
-				// State is not used for entry numbering in single-process mode
-				return nil
-			}
-		}
-	}() // End of critical section
-
-	// Check if critical section failed
+	writeReq, criticalErr := s.prepareWriteRequest(compressedEntries, startTime, config, clientMetrics)
 	if criticalErr != nil {
-		if IsDebug() && s.logger != nil {
-			s.logger.Debug("Critical section failed",
-				"shard", s.shardID,
-				"error", criticalErr)
-		}
 		return nil, criticalErr
 	}
 
 	// Perform I/O OUTSIDE the lock
+	writeErr := s.performWrite(writeReq, config, clientMetrics, activeGroups)
+	if writeErr != nil {
+		return nil, writeErr
+	}
+
+	// Apply deferred updates for multi-process mode
+	if config.Concurrency.IsMultiProcess() && writeReq.UpdateFunc != nil {
+		if err := writeReq.UpdateFunc(); err != nil {
+			return nil, fmt.Errorf("failed to update index after write: %w", err)
+		}
+	}
+
+	// Track metrics after successful write
+	s.trackWriteMetrics(startTime, entries, compressedEntries, clientMetrics)
+
+	// Post-write operations (checkpointing, rotation check)
+	if err := s.performPostWriteOperations(config, clientMetrics, activeGroups, len(entries)); err != nil {
+		return nil, err
+	}
+
+	return writeReq.IDs, nil
+}
+
+// prepareWriteRequest builds the write request under lock
+func (s *Shard) prepareWriteRequest(compressedEntries []CompressedEntry, startTime time.Time, config *CometConfig, clientMetrics *ClientMetrics) (WriteRequest, error) {
+	var writeReq WriteRequest
+	var criticalErr error
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Since processes own their shards exclusively, no need to check for changes
+
+	writeReq.IDs = make([]MessageID, len(compressedEntries))
+	now := startTime.UnixNano()
+
+	// Build write buffers from pre-compressed data (minimal work under lock)
+	writeReq.WriteBuffers = make([][]byte, 0, len(compressedEntries)*2) // headers + data
+
+	// Allocate header buffer for this specific request (no sharing)
+	requiredSize := len(compressedEntries) * headerSize
+	allHeaders := make([]byte, requiredSize)
+
+	// Store initial state for potential rollback
+	initialState := s.captureInitialState()
+
+	// Pre-allocate entry numbers
+	entryNumbers := s.allocateEntryNumbers(len(compressedEntries), config)
+
+	// Build write request based on process mode
+	if config.Concurrency.IsMultiProcess() {
+		writeReq = s.buildMultiProcessWriteRequest(compressedEntries, entryNumbers, now, allHeaders, initialState, config, clientMetrics)
+	} else {
+		writeReq = s.buildSingleProcessWriteRequest(compressedEntries, entryNumbers, now, allHeaders)
+	}
+
+	return writeReq, criticalErr
+}
+
+// captureInitialState saves the current state for potential rollback
+func (s *Shard) captureInitialState() struct {
+	entryNumber           int64
+	writeOffset           int64
+	writesSinceCheckpoint int
+} {
+	return struct {
+		entryNumber           int64
+		writeOffset           int64
+		writesSinceCheckpoint int
+	}{
+		entryNumber:           s.index.CurrentEntryNumber,
+		writeOffset:           s.index.CurrentWriteOffset,
+		writesSinceCheckpoint: s.writesSinceCheckpoint,
+	}
+}
+
+// allocateEntryNumbers reserves entry numbers for the batch
+func (s *Shard) allocateEntryNumbers(count int, config *CometConfig) []int64 {
+	entryNumbers := make([]int64, count)
+
+	if config.Concurrency.IsMultiProcess() {
+		// Multi-process mode: use atomic state operations for thread safety
+		state := s.state
+		if state != nil {
+			for i := range entryNumbers {
+				entryNumbers[i] = state.IncrementLastEntryNumber()
+			}
+		} else {
+			// Fallback if state not available (shouldn't happen in normal operation)
+			if IsDebug() && s.logger != nil {
+				s.logger.Warn("State not available, using index fallback",
+					"shard", s.shardID)
+			}
+			baseEntry := s.index.CurrentEntryNumber
+			for i := range entryNumbers {
+				entryNumbers[i] = baseEntry + int64(i)
+			}
+		}
+	} else {
+		// Single-process mode: direct index access for maximum performance
+		baseEntry := s.index.CurrentEntryNumber
+		for i := range entryNumbers {
+			entryNumbers[i] = baseEntry + int64(i)
+		}
+	}
+
+	return entryNumbers
+}
+
+// buildSingleProcessWriteRequest builds the write request for single-process mode
+func (s *Shard) buildSingleProcessWriteRequest(compressedEntries []CompressedEntry, entryNumbers []int64, now int64, allHeaders []byte) WriteRequest {
+	var writeReq WriteRequest
+	writeReq.IDs = make([]MessageID, len(compressedEntries))
+	writeReq.WriteBuffers = make([][]byte, 0, len(compressedEntries)*2)
+
+	for i, compressedEntry := range compressedEntries {
+		// Use slice of pre-allocated header buffer
+		headerStart := i * headerSize
+		header := allHeaders[headerStart : headerStart+headerSize]
+		binary.LittleEndian.PutUint32(header[0:4], uint32(len(compressedEntry.Data)))
+		binary.LittleEndian.PutUint64(header[4:12], uint64(now))
+
+		// Add to vectored write batch
+		writeReq.WriteBuffers = append(writeReq.WriteBuffers, header, compressedEntry.Data)
+
+		// Track entry in binary index
+		entryNumber := entryNumbers[i]
+		entrySize := int64(headerSize + len(compressedEntry.Data))
+
+		// Calculate the correct file index and offset for this entry
+		position := s.calculateEntryPosition(entrySize)
+
+		// Add to binary searchable index (it handles intervals and pruning internally)
+		s.index.BinaryIndex.AddIndexNode(entryNumber, position)
+
+		// Update metric if state is available
+		if state := s.state; state != nil {
+			atomic.StoreUint64(&state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
+		}
+
+		// Generate ID for this entry
+		writeReq.IDs[i] = MessageID{EntryNumber: entryNumber, ShardID: s.shardID}
+
+		s.index.CurrentEntryNumber = entryNumber + 1
+		s.index.CurrentWriteOffset += entrySize
+		s.writesSinceCheckpoint++
+	}
+
+	return writeReq
+}
+
+// buildMultiProcessWriteRequest builds the write request for multi-process mode
+func (s *Shard) buildMultiProcessWriteRequest(compressedEntries []CompressedEntry, entryNumbers []int64, now int64, allHeaders []byte, initialState struct {
+	entryNumber           int64
+	writeOffset           int64
+	writesSinceCheckpoint int
+}, config *CometConfig, clientMetrics *ClientMetrics) WriteRequest {
+	var writeReq WriteRequest
+	writeReq.IDs = make([]MessageID, len(compressedEntries))
+	writeReq.WriteBuffers = make([][]byte, 0, len(compressedEntries)*2)
+
+	// Track binary index updates for deferred application
+	type binaryIndexUpdate struct {
+		entryNumber int64
+		position    EntryPosition
+	}
+	var binaryIndexUpdates []binaryIndexUpdate
+
+	// Track write position
+	writeOffset := s.index.CurrentWriteOffset
+
+	for i, compressedEntry := range compressedEntries {
+		// Use slice of pre-allocated header buffer
+		headerStart := i * headerSize
+		header := allHeaders[headerStart : headerStart+headerSize]
+		binary.LittleEndian.PutUint32(header[0:4], uint32(len(compressedEntry.Data)))
+		binary.LittleEndian.PutUint64(header[4:12], uint64(now))
+
+		// Add to vectored write batch
+		writeReq.WriteBuffers = append(writeReq.WriteBuffers, header, compressedEntry.Data)
+
+		// Track entry in binary index - only store at intervals for memory efficiency
+		entrySize := int64(headerSize + len(compressedEntry.Data))
+		entryNumber := entryNumbers[i]
+
+		// Calculate the correct file index and offset for this entry
+		fileIndex := len(s.index.Files) - 1
+		byteOffset := writeOffset
+
+		// If this entry will cause rotation and we're not at the start of a file,
+		// it will be written to the NEXT file at offset 0
+		willCauseRotation := writeOffset+entrySize > config.Storage.MaxFileSize
+		if willCauseRotation && writeOffset > 0 {
+			fileIndex = len(s.index.Files) // Will be the next file after rotation
+			byteOffset = 0
+		}
+
+		position := EntryPosition{
+			FileIndex:  fileIndex,
+			ByteOffset: byteOffset,
+		}
+
+		// Store for later update - only at boundary intervals for memory efficiency
+		if entryNumber%int64(s.index.BoundaryInterval) == 0 || entryNumber == 0 {
+			binaryIndexUpdates = append(binaryIndexUpdates, binaryIndexUpdate{
+				entryNumber: entryNumber,
+				position:    position,
+			})
+		}
+
+		// Generate ID for this entry
+		writeReq.IDs[i] = MessageID{EntryNumber: entryNumber, ShardID: s.shardID}
+
+		// Track write position for next entry
+		writeOffset += entrySize
+	}
+
+	// Multi-process mode: set up deferred update function
+	// Calculate final entry number (highest allocated + 1)
+	finalEntryNumber := int64(0)
+	if len(entryNumbers) > 0 {
+		finalEntryNumber = entryNumbers[len(entryNumbers)-1] + 1
+	}
+	finalWriteOffset := writeOffset
+
+	// DEBUG: Log entry number calculation
+	if IsDebug() && s.logger != nil {
+		s.logger.Debug("Entry number calculation",
+			"shard", s.shardID,
+			"entryNumbers", entryNumbers,
+			"finalEntryNumber", finalEntryNumber,
+			"initialEntryNumber", initialState.entryNumber)
+	}
+
+	writeReq.UpdateFunc = func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		// Apply the binary index updates
+		for _, update := range binaryIndexUpdates {
+			s.index.BinaryIndex.AddIndexNode(update.entryNumber, update.position)
+		}
+
+		// Update metric if state is available
+		if state := s.state; state != nil {
+			atomic.StoreUint64(&state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
+		}
+
+		// Apply the index updates
+		if IsDebug() && s.logger != nil {
+			s.logger.Debug("TRACE: Setting CurrentEntryNumber to final in multiprocess",
+				"location", "client.go:1530",
+				"oldValue", s.index.CurrentEntryNumber,
+				"newValue", finalEntryNumber,
+				"shardID", s.shardID)
+		}
+		s.index.CurrentEntryNumber = finalEntryNumber
+		s.index.CurrentWriteOffset = finalWriteOffset
+		s.writesSinceCheckpoint = initialState.writesSinceCheckpoint + len(compressedEntries)
+
+		// Update the current file's end offset and entry count
+		// Since processes own shards exclusively, we can safely update entry counts
+		if len(s.index.Files) > 0 {
+			s.index.Files[len(s.index.Files)-1].EndOffset = finalWriteOffset
+			s.index.Files[len(s.index.Files)-1].Entries += int64(len(compressedEntries))
+		}
+
+		// Update mmap state to notify readers
+		if s.state != nil {
+			s.updateMmapState()
+		}
+
+		// Schedule async checkpoint instead of synchronous
+		if s.writesSinceCheckpoint > 0 && time.Since(s.lastCheckpoint) > 10*time.Millisecond {
+			s.scheduleAsyncCheckpoint(clientMetrics, config)
+		}
+
+		return nil
+	}
+
+	return writeReq
+}
+
+// calculateEntryPosition calculates the file index and byte offset for an entry
+func (s *Shard) calculateEntryPosition(entrySize int64) EntryPosition {
+	fileIndex := len(s.index.Files) - 1
+	byteOffset := s.index.CurrentWriteOffset
+
+	// If this entry will cause rotation and we're not at the start of a file,
+	// it will be written to the NEXT file at offset 0
+	maxFileSize := int64(1 << 30) // Default 1GB, should come from config
+	willCauseRotation := s.index.CurrentWriteOffset+entrySize > maxFileSize
+	if willCauseRotation && s.index.CurrentWriteOffset > 0 {
+		fileIndex = len(s.index.Files) // Will be the next file after rotation
+		byteOffset = 0
+	}
+
+	return EntryPosition{
+		FileIndex:  fileIndex,
+		ByteOffset: byteOffset,
+	}
+}
+
+// performWrite performs the actual I/O operation
+func (s *Shard) performWrite(writeReq WriteRequest, config *CometConfig, clientMetrics *ClientMetrics, activeGroups map[string]bool) error {
 	var writeErr error
 
 	// Check if this shard is owned by the current process
@@ -1386,7 +1382,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			s.mu.Unlock()
 
 			if rotErr != nil {
-				return nil, fmt.Errorf("failed to rotate file: %w", rotErr)
+				return fmt.Errorf("failed to rotate file: %w", rotErr)
 			}
 
 			// Retry the write after rotation
@@ -1399,7 +1395,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			s.mu.Lock()
 			if err := s.initializeMmapWriter(config); err != nil {
 				s.mu.Unlock()
-				return nil, fmt.Errorf("failed to reinitialize mmap writer after recovery: %w", err)
+				return fmt.Errorf("failed to reinitialize mmap writer after recovery: %w", err)
 			}
 			s.mu.Unlock()
 
@@ -1463,7 +1459,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			s.mu.Lock()
 			if err := s.ensureWriter(config); err != nil {
 				s.mu.Unlock()
-				return nil, fmt.Errorf("failed to reinitialize writer after recovery: %w", err)
+				return fmt.Errorf("failed to reinitialize writer after recovery: %w", err)
 			}
 			s.mu.Unlock()
 
@@ -1500,24 +1496,32 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 				atomic.AddUint64(&state.FailedWrites, 1)
 			}
 
-			// Rollback index and state on write failure
+			// Log the error
 			if IsDebug() && s.logger != nil {
-				s.logger.Debug("Write failed, rolling back",
+				s.logger.Debug("Write failed",
 					"shard", s.shardID,
 					"error", writeErr)
 			}
-			if rollbackFunc != nil {
-				rollbackFunc()
-			}
 
-			return nil, fmt.Errorf("failed write: %w", writeErr)
+			return fmt.Errorf("failed write: %w", writeErr)
 		}
 	}
 
-	// Apply deferred updates for multi-process mode BEFORE post-write operations
-	if config.Concurrency.IsMultiProcess() && writeReq.UpdateFunc != nil {
-		if err := writeReq.UpdateFunc(); err != nil {
-			return nil, fmt.Errorf("failed to update index after write: %w", err)
+	return nil
+}
+
+// trackWriteMetrics tracks metrics after a successful write
+func (s *Shard) trackWriteMetrics(startTime time.Time, entries [][]byte, compressedEntries []CompressedEntry, clientMetrics *ClientMetrics) {
+	var totalOriginalBytes, totalCompressedBytes uint64
+	var compressedCount, skippedCount uint64
+
+	for _, entry := range compressedEntries {
+		totalOriginalBytes += entry.OriginalSize
+		totalCompressedBytes += entry.CompressedSize
+		if entry.WasCompressed {
+			compressedCount++
+		} else {
+			skippedCount++
 		}
 	}
 
@@ -1571,62 +1575,56 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	if writeLatency > currentMax {
 		clientMetrics.MaxWriteLatency.Store(writeLatency)
 	}
+}
 
-	// Post-write operations
-	func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
+// performPostWriteOperations handles post-write tasks like checkpointing and rotation
+func (s *Shard) performPostWriteOperations(config *CometConfig, clientMetrics *ClientMetrics, activeGroups map[string]bool, entryCount int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-		// Update file entry count after successful write
-		// In multi-process mode, this is already done in UpdateFunc
-		if !config.Concurrency.IsMultiProcess() && len(s.index.Files) > 0 {
-			currentFile := &s.index.Files[len(s.index.Files)-1]
-			currentFile.Entries += int64(len(entries))
+	// Update file entry count after successful write
+	// In multi-process mode, this is already done in UpdateFunc
+	if !config.Concurrency.IsMultiProcess() && len(s.index.Files) > 0 {
+		currentFile := &s.index.Files[len(s.index.Files)-1]
+		currentFile.Entries += int64(entryCount)
+	}
+
+	// In multi-process mode, update unified state immediately for visibility
+	if config.Concurrency.IsMultiProcess() {
+		if state := s.state; state != nil {
+			// Fast path: Update coordination state immediately (~10ns total)
+			state.SetLastIndexUpdate(time.Now().UnixNano())
 		}
-
-		// In multi-process mode, update unified state immediately for visibility
-		if config.Concurrency.IsMultiProcess() {
+		// LastEntryNumber should be the last allocated entry, not the next one
+		// CurrentEntryNumber is the next entry to be written
+		if s.index.CurrentEntryNumber > 0 {
+			// Sync CometState with current index if needed
 			if state := s.state; state != nil {
-				// Fast path: Update coordination state immediately (~10ns total)
-				state.SetLastIndexUpdate(time.Now().UnixNano())
-			}
-			// LastEntryNumber should be the last allocated entry, not the next one
-			// CurrentEntryNumber is the next entry to be written
-			if s.index.CurrentEntryNumber > 0 {
-				// Sync CometState with current index if needed
-				if state := s.state; state != nil {
-					currentLastEntry := state.GetLastEntryNumber()
-					expectedLastEntry := s.index.CurrentEntryNumber - 1
-					if currentLastEntry < expectedLastEntry {
-						// Catch up to the expected value
-						for state.GetLastEntryNumber() < expectedLastEntry {
-							state.IncrementLastEntryNumber()
-						}
+				currentLastEntry := state.GetLastEntryNumber()
+				expectedLastEntry := s.index.CurrentEntryNumber - 1
+				if currentLastEntry < expectedLastEntry {
+					// Catch up to the expected value
+					for state.GetLastEntryNumber() < expectedLastEntry {
+						state.IncrementLastEntryNumber()
 					}
 				}
 			}
-
-			// Note: Async checkpointing happens in UpdateFunc now
-		} else {
-			// Single-process mode: use regular checkpointing
-			s.maybeCheckpoint(clientMetrics, config, activeGroups)
 		}
 
-		// Check if we need to rotate file
-		if s.index.CurrentWriteOffset > config.Storage.MaxFileSize {
-			if err := s.rotateFile(clientMetrics, config, activeGroups); err != nil {
-				criticalErr = fmt.Errorf("failed to rotate file: %w", err)
-				return
-			}
-		}
-	}()
-
-	// Check if critical section encountered an error
-	if criticalErr != nil {
-		return nil, criticalErr
+		// Note: Async checkpointing happens in UpdateFunc now
+	} else {
+		// Single-process mode: use regular checkpointing
+		s.maybeCheckpoint(clientMetrics, config, activeGroups)
 	}
 
-	return writeReq.IDs, nil
+	// Check if we need to rotate file
+	if s.index.CurrentWriteOffset > config.Storage.MaxFileSize {
+		if err := s.rotateFile(clientMetrics, config, activeGroups); err != nil {
+			return fmt.Errorf("failed to rotate file: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // maybeCheckpoint persists the index if needed
@@ -2355,11 +2353,6 @@ func (s *Shard) cloneIndex() *ShardIndex {
 // persistIndex atomically writes the index to disk
 // IMPORTANT: Caller must hold the shard mutex (either read or write lock)
 func (s *Shard) persistIndex() error {
-	return s.persistIndexInternal(true)
-}
-
-// persistIndexInternal is the internal implementation that can skip reloading
-func (s *Shard) persistIndexInternal(allowReload bool) error {
 	// Since processes own their shards exclusively, we don't need complex merging
 	// Just clone and save the index
 	indexCopy := s.cloneIndex()
@@ -2423,13 +2416,6 @@ func (s *Shard) persistIndexInternal(allowReload bool) error {
 // loadIndex loads the shard index from disk.
 // IMPORTANT: This function modifies s.index and must be called with s.mu held.
 func (s *Shard) loadIndex() error {
-	return s.loadIndexWithActiveGroups(nil)
-}
-
-// loadIndexWithActiveGroups loads the index from disk, filtering consumer offsets to only include active groups.
-// If activeGroups is nil, all consumer offsets are loaded (backward compatibility).
-// IMPORTANT: This function modifies s.index and must be called with s.mu held.
-func (s *Shard) loadIndexWithActiveGroups(activeGroups map[string]bool) error {
 	// Since processes own shards exclusively, no need to discover files or acquire locks
 	// The process that owns this shard is the only one writing to it
 
@@ -2457,6 +2443,11 @@ func (s *Shard) loadIndexWithActiveGroups(activeGroups map[string]bool) error {
 		// Since processes own their shards exclusively, if mmap writer added files, keep them
 		if len(s.index.Files) == 0 {
 			shardDir := filepath.Dir(s.indexPath)
+			if s.logger != nil {
+				s.logger.Info("loadIndex: No index file exists, attempting rebuild",
+					"shardDir", shardDir,
+					"indexPath", s.indexPath)
+			}
 			// Track recovery attempt
 			if state := s.state; state != nil {
 				atomic.AddUint64(&state.RecoveryAttempts, 1)
@@ -2472,8 +2463,7 @@ func (s *Shard) loadIndexWithActiveGroups(activeGroups map[string]bool) error {
 		}
 
 		// Since each process owns its shards exclusively, we can simply persist without complex locking
-		// Use persistIndexInternal(false) during recovery to avoid reload
-		persistErr := s.persistIndexInternal(false)
+		persistErr := s.persistIndex()
 
 		if persistErr != nil {
 			return fmt.Errorf("failed to persist index: %w", persistErr)
@@ -2516,8 +2506,7 @@ func (s *Shard) loadIndexWithActiveGroups(activeGroups map[string]bool) error {
 			}
 
 			// Persist the rebuilt index
-			// Use persistIndexInternal(false) to avoid reload during rebuild
-			if persistErr := s.persistIndexInternal(false); persistErr != nil {
+			if persistErr := s.persistIndex(); persistErr != nil {
 				return fmt.Errorf("failed to persist rebuilt index: %w", persistErr)
 			}
 
@@ -2547,53 +2536,8 @@ func (s *Shard) loadIndexWithActiveGroups(activeGroups map[string]bool) error {
 			"loadedIndex", index.CurrentEntryNumber)
 	}
 
-	// Preserve important data from the current index before replacing
-	// In multi-process mode, some data is created in memory and should be preserved
-	var existingNodes []EntryIndexNode
-	var existingFiles []FileInfo
-	var existingCurrentEntryNumber int64
-	var existingCurrentWriteOffset int64
-	var existingCurrentFile string
-
-	if s.index != nil {
-		// Preserve binary index nodes
-		if len(s.index.BinaryIndex.Nodes) > 0 {
-			existingNodes = make([]EntryIndexNode, len(s.index.BinaryIndex.Nodes))
-			copy(existingNodes, s.index.BinaryIndex.Nodes)
-		}
-
-		// Preserve file information that might be more recent than persisted index
-		if len(s.index.Files) > 0 {
-			existingFiles = make([]FileInfo, len(s.index.Files))
-			copy(existingFiles, s.index.Files)
-		}
-
-		// Preserve current state
-		existingCurrentEntryNumber = s.index.CurrentEntryNumber
-		existingCurrentWriteOffset = s.index.CurrentWriteOffset
-		existingCurrentFile = s.index.CurrentFile
-	}
-
-	// Filter consumer offsets based on active groups if provided
-	if len(activeGroups) > 0 {
-		originalCount := len(index.ConsumerOffsets)
-		filteredOffsets := make(map[string]int64)
-		for group, offset := range index.ConsumerOffsets {
-			if activeGroups[group] {
-				filteredOffsets[group] = offset
-			}
-		}
-		index.ConsumerOffsets = filteredOffsets
-
-		if IsDebug() && s.logger != nil {
-			s.logger.Debug("loadIndex: filtered consumer offsets",
-				"shardID", s.shardID,
-				"originalCount", originalCount,
-				"filteredCount", len(filteredOffsets),
-				"activeGroups", activeGroups,
-				"filteredOffsets", filteredOffsets)
-		}
-	}
+	// Since processes own their shards exclusively, they own ALL consumer groups
+	// No need to filter - just load all consumer offsets
 
 	// Update index fields in place to preserve mmap writer's reference
 	// This is safe since processes own their shards exclusively
@@ -2620,107 +2564,15 @@ func (s *Shard) loadIndexWithActiveGroups(activeGroups map[string]bool) error {
 		// Otherwise keep existing files that mmap writer may have added
 	}
 
-	// Restore preserved data by merging with loaded index
-	// Use the most recent data (existing vs loaded)
-
-	// 1. Restore binary index nodes
-	if len(existingNodes) > 0 {
-		// Merge existing nodes with any nodes from the loaded index
-		nodeMap := make(map[int64]EntryIndexNode)
-
-		// Add nodes from loaded index first
-		for _, node := range s.index.BinaryIndex.Nodes {
-			nodeMap[node.EntryNumber] = node
-		}
-
-		// Add/override with existing nodes (they're more recent)
-		for _, node := range existingNodes {
-			nodeMap[node.EntryNumber] = node
-		}
-
-		// Convert back to slice
-		s.index.BinaryIndex.Nodes = make([]EntryIndexNode, 0, len(nodeMap))
-		for _, node := range nodeMap {
-			s.index.BinaryIndex.Nodes = append(s.index.BinaryIndex.Nodes, node)
-		}
-	}
-
-	// 2. Use the most recent entry/offset information
-	if existingCurrentEntryNumber > s.index.CurrentEntryNumber {
-		s.index.CurrentEntryNumber = existingCurrentEntryNumber
-	}
-	if existingCurrentWriteOffset > s.index.CurrentWriteOffset {
-		s.index.CurrentWriteOffset = existingCurrentWriteOffset
-	}
-	if existingCurrentFile != "" && (s.index.CurrentFile == "" || existingCurrentWriteOffset > s.index.CurrentWriteOffset) {
-		s.index.CurrentFile = existingCurrentFile
-	}
-
-	// 3. Merge file lists - preserve files from both sources
-	if len(existingFiles) > 0 {
-		// Create a map of files from loaded index
-		fileMap := make(map[string]FileInfo)
-		for _, file := range s.index.Files {
-			fileMap[file.Path] = file
-		}
-
-		// Add existing files, using more recent info if available
-		for _, file := range existingFiles {
-			if existing, exists := fileMap[file.Path]; exists {
-				// Keep the file with more entries (more recent)
-				if file.Entries > existing.Entries {
-					fileMap[file.Path] = file
-				}
-			} else {
-				// New file not in loaded index
-				fileMap[file.Path] = file
-			}
-		}
-
-		// Convert back to slice
-		s.index.Files = make([]FileInfo, 0, len(fileMap))
-		for _, file := range fileMap {
-			s.index.Files = append(s.index.Files, file)
-		}
-	}
-
-	// Fix any corrupted negative entry counts from disk using authoritative state
-	if s.mmapWriter != nil && s.state != nil { // Multi-process mode
-		state := s.state
-		currentEntryNumberFromState := atomic.LoadInt64(&state.LastEntryNumber) + 1
-
-		if currentEntryNumberFromState > 0 {
-			totalEntriesFromFiles := int64(0)
-
-			// Check for negative entry counts and fix them
-			for i := 0; i < len(s.index.Files); i++ {
-				if s.index.Files[i].Entries < 0 {
-					// Fix negative entry count
-					if len(s.index.Files) == 1 {
-						s.index.Files[i].Entries = currentEntryNumberFromState
-					} else {
-						s.index.Files[i].Entries = 0
-					}
-				} else {
-					totalEntriesFromFiles += s.index.Files[i].Entries
-				}
-			}
-
-			// If total from files doesn't match state, fix single-file case
-			if len(s.index.Files) == 1 && totalEntriesFromFiles != currentEntryNumberFromState {
-				s.index.Files[0].Entries = currentEntryNumberFromState
-			}
-		}
-	}
+	// Since processes own their shards exclusively, we trust what's on disk
+	// No complex merging needed!
 
 	if IsDebug() && s.logger != nil {
-		s.logger.Debug("Preserved index data after reload",
+		s.logger.Debug("Index loaded successfully",
 			"shardID", s.shardID,
-			"preservedNodes", len(existingNodes),
-			"preservedFiles", len(existingFiles),
-			"finalNodes", len(s.index.BinaryIndex.Nodes),
-			"finalFiles", len(s.index.Files),
-			"finalCurrentEntryNumber", s.index.CurrentEntryNumber)
+			"nodes", len(s.index.BinaryIndex.Nodes),
+			"files", len(s.index.Files),
+			"currentEntryNumber", s.index.CurrentEntryNumber)
 	}
 	// Restore config values
 	s.index.BoundaryInterval = boundaryInterval
@@ -2800,130 +2652,118 @@ func (s *Shard) getNextSequence() int64 {
 	return atomic.AddInt64(&globalSequenceCounter, 1)
 }
 
-// rebuildIndexFromDataFiles scans all data files and rebuilds the index from scratch
-// This is used for disaster recovery when the index file is lost or corrupted
+// rebuildIndexFromDataFiles scans data files to rebuild the index
+// Since processes own shards exclusively, this is only used for disaster recovery
 func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
+	if s.logger != nil {
+		s.logger.Info("rebuildIndexFromDataFiles: Starting rebuild", "shardDir", shardDir)
+	}
 	// Find all data files
 	entries, err := os.ReadDir(shardDir)
 	if err != nil {
+		if s.logger != nil {
+			s.logger.Error("rebuildIndexFromDataFiles: Failed to read directory",
+				"shardDir", shardDir,
+				"error", err)
+		}
 		return fmt.Errorf("failed to read shard directory: %w", err)
 	}
 
-	// Collect and sort data files by sequence number
+	if s.logger != nil {
+		s.logger.Info("rebuildIndexFromDataFiles: Read directory",
+			"shardDir", shardDir,
+			"entryCount", len(entries))
+	}
+
 	var dataFiles []string
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if strings.HasPrefix(name, "log-") && strings.HasSuffix(name, ".comet") {
-			dataFiles = append(dataFiles, filepath.Join(shardDir, name))
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "log-") && strings.HasSuffix(entry.Name(), ".comet") {
+			dataFiles = append(dataFiles, filepath.Join(shardDir, entry.Name()))
 		}
 	}
 
 	if len(dataFiles) == 0 {
-		return nil // No files to rebuild from
+		return nil
 	}
 
-	// Sort files by name (which includes sequence number)
 	sort.Strings(dataFiles)
 
-	// Reset index state COMPLETELY before scanning
+	if s.logger != nil {
+		s.logger.Debug("rebuildIndexFromDataFiles: found data files",
+			"shardDir", shardDir,
+			"fileCount", len(dataFiles),
+			"files", dataFiles)
+	}
+
+	// Reset index
 	s.index.Files = make([]FileInfo, 0, len(dataFiles))
 	s.index.BinaryIndex.Nodes = make([]EntryIndexNode, 0)
 	s.index.CurrentEntryNumber = 0
 	s.index.CurrentWriteOffset = 0
-	// CRITICAL: Reset consumer offsets during index rebuild
-	// This ensures consumers start from the beginning after rebuild
 	s.index.ConsumerOffsets = make(map[string]int64)
 
-	// Scan each file to rebuild the index
+	// Scan files
 	currentEntryNum := int64(0)
-	for _, filePath := range dataFiles {
-		fileInfo, err := s.scanDataFileForRebuild(filePath, currentEntryNum)
-		if err != nil {
-			// Skip corrupted files but continue with others
-			continue
+	for i, filePath := range dataFiles {
+		if s.logger != nil {
+			s.logger.Debug("rebuildIndexFromDataFiles: scanning file",
+				"fileIndex", i,
+				"filePath", filePath,
+				"currentEntryNum", currentEntryNum)
 		}
 
-		// Only add files that have entries to the index
-		// Empty files should not be included as they create conflicts
+		fileInfo, err := s.scanDataFileForRebuild(filePath, currentEntryNum)
+		if err != nil {
+			if s.logger != nil {
+				s.logger.Warn("rebuildIndexFromDataFiles: failed to scan file",
+					"filePath", filePath,
+					"error", err)
+			}
+			continue // Skip corrupted files
+		}
+
+		if s.logger != nil {
+			s.logger.Debug("rebuildIndexFromDataFiles: scanned file",
+				"filePath", filePath,
+				"entries", fileInfo.Entries,
+				"startEntry", fileInfo.StartEntry,
+				"endOffset", fileInfo.EndOffset)
+		}
+
+		// Always add files to index, even if they appear empty
+		// They might have entries we couldn't scan due to corruption
+		s.index.Files = append(s.index.Files, *fileInfo)
 		if fileInfo.Entries > 0 {
-			s.index.Files = append(s.index.Files, *fileInfo)
 			currentEntryNum = fileInfo.StartEntry + fileInfo.Entries
 		}
 
-		// Update current file if this is the last one
+		// Last file becomes current
 		if filePath == dataFiles[len(dataFiles)-1] {
 			s.index.CurrentFile = filePath
 			s.index.CurrentWriteOffset = fileInfo.EndOffset
 		}
 	}
 
-	// Sort files by StartEntry to ensure correct ordering after rebuild
-	// This is critical for consumer logic that assumes Files[0] has the earliest entries
-	if len(s.index.Files) > 1 {
-		sort.Slice(s.index.Files, func(i, j int) bool {
-			return s.index.Files[i].StartEntry < s.index.Files[j].StartEntry
-		})
-	}
+	// Set CurrentEntryNumber based on what we found
+	s.index.CurrentEntryNumber = currentEntryNum
 
-	// Update total entry count - always trust state over file scan results
-	if len(s.index.Files) > 0 {
-		lastFile := &s.index.Files[len(s.index.Files)-1]
-
-		// Always use state if available, since file scanning can be unreliable
-		if state := s.state; state != nil {
-			lastEntryFromState := atomic.LoadInt64(&state.LastEntryNumber)
-			if IsDebug() && s.logger != nil {
+	// If state exists and has a higher count, trust it (could have entries not yet synced to disk)
+	if state := s.state; state != nil {
+		lastEntryFromState := atomic.LoadInt64(&state.LastEntryNumber)
+		if s.logger != nil {
+			s.logger.Debug("rebuildIndexFromDataFiles: After scanning files",
+				"filesScanned", len(s.index.Files),
+				"currentEntryNum", currentEntryNum,
+				"lastEntryFromState", lastEntryFromState)
+		}
+		// Only use state if it's higher than what we found (state might have pending entries)
+		if lastEntryFromState >= 0 && lastEntryFromState+1 > currentEntryNum {
+			if s.logger != nil {
 				s.logger.Debug("rebuildIndexFromDataFiles: using state for CurrentEntryNumber",
 					"shardID", s.shardID,
-					"stateLastEntry", lastEntryFromState,
-					"fileEntries", lastFile.Entries,
-					"fileStartEntry", lastFile.StartEntry)
+					"stateLastEntry", lastEntryFromState)
 			}
-			if lastEntryFromState >= 0 {
-				// State.LastEntryNumber is the last allocated entry, CurrentEntryNumber is next to allocate
-				if IsDebug() && s.logger != nil {
-					s.logger.Debug("TRACE: Setting CurrentEntryNumber from state in rebuild",
-						"location", "client.go:2893",
-						"oldValue", s.index.CurrentEntryNumber,
-						"newValue", lastEntryFromState+1,
-						"shardID", s.shardID)
-				}
-				s.index.CurrentEntryNumber = lastEntryFromState + 1
-				// Fix the file entry count to match the state
-				expectedEntries := lastEntryFromState - lastFile.StartEntry + 1
-				if expectedEntries > 0 {
-					lastFile.Entries = expectedEntries
-				}
-				if IsDebug() && s.logger != nil {
-					s.logger.Debug("rebuildIndexFromDataFiles: corrected file metadata",
-						"shardID", s.shardID,
-						"newCurrentEntryNumber", s.index.CurrentEntryNumber,
-						"newFileEntries", lastFile.Entries)
-				}
-			} else {
-				// Fall back to file-based calculation
-				if IsDebug() && s.logger != nil {
-					s.logger.Debug("TRACE: Setting CurrentEntryNumber from file calculation",
-						"location", "client.go:2914",
-						"oldValue", s.index.CurrentEntryNumber,
-						"newValue", lastFile.StartEntry+lastFile.Entries,
-						"shardID", s.shardID)
-				}
-				s.index.CurrentEntryNumber = lastFile.StartEntry + lastFile.Entries
-			}
-		} else {
-			// No state available: use file-based calculation
-			if IsDebug() && s.logger != nil {
-				s.logger.Debug("TRACE: Setting CurrentEntryNumber from file calculation (no state)",
-					"location", "client.go:2925",
-					"oldValue", s.index.CurrentEntryNumber,
-					"newValue", lastFile.StartEntry+lastFile.Entries,
-					"shardID", s.shardID)
-			}
-			s.index.CurrentEntryNumber = lastFile.StartEntry + lastFile.Entries
+			s.index.CurrentEntryNumber = lastEntryFromState + 1
 		}
 	}
 
@@ -2934,8 +2774,7 @@ func (s *Shard) rebuildIndexFromDataFiles(shardDir string) error {
 
 	// CRITICAL: Persist the rebuilt and sorted index to disk
 	// This ensures subsequent loadIndex() calls get the correct sorted order
-	// Use persistIndexInternal(false) to avoid reload during rebuild
-	if err := s.persistIndexInternal(false); err != nil {
+	if err := s.persistIndex(); err != nil {
 		if s.logger != nil {
 			s.logger.Warn("Failed to persist rebuilt index", "error", err)
 		}
@@ -3760,7 +3599,7 @@ func (c *Client) ListRecent(ctx context.Context, streamName string, limit int) (
 	// In multi-process mode, reload index to get latest state
 	if c.config.Concurrency.IsMultiProcess() {
 		shard.mu.Lock()
-		if err := shard.loadIndexWithActiveGroups(nil); err != nil {
+		if err := shard.loadIndex(); err != nil {
 			shard.mu.Unlock()
 			return nil, fmt.Errorf("failed to reload index: %w", err)
 		}
@@ -3846,7 +3685,7 @@ func (c *Client) ScanAll(ctx context.Context, streamName string, fn func(context
 	// In multi-process mode, reload index to get latest state
 	if c.config.Concurrency.IsMultiProcess() {
 		shard.mu.Lock()
-		if err := shard.loadIndexWithActiveGroups(nil); err != nil {
+		if err := shard.loadIndex(); err != nil {
 			shard.mu.Unlock()
 			return fmt.Errorf("failed to reload index: %w", err)
 		}
@@ -3908,28 +3747,13 @@ func (c *Client) ScanAll(ctx context.Context, streamName string, fn func(context
 // In multi-process mode, it's memory-mapped to a file for sharing between processes
 // In single-process mode, it's allocated in regular memory
 func (s *Shard) initCometState(multiProcessMode bool) error {
-	if multiProcessMode {
-		return s.initCometStateMmap()
-	} else {
-		return s.initCometStateMemory()
-	}
+	// Always use memory-mapped state for both single and multi-process modes
+	// This provides crash recovery and simplifies the code
+	return s.initCometStateMmap()
 }
 
-// initCometStateMemory initializes unified state in regular memory (single-process mode)
-func (s *Shard) initCometStateMemory() error {
-	s.state = &CometState{}
-
-	// Initialize version
-	state := s.state
-	atomic.StoreUint64(&state.Version, CometStateVersion1)
-
-	// Initialize with -1 to indicate "not yet set" for LastEntryNumber
-	atomic.StoreInt64(&state.LastEntryNumber, -1)
-
-	return nil
-}
-
-// initCometStateMmap initializes unified state via memory mapping (multi-process mode)
+// initCometStateMmap initializes unified state via memory mapping
+// Used for both single-process and multi-process modes for consistency and crash recovery
 func (s *Shard) initCometStateMmap() error {
 	processID := os.Getpid()
 

@@ -31,10 +31,6 @@ func TestAllInternalMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
 	// Test Version
 	version := atomic.LoadUint64(&state.Version)
 	if version != CometStateVersion1 {
@@ -109,10 +105,6 @@ func TestCompressionEdgeCaseMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
 	// Check best/worst compression
 	bestCompression := atomic.LoadUint64(&state.BestCompression)
 	worstCompression := atomic.LoadUint64(&state.WorstCompression)
@@ -155,10 +147,6 @@ func TestCheckpointMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
 	// Check checkpoint metrics
 	checkpointCount := atomic.LoadUint64(&state.CheckpointCount)
 	lastCheckpointNanos := atomic.LoadInt64(&state.LastCheckpointNanos)
@@ -195,10 +183,6 @@ func TestSyncLatencyMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
 	// Check sync latency
 	syncLatencyNanos := atomic.LoadInt64(&state.SyncLatencyNanos)
 
@@ -231,10 +215,6 @@ func TestRotationFailureMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
 	// Check rotation metrics
 	rotationTimeNanos := atomic.LoadInt64(&state.RotationTimeNanos)
 	failedRotations := atomic.LoadUint64(&state.FailedRotations)
@@ -265,10 +245,6 @@ func TestIndexErrorMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
 	// Check index metrics
 	indexPersistErrors := atomic.LoadUint64(&state.IndexPersistErrors)
 	indexSizeBytes := atomic.LoadUint64(&state.IndexSizeBytes)
@@ -294,11 +270,6 @@ func TestCorruptionMetrics(t *testing.T) {
 	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("corruption test")})
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	shard, _ := client.getOrCreateShard(0)
-	if shard.state == nil {
-		t.Skip("State not available in non-mmap mode")
 	}
 
 	client.Close()
@@ -377,10 +348,6 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
 	// Check detailed retention metrics
 	lastRetentionNanos := atomic.LoadInt64(&state.LastRetentionNanos)
 	retentionTimeNanos := atomic.LoadInt64(&state.RetentionTimeNanos)
@@ -415,9 +382,6 @@ func TestMultiProcessDetailedMetrics(t *testing.T) {
 	}
 
 	shard1, _ := client1.getOrCreateShard(0)
-	if shard1.state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
 
 	// Update process count and heartbeat
 	atomic.AddUint64(&shard1.state.ProcessCount, 1)
@@ -488,10 +452,6 @@ func TestMetricsCompleteness(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
 	// Access ALL 70 metrics to ensure they don't panic
 	metrics := map[string]interface{}{
 		"Version":              atomic.LoadUint64(&state.Version),

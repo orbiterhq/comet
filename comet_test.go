@@ -46,6 +46,9 @@ func TestClient_AddAndLen(t *testing.T) {
 		t.Errorf("expected 3 IDs, got %d", len(ids))
 	}
 
+	// Debug: log the IDs
+	t.Logf("Appended IDs: %v", ids)
+
 	// Check length
 	length, err = client.Len(ctx, streamName)
 	if err != nil {

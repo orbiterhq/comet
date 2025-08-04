@@ -239,8 +239,9 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 		group = "default"
 	}
 
-	// Register this consumer group as active
-	client.registerConsumerGroup(group)
+	// Since processes own their shards exclusively, they own all consumer groups
+	// No need to register/track active groups
+	// client.registerConsumerGroup(group)
 
 	return &Consumer{
 		client:        client,
@@ -318,8 +319,9 @@ func (c *Consumer) Close() error {
 		c.client.logger.Warn("Failed to flush pending ACKs on close", "error", err)
 	}
 
-	// Deregister this consumer group
-	c.client.deregisterConsumerGroup(c.group)
+	// Since processes own their shards exclusively, they own all consumer groups
+	// No need to deregister
+	// c.client.deregisterConsumerGroup(c.group)
 
 	return nil
 }
@@ -1080,22 +1082,10 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 		ConsumerOffsets: make(map[string]int64),
 	}
 
-	// Copy consumer offsets, but only include offsets for this consumer's group
-	// This prevents consumer group offset leakage between different client instances
-	activeGroups := c.client.getActiveGroups()
+	// Since processes own their shards exclusively, they own all consumer groups
+	// Copy all consumer offsets
 	for group, offset := range shard.index.ConsumerOffsets {
-		if activeGroups[group] {
-			stats.ConsumerOffsets[group] = offset
-		}
-	}
-
-	if IsDebug() && c.client.logger != nil {
-		c.client.logger.Debug("GetShardStats filtered consumer offsets",
-			"consumerGroup", c.group,
-			"shardID", shardID,
-			"activeGroups", activeGroups,
-			"allIndexOffsets", shard.index.ConsumerOffsets,
-			"filteredOffsets", stats.ConsumerOffsets)
+		stats.ConsumerOffsets[group] = offset
 	}
 
 	// Calculate totals from files
@@ -1150,6 +1140,13 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 		return nil, fmt.Errorf("failed to scan for shard directories: %w", err)
 	}
 
+	if IsDebug() && c.client.logger != nil {
+		c.client.logger.Debug("discoverShards: found shard directories",
+			"count", len(shardDirs),
+			"dirs", shardDirs,
+			"baseStream", baseStream)
+	}
+
 	for _, shardDir := range shardDirs {
 		// Extract shard ID from directory name (e.g., "shard-0166" -> 166)
 		dirName := filepath.Base(shardDir)
@@ -1160,11 +1157,27 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 		shardIDStr := strings.TrimPrefix(dirName, "shard-")
 		var shardID uint64
 		if _, parseErr := fmt.Sscanf(shardIDStr, "%04d", &shardID); parseErr == nil {
-			// Verify this shard matches our stream pattern by checking if data exists
+			// In multi-process mode, we need to check if ANY process might own this shard
+			// Since consumer groups can span multiple processes, we need to discover all shards
+			// that match our pattern, regardless of which process owns them
+
+			// For now, just check if the shard directory exists and matches our pattern
 			streamName := fmt.Sprintf("%s%04d", baseStream, shardID)
-			if length, lenErr := c.client.Len(context.Background(), streamName); lenErr == nil && length > 0 {
-				allShards = append(allShards, uint32(shardID))
+
+			// Simple check: if shard directory exists and stream name matches pattern, include it
+			// This avoids the complexity of trying to read shards owned by other processes
+			allShards = append(allShards, uint32(shardID))
+
+			if IsDebug() && c.client.logger != nil {
+				c.client.logger.Debug("Shard discovery: found matching shard",
+					"shardDir", shardDir,
+					"shardID", shardID,
+					"streamName", streamName)
 			}
+		} else if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Failed to parse shard ID",
+				"shardIDStr", shardIDStr,
+				"error", parseErr)
 		}
 	}
 

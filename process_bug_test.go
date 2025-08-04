@@ -99,7 +99,7 @@ func TestProcessContinuousBatching(t *testing.T) {
 		t.Errorf("Expected ~%d batches, got %d", (totalMessages+batchSize-1)/batchSize, finalBatches)
 
 		// Check consumer lag to see if messages are still available
-		lag, err := consumer.GetLag(ctx, 1)
+		lag, err := consumer.GetLag(ctx, 0)
 		if err == nil {
 			t.Errorf("Consumer lag: %d (should be 0 if all processed)", lag)
 		}
@@ -144,7 +144,7 @@ func TestProcessOffsetPersistence(t *testing.T) {
 	t.Logf("Read batch 1: %d messages", len(batch1))
 
 	// Check lag before ACK
-	lagBefore, _ := consumer.GetLag(ctx, 1)
+	lagBefore, _ := consumer.GetLag(ctx, 0)
 	t.Logf("Lag before ACK: %d", lagBefore)
 
 	// ACK the messages
@@ -156,7 +156,7 @@ func TestProcessOffsetPersistence(t *testing.T) {
 	}
 
 	// Check lag after ACK
-	lagAfter, _ := consumer.GetLag(ctx, 1)
+	lagAfter, _ := consumer.GetLag(ctx, 0)
 	t.Logf("Lag after ACK: %d", lagAfter)
 
 	if lagAfter >= lagBefore {

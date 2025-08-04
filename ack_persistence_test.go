@@ -58,7 +58,7 @@ func TestACKPersistenceBug(t *testing.T) {
 	}
 
 	// Check lag after ACK
-	lag1, err := consumer.GetLag(ctx, 1)
+	lag1, err := consumer.GetLag(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestACKPersistenceBug(t *testing.T) {
 	defer consumer2.Close()
 
 	// Check lag with new consumer - should still be 5 if ACKs were persisted
-	lag2, err := consumer2.GetLag(ctx, 1)
+	lag2, err := consumer2.GetLag(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestProcessACKPersistence(t *testing.T) {
 	defer consumer2.Close()
 
 	// Check lag - should be 10 remaining
-	lag, err := consumer2.GetLag(ctx, 1)
+	lag, err := consumer2.GetLag(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

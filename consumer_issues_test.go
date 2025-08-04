@@ -140,14 +140,14 @@ func TestAckRangeValidation(t *testing.T) {
 	t.Logf("Read %d messages", len(msgs))
 
 	// Try to ACK range 0-9 (including unread messages 3-9)
-	err = consumer.AckRange(ctx, 1, 0, 9)
+	err = consumer.AckRange(ctx, 0, 0, 9)
 	if err == nil {
 		t.Fatal("Expected error when ACKing unread messages, but got none")
 	}
 	t.Logf("✅ AckRange correctly rejected: %v", err)
 
 	// Now ACK only the messages we've read (0-2)
-	err = consumer.AckRange(ctx, 1, 0, 2)
+	err = consumer.AckRange(ctx, 0, 0, 2)
 	if err != nil {
 		t.Fatalf("Failed to ACK read messages: %v", err)
 	}
@@ -156,8 +156,11 @@ func TestAckRangeValidation(t *testing.T) {
 	// Force a sync to ensure it's persisted
 	client.Sync(ctx)
 
+	// Give checkpoint time to complete
+	time.Sleep(50 * time.Millisecond)
+
 	// Check consumer offset
-	stats, err := consumer.GetShardStats(ctx, 1)
+	stats, err := consumer.GetShardStats(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +174,7 @@ func TestAckRangeValidation(t *testing.T) {
 	}
 
 	// Check lag - should be 7 (messages 3-9 remaining)
-	lag, err := consumer.GetLag(ctx, 1)
+	lag, err := consumer.GetLag(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
