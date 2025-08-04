@@ -20,7 +20,7 @@ func TestListRecent(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Test empty stream
 	t.Run("EmptyStream", func(t *testing.T) {
@@ -120,7 +120,7 @@ func TestScanAll(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write test data
 	for i := 0; i < 50; i++ {
@@ -238,7 +238,7 @@ func TestBrowseMultipleShards(t *testing.T) {
 
 	// Write to multiple shards
 	shards := []string{
-		"test:v1:shard:0001",
+		"test:v1:shard:0000",
 		"test:v1:shard:0002",
 		"test:v1:shard:0003",
 	}
@@ -285,7 +285,7 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Start concurrent writers
 	var writeCount atomic.Int64
@@ -369,7 +369,7 @@ func TestBrowseDoesNotAffectConsumers(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write test data
 	for i := 0; i < 20; i++ {
@@ -384,7 +384,7 @@ func TestBrowseDoesNotAffectConsumers(t *testing.T) {
 	consumer := NewConsumer(client, ConsumerOptions{Group: "test-group"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 5)
+	messages, err := consumer.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +402,7 @@ func TestBrowseDoesNotAffectConsumers(t *testing.T) {
 	}
 
 	// Get initial consumer offset
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
 	initialOffset := shard.index.ConsumerOffsets["test-group"]
 	shard.mu.RUnlock()
@@ -436,7 +436,7 @@ func TestBrowseDoesNotAffectConsumers(t *testing.T) {
 	}
 
 	// Verify consumer can continue from where it left off
-	moreMessages, err := consumer.Read(ctx, []uint32{1}, 5)
+	moreMessages, err := consumer.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		t.Fatal(err)
 	}

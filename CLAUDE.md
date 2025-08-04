@@ -49,7 +49,6 @@ config := comet.DefaultCometConfig()
 config.Compression.MinCompressSize = 1024      // Compression settings
 config.Indexing.BoundaryInterval = 100          // Indexing behavior
 config.Storage.MaxFileSize = 1 << 30            // File storage
-config.Concurrency.EnableFileLocking = true     // Multi-process mode
 config.Retention.MaxAge = 4 * time.Hour         // Retention policy
 ```
 

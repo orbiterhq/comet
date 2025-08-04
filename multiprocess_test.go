@@ -31,7 +31,7 @@ func TestMultiProcessInSameProcess(t *testing.T) {
 	defer client2.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write from client1
 	_, err = client1.Append(ctx, streamName, [][]byte{
@@ -51,7 +51,7 @@ func TestMultiProcessInSameProcess(t *testing.T) {
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "test"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 10)
+	messages, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatalf("failed to read from shard 1: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestMultiProcessMmapSize(t *testing.T) {
 
 	// Write something to create the shard
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{
 		[]byte(`{"test":true}`),
 	})
 	if err != nil {
@@ -116,7 +116,7 @@ func TestMultiProcessMmapSize(t *testing.T) {
 		t.Fatal("Shard 1 not found")
 	}
 
-	if shard.loadState() == nil {
+	if shard.state == nil {
 		t.Fatal("Unified state not initialized")
 	}
 
@@ -144,7 +144,7 @@ func TestMultiWriter_Safety(t *testing.T) {
 	defer client1.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	const writesPerClient = 100
 
@@ -187,7 +187,7 @@ func TestMultiWriter_Safety(t *testing.T) {
 	}
 
 	// Log shard state from client2
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 	shard2.mu.RLock()
 	t.Logf("Client2 shard state after writes: CurrentEntryNumber=%d", shard2.index.CurrentEntryNumber)
 	shard2.mu.RUnlock()
@@ -201,7 +201,7 @@ func TestMultiWriter_Safety(t *testing.T) {
 	defer client3.Close()
 
 	// Log fresh client's shard state
-	shard3, _ := client3.getOrCreateShard(1)
+	shard3, _ := client3.getOrCreateShard(0)
 	shard3.mu.RLock()
 	t.Logf("Client3 (fresh) shard state: CurrentEntryNumber=%d", shard3.index.CurrentEntryNumber)
 	shard3.mu.RUnlock()
@@ -213,7 +213,7 @@ func TestMultiWriter_Safety(t *testing.T) {
 	defer consumer.Close()
 
 	// Read all available entries
-	messages, err := consumer.Read(ctx, []uint32{1}, 1000) // Read up to 1000
+	messages, err := consumer.Read(ctx, []uint32{0}, 1000) // Read up to 1000
 	if err != nil {
 		t.Fatalf("failed to read messages: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestMultiWriter_DisabledLocking(t *testing.T) {
 
 	// Create config with locking disabled
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -251,7 +251,7 @@ func TestMultiWriter_DisabledLocking(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	_, err = client.Append(ctx, streamName, [][]byte{
 		[]byte(`{"msg":"test without locking"}`),
@@ -277,7 +277,7 @@ func TestMultiWriter_Configuration(t *testing.T) {
 			name: "locking_disabled",
 			config: func() CometConfig {
 				c := DefaultCometConfig()
-				c.Concurrency.EnableMultiProcessMode = false
+				c.Concurrency.ProcessCount = 0
 				return c
 			}(),
 		},
@@ -298,7 +298,7 @@ func TestMultiWriter_Configuration(t *testing.T) {
 			defer client.Close()
 
 			ctx := context.Background()
-			streamName := "events:v1:shard:0001"
+			streamName := "events:v1:shard:0000"
 
 			_, err = client.Append(ctx, streamName, [][]byte{
 				[]byte(`{"msg":"configuration test"}`),
@@ -317,10 +317,10 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 
 	// Create config with file locking enabled (this enables mmap coordination)
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = true
+	config.Concurrency.ProcessCount = 2
 	config.Retention.CleanupInterval = 0 // Disable retention to prevent interference
 
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	ctx := context.Background()
 
 	// Phase 1: Writer process
@@ -332,7 +332,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		defer client1.Close()
 
 		// Debug: Check initial shard state
-		initialShard, _ := client1.getOrCreateShard(1)
+		initialShard, _ := client1.getOrCreateShard(0)
 		initialShard.mu.RLock()
 		t.Logf("Initial writer shard state: Files=%d, CurrentWriteOffset=%d, CurrentEntryNumber=%d",
 			len(initialShard.index.Files), initialShard.index.CurrentWriteOffset, initialShard.index.CurrentEntryNumber)
@@ -364,7 +364,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		}
 
 		// Force index persistence for multi-process visibility
-		shard1, _ := client1.getOrCreateShard(1)
+		shard1, _ := client1.getOrCreateShard(0)
 		shard1.mu.Lock()
 		t.Logf("Writer shard state: CurrentFile=%s, Files=%d, CurrentWriteOffset=%d, CurrentEntryNumber=%d",
 			shard1.index.CurrentFile, len(shard1.index.Files), shard1.index.CurrentWriteOffset, shard1.index.CurrentEntryNumber)
@@ -397,7 +397,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		// Give the reader some time to load the index state
 		time.Sleep(100 * time.Millisecond)
 
-		shard2, _ := client2.getOrCreateShard(1)
+		shard2, _ := client2.getOrCreateShard(0)
 		t.Logf("Reader shard state: CurrentFile=%s, Files=%d, CurrentWriteOffset=%d, CurrentEntryNumber=%d",
 			shard2.index.CurrentFile, len(shard2.index.Files), shard2.index.CurrentWriteOffset, shard2.index.CurrentEntryNumber)
 		for i, f := range shard2.index.Files {
@@ -416,7 +416,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		})
 		defer consumer.Close()
 
-		messages, err := consumer.Read(ctx, []uint32{1}, 10)
+		messages, err := consumer.Read(ctx, []uint32{0}, 10)
 		if err != nil {
 			t.Fatalf("failed to read messages: %v", err)
 		}
@@ -447,7 +447,7 @@ func TestCometStateFile(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{
 		[]byte(`{"test": "unified state"}`),
 	})
 	if err != nil {
@@ -455,7 +455,7 @@ func TestCometStateFile(t *testing.T) {
 	}
 
 	// Check that the comet.state file was created
-	shardDir := filepath.Join(dir, "shard-0001")
+	shardDir := filepath.Join(dir, "shard-0000")
 	stateFile := filepath.Join(shardDir, "comet.state")
 
 	info, err := os.Stat(stateFile)
@@ -482,12 +482,12 @@ func TestMmapTimestampUpdates(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Get the shard and check initial timestamp
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	var initialTimestamp int64
-	if state := shard.loadState(); state != nil {
+	if state := shard.state; state != nil {
 		initialTimestamp = state.GetLastIndexUpdate()
 	}
 	t.Logf("Initial mmap timestamp: %d", initialTimestamp)
@@ -508,7 +508,7 @@ func TestMmapTimestampUpdates(t *testing.T) {
 
 	// Check timestamp was updated
 	var updatedTimestamp int64
-	if state := shard.loadState(); state != nil {
+	if state := shard.state; state != nil {
 		updatedTimestamp = state.GetLastIndexUpdate()
 	}
 	t.Logf("Updated mmap timestamp: %d", updatedTimestamp)
@@ -532,7 +532,7 @@ func TestMmapTimestampUpdates(t *testing.T) {
 	}
 
 	var finalTimestamp int64
-	if state := shard.loadState(); state != nil {
+	if state := shard.state; state != nil {
 		finalTimestamp = state.GetLastIndexUpdate()
 	}
 	t.Logf("Final mmap timestamp: %d", finalTimestamp)

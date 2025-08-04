@@ -24,7 +24,7 @@ func TestRetention_Basic(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write some data to create files
 	for i := 0; i < 20; i++ {
@@ -36,14 +36,14 @@ func TestRetention_Basic(t *testing.T) {
 	}
 
 	// Force file rotation to create a second file
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatalf("failed to get shard: %v", err)
 	}
 
 	// Debug: Check sequence counter before rotation
 	shard.mu.Lock()
-	if state := shard.loadState(); state != nil {
+	if state := shard.state; state != nil {
 		t.Logf("File sequence before rotation: %d", state.LastFileSequence)
 	} else {
 		t.Log("CometState not initialized (single-process mode)")
@@ -146,7 +146,7 @@ func TestRetention_DeleteFiles(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write data to first file
 	for i := 0; i < 10; i++ {
@@ -158,7 +158,7 @@ func TestRetention_DeleteFiles(t *testing.T) {
 	}
 
 	// Force rotation
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
 	err = shard.rotateFile(&client.metrics, &config, nil)
 	shard.mu.Unlock()
@@ -272,7 +272,7 @@ func TestRetentionStats_NewestData(t *testing.T) {
 	beforeWrite := time.Now()
 	time.Sleep(10 * time.Millisecond) // Ensure time difference
 
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	_, err = client.Append(ctx, streamName, [][]byte{
 		[]byte("test data 1"),
 		[]byte("test data 2"),

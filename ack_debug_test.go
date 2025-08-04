@@ -15,7 +15,7 @@ import (
 func TestACKDebug(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "debug:v1:shard:0001"
+	stream := "debug:v1:shard:0000"
 
 	// Enable debug logging
 	SetDebug(true)
@@ -89,7 +89,7 @@ func TestACKDebug(t *testing.T) {
 				}
 
 				// Check initial offset
-				shard, _ := client.getOrCreateShard(1)
+				shard, _ := client.getOrCreateShard(0)
 				shard.mu.RLock()
 				initialOffset := shard.index.ConsumerOffsets[fmt.Sprintf("consumer-%d", cID)]
 				shard.mu.RUnlock()
@@ -150,7 +150,7 @@ func TestACKDebug(t *testing.T) {
 
 				// Check persisted offset
 				client2, _ := NewClientWithConfig(dir, config)
-				shard2, _ := client2.getOrCreateShard(1)
+				shard2, _ := client2.getOrCreateShard(0)
 				shard2.mu.RLock()
 				persistedOffset := shard2.index.ConsumerOffsets[fmt.Sprintf("consumer-%d", cID)]
 				shard2.mu.RUnlock()

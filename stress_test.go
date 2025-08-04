@@ -15,7 +15,7 @@ import (
 func TestQuickACKStress(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "quick:v1:shard:0001"
+	stream := "quick:v1:shard:0000"
 	totalMessages := 200
 
 	// Write messages
@@ -154,7 +154,7 @@ func testEmptyBatchACK(t *testing.T) {
 func testDuplicateACK(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "dup:v1:shard:0001"
+	stream := "dup:v1:shard:0000"
 
 	// Write message
 	client, err := NewClientWithConfig(dir, config)
@@ -221,7 +221,7 @@ func testDuplicateACK(t *testing.T) {
 func testOutOfOrderACK(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "order:v1:shard:0001"
+	stream := "order:v1:shard:0000"
 
 	// Write messages
 	client, err := NewClientWithConfig(dir, config)
@@ -282,7 +282,7 @@ func testRapidACKUnACK(t *testing.T) {
 	// Test rapid ACK operations that could cause race conditions
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "rapid:v1:shard:0001"
+	stream := "rapid:v1:shard:0000"
 
 	// Write messages
 	client, err := NewClientWithConfig(dir, config)
@@ -346,7 +346,7 @@ func testACKDuringRotation(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
 	config.Storage.MaxFileSize = 1024 // Very small files to force rotation
-	stream := "rotation:v1:shard:0001"
+	stream := "rotation:v1:shard:0000"
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -371,7 +371,7 @@ func testACKDuringRotation(t *testing.T) {
 		}
 
 		// Immediately read and ACK
-		msgs, err := consumer.Read(ctx, []uint32{1}, 1)
+		msgs, err := consumer.Read(ctx, []uint32{0}, 1)
 		if err != nil {
 			t.Fatal(err)
 		}

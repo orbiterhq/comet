@@ -15,7 +15,7 @@ func TestMultiProcessCometStateStats(t *testing.T) {
 	}
 
 	baseDir := t.TempDir()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Create multi-process config
 	config := MultiProcessConfig()
@@ -72,7 +72,7 @@ func TestMultiProcessCometStateStats(t *testing.T) {
 	shardID, _ := parseShardFromStream(streamName)
 	client2.mu.RLock()
 	if shard, exists := client2.shards[shardID]; exists {
-		if state := shard.loadState(); state != nil {
+		if state := shard.state; state != nil {
 			lastEntry := atomic.LoadInt64(&state.LastEntryNumber)
 			t.Logf("Process 2 shard state LastEntryNumber: %d", lastEntry)
 		}
@@ -133,7 +133,7 @@ func TestCometStateDirectAccess(t *testing.T) {
 	}
 
 	baseDir := t.TempDir()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	config := MultiProcessConfig()
 
 	// Process 1: Create and write data
@@ -171,7 +171,7 @@ func TestCometStateDirectAccess(t *testing.T) {
 	}
 
 	// Verify CometState is initialized and has data
-	state := testShard.loadState()
+	state := testShard.state
 	if state == nil {
 		t.Fatalf("CometState should be initialized in multi-process mode")
 	}

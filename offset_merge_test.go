@@ -14,7 +14,7 @@ import (
 func TestOffsetMergeLogic(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "merge:v1:shard:0001"
+	stream := "merge:v1:shard:0000"
 
 	// Enable debug
 	SetDebug(true)
@@ -53,7 +53,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 	client1, _ := NewClientWithConfig(dir, config)
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "test-group"})
 
-	msgs1, err := consumer1.Read(ctx, []uint32{1}, 10)
+	msgs1, err := consumer1.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 	}
 
 	// Get offset before closing
-	shard1, _ := client1.getOrCreateShard(1)
+	shard1, _ := client1.getOrCreateShard(0)
 	shard1.mu.RLock()
 	offset1 := shard1.index.ConsumerOffsets["test-group"]
 	shard1.mu.RUnlock()
@@ -78,7 +78,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 	consumer2 := NewConsumer(client2, ConsumerOptions{Group: "test-group"})
 
 	// Check what offset Consumer 2 sees
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 	shard2.mu.RLock()
 	offset2Start := shard2.index.ConsumerOffsets["test-group"]
 	shard2.mu.RUnlock()
@@ -89,7 +89,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 	client1.Close()
 
 	// Consumer 2 reads 5 messages
-	msgs2, err := consumer2.Read(ctx, []uint32{1}, 5)
+	msgs2, err := consumer2.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 
 	// Check final persisted offset
 	client3, _ := NewClientWithConfig(dir, config)
-	shard3, _ := client3.getOrCreateShard(1)
+	shard3, _ := client3.getOrCreateShard(0)
 	shard3.mu.RLock()
 	finalOffset := shard3.index.ConsumerOffsets["test-group"]
 	shard3.mu.RUnlock()
@@ -151,7 +151,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 			consumer := NewConsumer(client, ConsumerOptions{Group: "concurrent-group"})
 
 			// Read 5 messages
-			msgs, err := consumer.Read(ctx, []uint32{1}, 5)
+			msgs, err := consumer.Read(ctx, []uint32{0}, 5)
 			if err != nil {
 				return
 			}

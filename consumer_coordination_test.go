@@ -15,7 +15,7 @@ import (
 func TestConsumerCoordination(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "coord:v1:shard:0001"
+	stream := "coord:v1:shard:0000"
 
 	// Enable debug
 	SetDebug(true)
@@ -70,7 +70,7 @@ func TestConsumerCoordination(t *testing.T) {
 				})
 
 				// Check starting offset
-				shard, _ := client.getOrCreateShard(1)
+				shard, _ := client.getOrCreateShard(0)
 				shard.mu.RLock()
 				startOffset := shard.index.ConsumerOffsets["shared-group"]
 				shard.mu.RUnlock()
@@ -199,7 +199,7 @@ func TestConsumerCoordination(t *testing.T) {
 
 	// Check final offset
 	finalClient, _ := NewClientWithConfig(dir, config)
-	finalShard, _ := finalClient.getOrCreateShard(1)
+	finalShard, _ := finalClient.getOrCreateShard(0)
 	finalShard.mu.RLock()
 	finalOffset := finalShard.index.ConsumerOffsets["shared-group"]
 	finalShard.mu.RUnlock()

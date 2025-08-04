@@ -158,16 +158,8 @@ func (s *CometState) GetLastEntryNumber() int64 {
 }
 
 func (s *CometState) IncrementLastEntryNumber() int64 {
-	// Use a compare-and-swap loop to ensure atomic increment across processes
-	// This handles the case where multiple processes have different memory mappings
-	// of the same file but need to coordinate atomic updates
-	for {
-		oldVal := atomic.LoadInt64(&s.LastEntryNumber)
-		newVal := oldVal + 1
-		if atomic.CompareAndSwapInt64(&s.LastEntryNumber, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddInt64(&s.LastEntryNumber, 1)
 }
 
 func (s *CometState) GetLastIndexUpdate() int64 {
@@ -218,20 +210,14 @@ func (s *CometState) AddLastFileSequence(delta uint64) uint64 {
 	return atomic.AddUint64(&s.LastFileSequence, delta)
 }
 
-// TotalWrites methods - use CAS for multi-process accuracy in observability
+// TotalWrites methods - simple atomics since processes own shards exclusively
 func (s *CometState) GetTotalWrites() uint64 {
 	return atomic.LoadUint64(&s.TotalWrites)
 }
 
 func (s *CometState) AddTotalWrites(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - write metrics are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.TotalWrites)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.TotalWrites, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.TotalWrites, delta)
 }
 
 // LastWriteNanos methods
@@ -243,52 +229,28 @@ func (s *CometState) StoreLastWriteNanos(val int64) {
 	atomic.StoreInt64(&s.LastWriteNanos, val)
 }
 
-// TotalEntries methods - use CAS for multi-process accuracy in observability
+// TotalEntries methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddTotalEntries(delta int64) int64 {
-	// Use CAS loop for multi-process accuracy - entry counts are critical for observability
-	for {
-		oldVal := atomic.LoadInt64(&s.TotalEntries)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapInt64(&s.TotalEntries, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddInt64(&s.TotalEntries, delta)
 }
 
-// TotalBytes methods - use CAS for multi-process accuracy in observability
+// TotalBytes methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddTotalBytes(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - byte counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.TotalBytes)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.TotalBytes, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.TotalBytes, delta)
 }
 
-// FileRotations methods - use CAS for multi-process accuracy in observability
+// FileRotations methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddFileRotations(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - file rotation counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.FileRotations)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.FileRotations, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.FileRotations, delta)
 }
 
-// FilesCreated methods - use CAS for multi-process accuracy in observability
+// FilesCreated methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddFilesCreated(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - file creation counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.FilesCreated)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.FilesCreated, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.FilesCreated, delta)
 }
 
 // MinWriteLatency methods
@@ -296,18 +258,12 @@ func (s *CometState) GetMinWriteLatency() uint64 {
 	return atomic.LoadUint64(&s.MinWriteLatency)
 }
 
-func (s *CometState) CompareAndSwapMinWriteLatency(old, new uint64) bool {
-	return atomic.CompareAndSwapUint64(&s.MinWriteLatency, old, new)
-}
 
 // MaxWriteLatency methods
 func (s *CometState) GetMaxWriteLatency() uint64 {
 	return atomic.LoadUint64(&s.MaxWriteLatency)
 }
 
-func (s *CometState) CompareAndSwapMaxWriteLatency(old, new uint64) bool {
-	return atomic.CompareAndSwapUint64(&s.MaxWriteLatency, old, new)
-}
 
 // WriteLatencySum methods
 func (s *CometState) AddWriteLatencySum(delta uint64) uint64 {
@@ -337,28 +293,16 @@ func (s *CometState) GetCompressionRatioFloat() float64 {
 	return float64(compressed) / float64(original)
 }
 
-// ErrorCount methods - critical for error rate calculations
+// ErrorCount methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddErrorCount(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - error counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.ErrorCount)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.ErrorCount, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.ErrorCount, delta)
 }
 
-// FailedWrites methods - critical for error rate calculations
+// FailedWrites methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddFailedWrites(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - failed write counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.FailedWrites)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.FailedWrites, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.FailedWrites, delta)
 }
 
 func (s *CometState) GetErrorRate() float64 {
@@ -376,26 +320,17 @@ func (s *CometState) UpdateWriteLatency(nanos uint64) {
 	atomic.AddUint64(&s.WriteLatencySum, nanos)
 	atomic.AddUint64(&s.WriteLatencyCount, 1)
 
-	// Update min
-	for {
-		min := atomic.LoadUint64(&s.MinWriteLatency)
-		if min > 0 && min <= nanos {
-			break
-		}
-		if atomic.CompareAndSwapUint64(&s.MinWriteLatency, min, nanos) {
-			break
-		}
+	// Since processes own their shards exclusively, we can use simple atomic operations
+	// Update min - no CAS needed since no contention
+	min := atomic.LoadUint64(&s.MinWriteLatency)
+	if min == 0 || nanos < min {
+		atomic.StoreUint64(&s.MinWriteLatency, nanos)
 	}
 
-	// Update max
-	for {
-		max := atomic.LoadUint64(&s.MaxWriteLatency)
-		if max >= nanos {
-			break
-		}
-		if atomic.CompareAndSwapUint64(&s.MaxWriteLatency, max, nanos) {
-			break
-		}
+	// Update max - no CAS needed since no contention
+	max := atomic.LoadUint64(&s.MaxWriteLatency)
+	if nanos > max {
+		atomic.StoreUint64(&s.MaxWriteLatency, nanos)
 	}
 
 	// Update approximate percentiles using exponential weighted moving average

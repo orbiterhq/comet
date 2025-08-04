@@ -14,7 +14,7 @@ import (
 func TestACKConcurrentPersistence(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "concurrent:v1:shard:0001"
+	stream := "concurrent:v1:shard:0000"
 
 	// Write messages
 	client, err := NewClientWithConfig(dir, config)
@@ -58,7 +58,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 			defer consumer.Close()
 
 			// Read and ACK 10 messages
-			msgs, err := consumer.Read(ctx, []uint32{1}, 10)
+			msgs, err := consumer.Read(ctx, []uint32{0}, 10)
 			if err != nil {
 				errors <- fmt.Errorf("consumer %d: read error: %w", consumerID, err)
 				return
@@ -77,7 +77,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 			t.Logf("Consumer %d: ACKed all messages", consumerID)
 
 			// Get offset before close
-			shard, _ := client.getOrCreateShard(1)
+			shard, _ := client.getOrCreateShard(0)
 			shard.mu.RLock()
 			offset := shard.index.ConsumerOffsets[fmt.Sprintf("consumer-%d", consumerID)]
 			shard.mu.RUnlock()
@@ -105,7 +105,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 	}
 	defer client2.Close()
 
-	shard, err := client2.getOrCreateShard(1)
+	shard, err := client2.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}

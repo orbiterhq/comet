@@ -25,7 +25,7 @@ func TestMmapCoordinationAtomicity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = client.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+	_, err = client.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 		[]byte(`{"init": true}`),
 	})
 	if err != nil {
@@ -76,7 +76,7 @@ func TestMmapDataIntegrity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = client.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+	_, err = client.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 		[]byte(`{"init": true}`),
 	})
 	if err != nil {
@@ -190,7 +190,7 @@ func testCoordinationAllocator(role string) {
 	defer client.Close()
 
 	// Get the shard and access its mmap writer directly
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		fmt.Printf("%s: failed to get shard: %v\n", role, err)
 		return
@@ -240,7 +240,7 @@ func testDataIntegrityWriter(role string) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write 20 entries with unique signature
 	successCount := 0

@@ -23,7 +23,7 @@ func TestReaderCacheMetrics(t *testing.T) {
 	defer client.Close()
 
 	// Write data to create multiple files
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	for i := 0; i < 10; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "message": "test data for reader cache metrics with padding to ensure file rotation"}`, i))
 		_, err := client.Append(ctx, streamName, [][]byte{data})
@@ -36,17 +36,17 @@ func TestReaderCacheMetrics(t *testing.T) {
 	client.Sync(ctx)
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal("Failed to get shard:", err)
 	}
 
-	if shard.loadState() == nil {
+	if shard.state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	// Check initial state - no reader cache activity yet
-	state := shard.loadState()
+	state := shard.state
 	initialFileMaps := atomic.LoadUint64(&state.ReaderFileMaps)
 	initialFileUnmaps := atomic.LoadUint64(&state.ReaderFileUnmaps)
 	initialCacheBytes := atomic.LoadUint64(&state.ReaderCacheBytes)
@@ -67,7 +67,7 @@ func TestReaderCacheMetrics(t *testing.T) {
 	defer consumer.Close()
 
 	// Read some messages to trigger file mapping
-	messages, err := consumer.Read(ctx, []uint32{1}, 5)
+	messages, err := consumer.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestReaderCacheMetrics(t *testing.T) {
 	}
 
 	// Read again to potentially trigger remapping if files grew
-	messages2, err := consumer.Read(ctx, []uint32{1}, 5)
+	messages2, err := consumer.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestReaderCacheEviction(t *testing.T) {
 	defer client.Close()
 
 	// Write some data
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	for i := 0; i < 10; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d}`, i))
 		_, err := client.Append(ctx, streamName, [][]byte{data})
@@ -193,12 +193,12 @@ func TestReaderCacheEviction(t *testing.T) {
 
 	client.Sync(ctx)
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if shard.loadState() == nil {
+	if shard.state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -211,7 +211,7 @@ func TestReaderCacheEviction(t *testing.T) {
 	}
 	defer reader.Close()
 
-	evictionState := shard.loadState()
+	evictionState := shard.state
 	reader.SetState(evictionState)
 
 	// Get initial metrics

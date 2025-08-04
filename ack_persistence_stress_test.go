@@ -76,7 +76,7 @@ func TestACKPersistenceStress(t *testing.T) {
 func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, processDelayMs, restartFreq int, sameGroup bool) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := fmt.Sprintf("stress:v1:shard:0001")
+	stream := fmt.Sprintf("stress:v1:shard:0000")
 
 	// Step 1: Write all test messages
 	t.Logf("Writing %d messages", totalMessages)
@@ -343,7 +343,7 @@ func TestACKPersistenceRaceConditions(t *testing.T) {
 
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "race:v1:shard:0001"
+	stream := "race:v1:shard:0000"
 	totalMessages := 1000
 
 	// Write messages
@@ -481,7 +481,7 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 	// Use small files to trigger more rotations
 	config.Storage.MaxFileSize = 1024 * 1024 // 1MB files
 
-	stream := "memory:v1:shard:0001"
+	stream := "memory:v1:shard:0000"
 	totalMessages := 10000 // Large number to create memory pressure
 
 	// Write large messages to consume memory

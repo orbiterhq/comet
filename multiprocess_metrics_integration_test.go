@@ -51,7 +51,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = initClient.Append(context.Background(), "test:v1:shard:0001", [][]byte{[]byte("init")})
+	_, err = initClient.Append(context.Background(), "test:v1:shard:0000", [][]byte{[]byte("init")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,12 +105,12 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 		}
 		defer client.Close()
 
-		shard, err := client.getOrCreateShard(1)
+		shard, err := client.getOrCreateShard(0)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		state := shard.loadState()
+		state := shard.state
 		if state == nil {
 			t.Fatal("CometState not initialized")
 		}
@@ -348,7 +348,7 @@ func runMetricsWorker(t *testing.T, role string) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	switch role {
 	case "writer1", "writer2":
@@ -401,7 +401,7 @@ func runMetricsWorker(t *testing.T, role string) {
 
 		totalRead := 0
 		for i := 0; i < 50; i++ {
-			messages, err := consumer.Read(ctx, []uint32{1}, 10)
+			messages, err := consumer.Read(ctx, []uint32{0}, 10)
 			if err != nil {
 				t.Logf("Worker %s: read error: %v", role, err)
 				continue

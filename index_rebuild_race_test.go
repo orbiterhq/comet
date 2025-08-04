@@ -32,7 +32,7 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 		t.Fatalf("failed to build test worker: %v", err)
 	}
 
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Create initial data with multiple files
 	config := MultiProcessConfig()
@@ -55,7 +55,7 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 	}
 
 	// Get initial state
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
 	initialFiles := len(shard.index.Files)
 	initialTotalEntries := int64(0)
@@ -77,7 +77,7 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 	client.Close()
 
 	// Delete index files to force rebuilding
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 	if err := os.Remove(indexPath); err != nil {
 		t.Fatal(err)
 	}
@@ -131,10 +131,10 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 
 	// Access shard to load rebuilt index
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "rebuild-race-test"})
-	consumer.Read(ctx, []uint32{1}, 1) // This loads the shard
+	consumer.Read(ctx, []uint32{0}, 1) // This loads the shard
 	consumer.Close()
 
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 	shard2.mu.RLock()
 	finalFiles := len(shard2.index.Files)
 	finalTotalEntries := int64(0)
@@ -168,7 +168,7 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 	consumer2 := NewConsumer(client2, ConsumerOptions{Group: "final-verify"})
 	defer consumer2.Close()
 
-	messages, err := consumer2.Read(ctx, []uint32{1}, 10)
+	messages, err := consumer2.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Errorf("Data corruption after concurrent index rebuild: %v", err)
 	} else if len(messages) == 0 {

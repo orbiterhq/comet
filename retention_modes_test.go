@@ -27,7 +27,7 @@ func TestRetentionSingleProcess(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write data to create multiple files
 	for i := 0; i < 30; i++ {
@@ -39,7 +39,7 @@ func TestRetentionSingleProcess(t *testing.T) {
 	}
 
 	// Get initial file count
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
 	initialFiles := len(shard.index.Files)
 	shard.mu.RUnlock()
@@ -89,7 +89,7 @@ func TestRetentionWithActiveReaders(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write data to create files
 	for i := 0; i < 20; i++ {
@@ -101,7 +101,7 @@ func TestRetentionWithActiveReaders(t *testing.T) {
 	}
 
 	// Create an active reader by getting the shard and incrementing reader count
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	atomic.AddInt64(&shard.readerCount, 1)
 	defer atomic.AddInt64(&shard.readerCount, -1)
 
@@ -155,7 +155,7 @@ func TestRetentionConsumerProtection(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write data
 	for i := 0; i < 20; i++ {
@@ -167,7 +167,7 @@ func TestRetentionConsumerProtection(t *testing.T) {
 	}
 
 	// Set a consumer offset manually to simulate partial consumption
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
 	// Simulate that consumer has read first 5 entries
 	shard.index.ConsumerOffsets = map[string]int64{

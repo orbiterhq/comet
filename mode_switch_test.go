@@ -15,14 +15,14 @@ func TestModeSwitchDetection(t *testing.T) {
 	t.Run("SingleToMulti", func(t *testing.T) {
 		// Create in single-process mode
 		config1 := DefaultCometConfig()
-		config1.Concurrency.EnableMultiProcessMode = false
+		config1.Concurrency.ProcessCount = 0
 		client1, err := NewClientWithConfig(dir, config1)
 		if err != nil {
 			t.Fatalf("failed to create single-process client: %v", err)
 		}
 
 		// Write some data
-		_, err = client1.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+		_, err = client1.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 		if err != nil {
 			t.Fatalf("failed to write data: %v", err)
 		}
@@ -30,7 +30,7 @@ func TestModeSwitchDetection(t *testing.T) {
 
 		// Try to open in multi-process mode
 		config2 := DefaultCometConfig()
-		config2.Concurrency.EnableMultiProcessMode = true
+		config2.Concurrency.ProcessCount = 2
 		client2, err := NewClientWithConfig(dir, config2)
 		if err != nil {
 			t.Fatalf("failed to create multi-process client: %v", err)
@@ -38,7 +38,7 @@ func TestModeSwitchDetection(t *testing.T) {
 		defer client2.Close()
 
 		// This should fail with mode mismatch error
-		_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test2")})
+		_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test2")})
 		if err == nil {
 			t.Fatal("expected mode mismatch error, got nil")
 		}
@@ -53,7 +53,7 @@ func TestModeSwitchDetection(t *testing.T) {
 
 		// Create in multi-process mode
 		config1 := DefaultCometConfig()
-		config1.Concurrency.EnableMultiProcessMode = true
+		config1.Concurrency.ProcessCount = 2
 		client1, err := NewClientWithConfig(dir2, config1)
 		if err != nil {
 			t.Fatalf("failed to create multi-process client: %v", err)
@@ -68,7 +68,7 @@ func TestModeSwitchDetection(t *testing.T) {
 
 		// Try to open in single-process mode
 		config2 := DefaultCometConfig()
-		config2.Concurrency.EnableMultiProcessMode = false
+		config2.Concurrency.ProcessCount = 0
 		client2, err := NewClientWithConfig(dir2, config2)
 		if err != nil {
 			t.Fatalf("failed to create single-process client: %v", err)

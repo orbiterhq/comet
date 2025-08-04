@@ -36,7 +36,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 		t.Fatalf("failed to build test worker: %v", err)
 	}
 
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Create initial data with multiple files
 	config := MultiProcessConfig()
@@ -52,7 +52,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 	ctx := context.Background()
 
 	// Create massive number of files by forcing frequent rotation
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 
 	// Create way more entries and files to stress the retention system
 	for i := 0; i < 200; i++ {
@@ -147,7 +147,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 	}
 	defer client2.Close()
 
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 	shard2.mu.RLock()
 	finalFiles := len(shard2.index.Files)
 	t.Logf("Final files: %d (started with %d)", finalFiles, initialFiles)
@@ -201,7 +201,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 			consumer := NewConsumer(client2, ConsumerOptions{Group: "race-test"})
 			defer consumer.Close()
 
-			messages, err := consumer.Read(ctx, []uint32{1}, 5)
+			messages, err := consumer.Read(ctx, []uint32{0}, 5)
 			if err != nil {
 				// In multi-process mode with aggressive retention, these errors are expected
 				if strings.Contains(err.Error(), "no such file or directory") {

@@ -50,7 +50,7 @@ func TestSingleProcessACKPersistence(t *testing.T) {
 	}
 
 	// Write messages
-	_, err = client1.Append(ctx, "ack-test:v1:shard:0001", [][]byte{
+	_, err = client1.Append(ctx, "ack-test:v1:shard:0000", [][]byte{
 		[]byte("msg-1"),
 		[]byte("msg-2"),
 		[]byte("msg-3"),
@@ -61,7 +61,7 @@ func TestSingleProcessACKPersistence(t *testing.T) {
 
 	// Create consumer and ACK messages
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "test-group"})
-	msgs, err := consumer1.Read(ctx, []uint32{1}, 3)
+	msgs, err := consumer1.Read(ctx, []uint32{0}, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestSingleProcessACKPersistence(t *testing.T) {
 	t.Logf("Consumer offset after restart: %v", stats.ConsumerOffsets)
 
 	// Try to read - if we get messages, ACKs were lost
-	msgs2, err := consumer2.Read(ctx, []uint32{1}, 3)
+	msgs2, err := consumer2.Read(ctx, []uint32{0}, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestAckRangeValidation(t *testing.T) {
 	defer client.Close()
 
 	// Write 10 messages
-	_, err = client.Append(ctx, "range-test:v1:shard:0001", [][]byte{
+	_, err = client.Append(ctx, "range-test:v1:shard:0000", [][]byte{
 		[]byte("msg-0"), []byte("msg-1"), []byte("msg-2"),
 		[]byte("msg-3"), []byte("msg-4"), []byte("msg-5"),
 		[]byte("msg-6"), []byte("msg-7"), []byte("msg-8"),
@@ -133,7 +133,7 @@ func TestAckRangeValidation(t *testing.T) {
 	defer consumer.Close()
 
 	// Read only first 3 messages
-	msgs, err := consumer.Read(ctx, []uint32{1}, 3)
+	msgs, err := consumer.Read(ctx, []uint32{0}, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestAckRangeValidation(t *testing.T) {
 	}
 
 	// Verify we can read the remaining messages
-	msgs2, err := consumer.Read(ctx, []uint32{1}, 10)
+	msgs2, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestProcessAutoAckFailureHandling(t *testing.T) {
 	defer client.Close()
 
 	// Write messages
-	_, err = client.Append(ctx, "process-test:v1:shard:0001", [][]byte{
+	_, err = client.Append(ctx, "process-test:v1:shard:0000", [][]byte{
 		[]byte("msg-1"), []byte("msg-2"), []byte("msg-3"),
 	})
 	if err != nil {
@@ -249,7 +249,7 @@ func TestProcessAutoAckFailureHandling(t *testing.T) {
 	consumer2 := NewConsumer(client, ConsumerOptions{Group: "process-group"})
 	defer consumer2.Close()
 
-	msgs2, _ := consumer2.Read(ctx, []uint32{1}, 10)
+	msgs2, _ := consumer2.Read(ctx, []uint32{0}, 10)
 	t.Logf("Messages available for reprocessing: %d", len(msgs2))
 	if len(msgs2) > 0 {
 		t.Logf("WARNING: %d messages available for reprocessing due to ACK failures", len(msgs2))

@@ -13,11 +13,11 @@ import (
 func (s *Shard) validateAndRecoverState() error {
 	processID := os.Getpid()
 
-	if s.loadState() == nil {
+	if s.state == nil {
 		return fmt.Errorf("state is nil")
 	}
 
-	state := s.loadState()
+	state := s.state
 	if state == nil {
 		return fmt.Errorf("state is nil after loadState")
 	}
@@ -153,7 +153,7 @@ func (s *Shard) validateAndRecoverState() error {
 
 		// Set state LastEntryNumber to index CurrentEntryNumber - 1
 		// If index says CurrentEntryNumber=3, we have entries 0,1,2, so LastEntryNumber=2
-		state := s.loadState()
+		state := s.state
 		atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber-1)
 
 		if IsDebug() && s.logger != nil {
@@ -226,19 +226,19 @@ func (s *Shard) recoverCorruptedState(reason string) error {
 	// Store recovery counts to restore after reinit
 	var prevRecoveryAttempts uint64
 	var prevCorruptionDetected uint64
-	if state := s.loadState(); state != nil {
+	if state := s.state; state != nil {
 		prevRecoveryAttempts = atomic.LoadUint64(&state.RecoveryAttempts)
 		prevCorruptionDetected = atomic.LoadUint64(&state.CorruptionDetected)
 	}
 
 	// Close and unmap current state
-	if s.loadState() != nil && s.stateData != nil {
+	if s.state != nil && s.stateData != nil {
 		// In mmap mode, unmap the memory
 		if len(s.stateData) > 0 {
 			syscall.Munmap(s.stateData)
 			s.stateData = nil
 		}
-		s.storeState(nil)
+		s.state = nil
 	}
 
 	// Rename corrupted file for investigation
@@ -258,9 +258,9 @@ func (s *Shard) recoverCorruptedState(reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.index != nil && s.loadState() != nil {
+	if s.index != nil && s.state != nil {
 		// Restore what we can from the index
-		state := s.loadState()
+		state := s.state
 
 		// Set LastEntryNumber to the last allocated entry (CurrentEntryNumber - 1)
 		// If CurrentEntryNumber=3, we have entries 0,1,2, so LastEntryNumber=2

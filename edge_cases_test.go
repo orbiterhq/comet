@@ -24,7 +24,7 @@ import (
 func TestConcurrentRotationStorm(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = true
+	config.Concurrency.ProcessCount = 2
 	config.Storage.MaxFileSize = 1 << 16         // Small files to trigger rotation quickly (64KB)
 	config.Compression.MinCompressSize = 1 << 30 // Disable compression for predictable sizing
 	client, err := NewClientWithConfig(dir, config)
@@ -108,7 +108,7 @@ func TestConcurrentRotationStorm(t *testing.T) {
 func TestPartialWriteRecovery(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Storage.MaxFileSize = 1 << 20 // 1MB files
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -168,7 +168,7 @@ func TestPartialWriteRecovery(t *testing.T) {
 
 	// Reopen client - it should recover gracefully
 	config2 := DefaultCometConfig()
-	config2.Concurrency.EnableMultiProcessMode = false
+	config2.Concurrency.ProcessCount = 0
 	client2, err := NewClientWithConfig(dir, config2)
 	if err != nil {
 		t.Fatalf("failed to create client after corruption: %v", err)
@@ -215,7 +215,7 @@ func TestPartialWriteRecovery(t *testing.T) {
 func TestIndexReconstructionWithGaps(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Indexing.BoundaryInterval = 5 // Index every 5 entries for testing
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -253,7 +253,7 @@ func TestIndexReconstructionWithGaps(t *testing.T) {
 
 	// Reopen client - should reconstruct index from data files
 	config2 := DefaultCometConfig()
-	config2.Concurrency.EnableMultiProcessMode = false
+	config2.Concurrency.ProcessCount = 0
 	config2.Indexing.BoundaryInterval = 5
 	client2, err := NewClientWithConfig(dir, config2)
 	if err != nil {
@@ -297,7 +297,7 @@ func TestIndexReconstructionWithGaps(t *testing.T) {
 func TestConsumerOffsetDurability(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Storage.CheckpointTime = 1 // Checkpoint every 1ms (effectively after every write)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -353,7 +353,7 @@ func TestConsumerOffsetDurability(t *testing.T) {
 
 	// Simulate crash/restart - reopen client
 	config2 := DefaultCometConfig()
-	config2.Concurrency.EnableMultiProcessMode = false
+	config2.Concurrency.ProcessCount = 0
 	client2, err := NewClientWithConfig(dir, config2)
 	if err != nil {
 		t.Fatalf("failed to reopen client: %v", err)
@@ -391,7 +391,7 @@ func TestConsumerOffsetDurability(t *testing.T) {
 func TestMaxIndexEntriesEnforcement(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Indexing.BoundaryInterval = 1 // Index every entry
 	config.Indexing.MaxIndexEntries = 10 // Very small limit for testing
 	client, err := NewClientWithConfig(dir, config)
@@ -462,7 +462,7 @@ func TestReaderStalenessAfterFileRotation(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write data to create initial files
 	largeEntry := make([]byte, 500) // Half a file
@@ -477,7 +477,7 @@ func TestReaderStalenessAfterFileRotation(t *testing.T) {
 	consumer := NewConsumer(client, ConsumerOptions{Group: "test"})
 
 	// Read some entries to establish a reader
-	messages, err := consumer.Read(ctx, []uint32{1}, 1)
+	messages, err := consumer.Read(ctx, []uint32{0}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +486,7 @@ func TestReaderStalenessAfterFileRotation(t *testing.T) {
 	}
 
 	// Get the reader reference
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	reader, err := consumer.getOrCreateReader(shard)
 	if err != nil {
 		t.Fatal(err)
@@ -542,7 +542,7 @@ func TestReaderStalenessAfterFileRotation(t *testing.T) {
 	t.Logf("Reader successfully updated after file deletion - file management is now automatic")
 
 	// Verify we can still read data
-	messages2, err := consumer.Read(ctx, []uint32{1}, 1)
+	messages2, err := consumer.Read(ctx, []uint32{0}, 1)
 	if err != nil {
 		t.Fatal("Failed to read after file deletion:", err)
 	}
@@ -563,7 +563,7 @@ func TestCrashRecoveryFileEntries(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write some entries
 	for i := 0; i < 5; i++ {
@@ -574,7 +574,7 @@ func TestCrashRecoveryFileEntries(t *testing.T) {
 	}
 
 	// Get the shard
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 
 	// Force a checkpoint to save index
 	shard.mu.Lock()
@@ -606,7 +606,7 @@ func TestCrashRecoveryFileEntries(t *testing.T) {
 	defer client2.Close()
 
 	// Check if recovery updated the file entry count
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 	shard2.mu.RLock()
 	recoveredEntries := shard2.index.Files[0].Entries
 	recoveredTotalEntries := shard2.index.CurrentEntryNumber
@@ -641,7 +641,7 @@ func TestFileGrowthRaceCondition(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write initial data
 	for i := 0; i < 5; i++ {
@@ -658,7 +658,7 @@ func TestFileGrowthRaceCondition(t *testing.T) {
 	defer consumer.Close()
 
 	// Read to establish the reader
-	messages, err := consumer.Read(ctx, []uint32{1}, 1)
+	messages, err := consumer.Read(ctx, []uint32{0}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -680,7 +680,7 @@ func TestFileGrowthRaceCondition(t *testing.T) {
 		}
 
 		// Immediately try to read it (might hit the race)
-		messages, err := consumer.Read(ctx, []uint32{1}, 1)
+		messages, err := consumer.Read(ctx, []uint32{0}, 1)
 		if err != nil {
 			if strings.Contains(err.Error(), "extends beyond file") ||
 				strings.Contains(err.Error(), "invalid offset") {
@@ -709,7 +709,7 @@ func TestFileGrowthRaceCondition(t *testing.T) {
 func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Storage.MaxFileSize = 10 * 1024 // 10KB - more realistic but still forces multiple files
 	config.Indexing.BoundaryInterval = 10
 	client, err := NewClientWithConfig(dir, config)
@@ -719,7 +719,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write entries that will span multiple files
 	const numEntries = 200
@@ -755,7 +755,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	defer client.Close()
 
 	// Get shard to check file count
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatalf("failed to get shard: %v", err)
 	}
@@ -806,7 +806,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 			batchSize = 1
 			t.Logf("Reading entry %d (single entry mode)", totalRead)
 		}
-		messages, err := consumer.Read(ctx, []uint32{1}, batchSize)
+		messages, err := consumer.Read(ctx, []uint32{0}, batchSize)
 		if err != nil {
 			// Log current consumer state before failing
 			shard.mu.RLock()
@@ -872,7 +872,7 @@ func TestConsumerReadEntryAtFileBoundary(t *testing.T) {
 	// Configure to rotate after exactly 3 entries (header + data size)
 	// Header = 12 bytes, small data = ~30 bytes, so 3 entries = ~126 bytes
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Storage.MaxFileSize = 130     // Force rotation after 3 entries
 	config.Indexing.BoundaryInterval = 1 // Store every entry position
 	client, err := NewClientWithConfig(dir, config)
@@ -958,7 +958,7 @@ func TestIndexEntryLimit(t *testing.T) {
 
 	// Configure with a very low limit
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Indexing.BoundaryInterval = 5 // Store every 5th entry
 	config.Indexing.MaxIndexEntries = 10 // Only keep 10 entries
 	config.Storage.MaxFileSize = 1 << 20 // 1MB files
@@ -969,7 +969,7 @@ func TestIndexEntryLimit(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write more entries than the limit
 	const numEntries = 50
@@ -987,7 +987,7 @@ func TestIndexEntryLimit(t *testing.T) {
 	}
 
 	// Get shard to check index size
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatalf("failed to get shard: %v", err)
 	}
@@ -1056,7 +1056,7 @@ func TestIndexLimitWithConsumer(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Indexing.BoundaryInterval = 5 // Store every 5th entry
 	config.Indexing.MaxIndexEntries = 20 // Keep 20 boundary entries
 	config.Storage.MaxFileSize = 1 << 20 // 1MB files
@@ -1129,8 +1129,8 @@ func TestIndexLimitWithConsumer(t *testing.T) {
 func TestIO_OutsideLock(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false // Single writer test
-	config.Compression.MinCompressSize = 100          // Enable compression for some entries
+	config.Concurrency.ProcessCount = 0      // Single writer test
+	config.Compression.MinCompressSize = 100 // Enable compression for some entries
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -1187,7 +1187,7 @@ func BenchmarkLockContention(b *testing.B) {
 			dir := b.TempDir()
 
 			config := DefaultCometConfig()
-			config.Concurrency.EnableMultiProcessMode = true
+			config.Concurrency.ProcessCount = 2
 			config.Compression.MinCompressSize = 1 << 30 // Disable compression by default
 
 			if scenario.enableCompression {
@@ -1235,7 +1235,7 @@ func BenchmarkLockContention(b *testing.B) {
 func TestOptimizationShowcase(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = true
+	config.Concurrency.ProcessCount = 2
 	config.Compression.MinCompressSize = 1000
 	config.Indexing.BoundaryInterval = 10 // Frequent indexing for binary search demo
 	client, err := NewClientWithConfig(dir, config)
@@ -1248,7 +1248,7 @@ func TestOptimizationShowcase(t *testing.T) {
 
 	// 1. Demonstrate compression outside lock
 	t.Run("compression_outside_lock", func(t *testing.T) {
-		streamName := "demo:v1:shard:0001"
+		streamName := "demo:v1:shard:0000"
 
 		// Large compressible data
 		data := []byte(fmt.Sprintf(`{"message": "%s"}`, string(make([]byte, 10000))))
@@ -1325,7 +1325,7 @@ func TestOptimizationShowcase(t *testing.T) {
 func TestCorruptedIndexFileRecovery(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Indexing.BoundaryInterval = 5
 
 	// Create client and write some data
@@ -1335,7 +1335,7 @@ func TestCorruptedIndexFileRecovery(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write entries
 	for i := 0; i < 20; i++ {
@@ -1346,7 +1346,7 @@ func TestCorruptedIndexFileRecovery(t *testing.T) {
 	}
 
 	// Force index persistence
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
 	shard.persistIndex()
 	shard.mu.Unlock()
@@ -1354,7 +1354,7 @@ func TestCorruptedIndexFileRecovery(t *testing.T) {
 	client.Close()
 
 	// Corrupt the index file
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1399,7 +1399,7 @@ func TestWritePathPanicRecovery(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write some normal data first
 	_, err = client.Append(ctx, stream, [][]byte{[]byte("normal-entry")})
@@ -1478,7 +1478,7 @@ func TestMmapExhaustion(t *testing.T) {
 	}
 
 	// System should still be functional
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after-mmap-test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after-mmap-test")})
 	if err != nil {
 		t.Fatalf("Failed to write after mmap exhaustion test: %v", err)
 	}
@@ -1499,7 +1499,7 @@ func TestConsumerGroupSplitBrain(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write test messages
 	const numMessages = 10
@@ -1575,7 +1575,7 @@ func TestRetentionDataIntegrity(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write some data
 	for i := 0; i < 10; i++ {
@@ -1587,7 +1587,7 @@ func TestRetentionDataIntegrity(t *testing.T) {
 	}
 
 	// Get shard to manually create old files
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatalf("failed to get shard: %v", err)
 	}
@@ -1622,7 +1622,7 @@ func TestRetentionDataIntegrity(t *testing.T) {
 	consumer := NewConsumer(client, ConsumerOptions{Group: "integrity-test"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 5)
+	messages, err := consumer.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		// This error would indicate our fix didn't work
 		t.Errorf("RACE CONDITION: Failed to read after retention cleanup: %v", err)
@@ -1655,7 +1655,7 @@ func TestFindEntryBinarySearch(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write entries to build up the binary index
 	const numEntries = 50
@@ -1668,7 +1668,7 @@ func TestFindEntryBinarySearch(t *testing.T) {
 	}
 
 	// Get the shard to test FindEntry directly
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1716,7 +1716,7 @@ func TestAckRangeFunctionality(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write test messages
 	const numMessages = 20
@@ -1732,7 +1732,7 @@ func TestAckRangeFunctionality(t *testing.T) {
 	defer consumer.Close()
 
 	// Read some messages
-	messages, err := consumer.Read(ctx, []uint32{1}, 10)
+	messages, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}

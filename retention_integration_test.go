@@ -30,7 +30,7 @@ func TestMultiProcessRetention(t *testing.T) {
 		t.Fatalf("failed to build test worker: %v", err)
 	}
 
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// STEP 1: Process A creates files (using the unit test pattern that works)
 	config := MultiProcessConfig()
@@ -55,7 +55,7 @@ func TestMultiProcessRetention(t *testing.T) {
 	}
 
 	// Get file count before marking old
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
 	initialFiles := len(shard.index.Files)
 	currentFile := shard.index.CurrentFile
@@ -114,7 +114,7 @@ func TestMultiProcessRetention(t *testing.T) {
 	}
 	defer client2.Close()
 
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 	shard2.mu.RLock()
 	finalFiles := len(shard2.index.Files)
 	shard2.mu.RUnlock()
@@ -154,7 +154,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write initial data to create multiple files
 	for i := 0; i < 20; i++ {
@@ -167,7 +167,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 
 	// Force sync and get initial state
 	client.Sync(ctx)
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
 	shard.persistIndex()
 	initialFiles := len(shard.index.Files)
@@ -182,7 +182,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	}
 
 	// Delete index and coordination files to force rebuild
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 
 	if err := os.Remove(indexPath); err != nil {
 		t.Fatal(err)
@@ -248,7 +248,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	defer consumer.Close()
 
 	// Check the shard state before reading
-	shard2, err2 := client2.getOrCreateShard(1)
+	shard2, err2 := client2.getOrCreateShard(0)
 	if err2 != nil {
 		t.Fatalf("failed to get shard: %v", err2)
 	}
@@ -262,7 +262,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	shard2.mu.RUnlock()
 
 	// Read messages - we should get at least our verification message
-	messages, err := consumer.Read(ctx, []uint32{1}, 10)
+	messages, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatalf("failed to read after index rebuild: %v", err)
 	}

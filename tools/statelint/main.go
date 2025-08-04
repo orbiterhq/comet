@@ -82,7 +82,7 @@ func checkFile(filename string) []string {
 								if expr.Op == token.EQL {
 									op = "=="
 								}
-								issues = append(issues, fmt.Sprintf("%s:%d:%d: direct nil check '%s.state %s nil' should use '%s.loadState() %s nil'",
+								issues = append(issues, fmt.Sprintf("%s:%d:%d: direct nil check '%s.state %s nil' should use '%s.state %s nil'",
 									filename, pos.Line, pos.Column, varIdent.Name, op, varIdent.Name, op))
 							}
 						}
@@ -99,7 +99,7 @@ func checkFile(filename string) []string {
 								if expr.Op == token.EQL {
 									op = "=="
 								}
-								issues = append(issues, fmt.Sprintf("%s:%d:%d: direct nil check 'nil %s %s.state' should use 'nil %s %s.loadState()'",
+								issues = append(issues, fmt.Sprintf("%s:%d:%d: direct nil check 'nil %s %s.state' should use 'nil %s %s.state'",
 									filename, pos.Line, pos.Column, op, varIdent.Name, op, varIdent.Name))
 							}
 						}
@@ -112,7 +112,7 @@ func checkFile(filename string) []string {
 				if varIdent, ok := sel.X.(*ast.Ident); ok {
 					if isShardVariable(varIdent.Name) {
 						pos := fset.Position(sel.Pos())
-						issues = append(issues, fmt.Sprintf("%s:%d:%d: direct boolean check 'if %s.state' should use 'if %s.loadState() != nil'",
+						issues = append(issues, fmt.Sprintf("%s:%d:%d: direct boolean check 'if %s.state' should use 'if %s.state != nil'",
 							filename, pos.Line, pos.Column, varIdent.Name, varIdent.Name))
 					}
 				}

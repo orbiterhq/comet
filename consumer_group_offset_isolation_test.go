@@ -19,7 +19,7 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stream := "offset-isolation:v1:shard:0001"
+	stream := "offset-isolation:v1:shard:0000"
 	messages := [][]byte{
 		[]byte("msg-00"), []byte("msg-01"), []byte("msg-02"),
 		[]byte("msg-03"), []byte("msg-04"), []byte("msg-05"),
@@ -42,7 +42,7 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "group-A"})
 	defer consumer1.Close()
 
-	msgs1, err := consumer1.Read(ctx, []uint32{1}, 3)
+	msgs1, err := consumer1.Read(ctx, []uint32{0}, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	}
 	t.Logf("Group-B offsets BEFORE reading: %v", stats2.ConsumerOffsets)
 
-	msgs2, err := consumer2.Read(ctx, []uint32{1}, 3)
+	msgs2, err := consumer2.Read(ctx, []uint32{0}, 3)
 	if err != nil {
 		t.Fatal(err)
 	}

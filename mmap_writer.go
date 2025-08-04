@@ -124,13 +124,14 @@ func (w *MmapWriter) openCurrentFile() error {
 		}
 
 		if !found {
-			w.index.Files = append(w.index.Files, FileInfo{
+			fileInfo := FileInfo{
 				Path:        w.dataPath,
 				StartOffset: 0,
 				StartEntry:  w.index.CurrentEntryNumber,
 				StartTime:   time.Now(),
 				Entries:     0,
-			})
+			}
+			w.index.Files = append(w.index.Files, fileInfo)
 
 			// Track file creation metric
 			if fileSize == 0 || createNew {
@@ -344,17 +345,8 @@ func (w *MmapWriter) growFile(minSize int64) error {
 
 // rotateFile handles file rotation when the current file is full
 func (w *MmapWriter) rotateFile() error {
-	// Use proper file locking for multi-process coordination
-	if w.rotationLockFile != nil {
-		// Use non-blocking try-lock to avoid hanging if another process is rotating
-		if err := syscall.Flock(int(w.rotationLockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			// Another process is rotating - just return, they'll handle it
-			return nil
-		}
-		defer syscall.Flock(int(w.rotationLockFile.Fd()), syscall.LOCK_UN)
-	}
-	// Note: For single-process mode (rotationLockFile == nil), rotation is already
-	// protected by the shard mutex in the caller, so no additional coordination needed.
+	// Since processes own their shards exclusively, no rotation lock needed
+	// The caller (shard) holds appropriate mutex to protect rotation
 
 	// Close current file
 	w.mu.Lock()

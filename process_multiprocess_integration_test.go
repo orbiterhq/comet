@@ -23,7 +23,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 	totalMessages := 200
 	batchSize := 25
 	numWorkers := 3
-	stream := "multiproc:v1:shard:0001"
+	stream := "multiproc:v1:shard:0000"
 
 	// Step 1: Write test data using main process
 	t.Logf("Writing %d messages to %s", totalMessages, stream)

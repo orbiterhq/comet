@@ -92,7 +92,7 @@ func TestProcessWithErrors(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write messages
 	totalMessages := 75
@@ -169,7 +169,7 @@ func TestProcessLongRunning(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write initial batch
 	initialMessages := 50

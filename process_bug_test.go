@@ -20,7 +20,7 @@ func TestProcessContinuousBatching(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write MORE messages than one batch size
 	batchSize := 50
@@ -120,7 +120,7 @@ func TestProcessOffsetPersistence(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 
 	// Write some messages
 	messages := [][]byte{
@@ -137,7 +137,7 @@ func TestProcessOffsetPersistence(t *testing.T) {
 
 	// Read first batch manually and check offset
 	t.Log("=== Manual Read/ACK Test ===")
-	batch1, err := consumer.Read(ctx, []uint32{1}, 2)
+	batch1, err := consumer.Read(ctx, []uint32{0}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestProcessOffsetPersistence(t *testing.T) {
 	}
 
 	// Read next batch - should get different messages
-	batch2, err := consumer.Read(ctx, []uint32{1}, 2)
+	batch2, err := consumer.Read(ctx, []uint32{0}, 2)
 	if err != nil {
 		t.Fatal(err)
 	}

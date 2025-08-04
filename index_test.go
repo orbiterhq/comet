@@ -112,7 +112,7 @@ func TestVerifyBinaryFormat(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Add some data
 	_, err = client.Append(ctx, streamName, [][]byte{
@@ -127,7 +127,7 @@ func TestVerifyBinaryFormat(t *testing.T) {
 
 	// Create consumer and ACK to force index write
 	consumer := NewConsumer(client, ConsumerOptions{Group: "test"})
-	messages, _ := consumer.Read(ctx, []uint32{1}, 10)
+	messages, _ := consumer.Read(ctx, []uint32{0}, 10)
 	if len(messages) > 0 {
 		consumer.Ack(ctx, messages[0].ID)
 	}
@@ -136,7 +136,7 @@ func TestVerifyBinaryFormat(t *testing.T) {
 	client.Close()
 
 	// Now check the actual file format
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		t.Fatalf("failed to read index file: %v", err)

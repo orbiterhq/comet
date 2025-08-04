@@ -23,7 +23,7 @@ func TestIndexRebuild(t *testing.T) {
 	}
 
 	// Write test data
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	numEntries := 50
 	for i := 0; i < numEntries; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "test": "rebuild"}`, i))
@@ -34,7 +34,7 @@ func TestIndexRebuild(t *testing.T) {
 	}
 
 	// Force file rotation to create multiple files
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
 	err = shard.rotateFile(&client.metrics, &config, nil)
 	shard.mu.Unlock()
@@ -69,7 +69,7 @@ func TestIndexRebuild(t *testing.T) {
 	client.Close()
 
 	// Delete the index file to simulate corruption/loss
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
 		t.Fatalf("Index file was not created: %s", indexPath)
 	}
@@ -86,7 +86,7 @@ func TestIndexRebuild(t *testing.T) {
 	defer client2.Close()
 
 	// Verify index was rebuilt
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 	shard2.mu.RLock()
 	rebuiltFiles := len(shard2.index.Files)
 	rebuiltEntries := shard2.index.CurrentEntryNumber
@@ -104,7 +104,7 @@ func TestIndexRebuild(t *testing.T) {
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "test"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 100)
+	messages, err := consumer.Read(ctx, []uint32{0}, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestIndexRebuildWithCorruptedFile(t *testing.T) {
 	}
 
 	// Write data to create multiple files
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	for i := 0; i < 30; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "message": "test data for corrupted file test"}`, i))
 		_, err := client.Append(ctx, streamName, [][]byte{data})
@@ -147,7 +147,7 @@ func TestIndexRebuildWithCorruptedFile(t *testing.T) {
 	}
 
 	// Get file info before corruption
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
 	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()
@@ -165,7 +165,7 @@ func TestIndexRebuildWithCorruptedFile(t *testing.T) {
 	client.Close()
 
 	// Corrupt the middle file
-	files, _ := os.ReadDir(filepath.Join(dir, "shard-0001"))
+	files, _ := os.ReadDir(filepath.Join(dir, "shard-0000"))
 	var dataFiles []string
 	for _, f := range files {
 		if strings.HasPrefix(f.Name(), "log-") && strings.HasSuffix(f.Name(), ".comet") {
@@ -176,14 +176,14 @@ func TestIndexRebuildWithCorruptedFile(t *testing.T) {
 
 	if len(dataFiles) >= 2 {
 		// Remove the second file entirely to simulate corruption/deletion
-		corruptPath := filepath.Join(dir, "shard-0001", dataFiles[1])
+		corruptPath := filepath.Join(dir, "shard-0000", dataFiles[1])
 		if err := os.Remove(corruptPath); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// Delete the index file
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 	if err := os.Remove(indexPath); err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestIndexRebuildWithCorruptedFile(t *testing.T) {
 	defer client2.Close()
 
 	// Verify index was rebuilt (should have one less file due to corruption)
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 	shard2.mu.RLock()
 	rebuiltFiles := len(shard2.index.Files)
 	shard2.mu.RUnlock()
@@ -225,7 +225,7 @@ func TestIndexMissingDetection(t *testing.T) {
 	}
 
 	// Write some test data
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	for i := 0; i < 5; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "test": "missing_index"}`, i))
 		_, err := client1.Append(ctx, streamName, [][]byte{data})
@@ -235,14 +235,14 @@ func TestIndexMissingDetection(t *testing.T) {
 	}
 
 	// Force index persistence and close
-	shard1, _ := client1.getOrCreateShard(1)
+	shard1, _ := client1.getOrCreateShard(0)
 	shard1.mu.Lock()
 	shard1.persistIndex()
 	shard1.mu.Unlock()
 	client1.Close()
 
 	// Delete the index file to simulate missing index
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 	if err := os.Remove(indexPath); err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestIndexMissingDetection(t *testing.T) {
 	defer client2.Close()
 
 	// Force shard access to ensure it's initialized
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 	shard2.mu.RLock()
 	filesCount := len(shard2.index.Files)
 	t.Logf("After rebuild: %d files found", filesCount)
@@ -279,7 +279,7 @@ func TestIndexMissingDetection(t *testing.T) {
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "test"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 10)
+	messages, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestScanFileForEntries(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write some entries
 	numEntries := 5
@@ -314,7 +314,7 @@ func TestScanFileForEntries(t *testing.T) {
 	}
 
 	// Get shard and file info
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
 	if len(shard.index.Files) == 0 {
 		t.Fatal("no files created")
@@ -331,7 +331,7 @@ func TestScanFileForEntries(t *testing.T) {
 	}
 	defer client2.Close()
 
-	shard2, _ := client2.getOrCreateShard(1)
+	shard2, _ := client2.getOrCreateShard(0)
 
 	// Clear the index to force scanning
 	shard2.mu.Lock()
@@ -372,7 +372,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	}
 
 	// Write test data across multiple files
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	numEntries := 50
 	for i := 0; i < numEntries; i++ {
 		// Use larger data to force file rotation
@@ -384,7 +384,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	}
 
 	// Force file rotation to create multiple files
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
 	err = shard.rotateFile(&client.metrics, &config, nil)
 	shard.mu.Unlock()
@@ -416,7 +416,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	client.Close()
 
 	// Delete only the index file to force rebuild (keep state file for multi-process mode)
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 
 	if err := os.Remove(indexPath); err != nil {
 		t.Fatal(err)
@@ -430,14 +430,14 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	defer client2.Close()
 
 	// Verify index was rebuilt correctly
-	shard2, err := client2.getOrCreateShard(1)
+	shard2, err := client2.getOrCreateShard(0)
 	if err != nil {
 		t.Fatalf("Failed to get shard after rebuild: %v", err)
 	}
 	shard2.mu.RLock()
 	rebuiltFiles := len(shard2.index.Files)
 	rebuiltEntries := shard2.index.CurrentEntryNumber
-	hasCometState := shard2.loadState() != nil
+	hasCometState := shard2.state != nil
 	t.Logf("After rebuild: %d files, %d entries", rebuiltFiles, rebuiltEntries)
 	shard2.mu.RUnlock()
 
@@ -483,7 +483,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "test-mp"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 200)
+	messages, err := consumer.Read(ctx, []uint32{0}, 200)
 	if err != nil {
 		t.Fatal(err)
 	}

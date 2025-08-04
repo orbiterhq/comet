@@ -13,7 +13,7 @@ import (
 func TestEnsureWriterRecovery(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false // Test non-mmap path
+	config.Concurrency.ProcessCount = 0 // Test non-mmap path
 
 	// Create initial client and write data
 	client, err := NewClientWithConfig(dir, config)
@@ -22,13 +22,13 @@ func TestEnsureWriterRecovery(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestEnsureWriterRecovery(t *testing.T) {
 	}
 
 	// Verify we can write after recovery
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after recovery")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after recovery")})
 	if err != nil {
 		t.Fatalf("Write after recovery failed: %v", err)
 	}
@@ -73,13 +73,13 @@ func TestInitializeMmapWriterRecovery(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestInitializeMmapWriterRecovery(t *testing.T) {
 	}
 
 	// Make sure we have state initialized before recovery
-	if shard.loadState() == nil {
+	if shard.state == nil {
 		shard.mu.Unlock()
 		t.Skip("State not available in test environment")
 		return
@@ -107,7 +107,7 @@ func TestInitializeMmapWriterRecovery(t *testing.T) {
 	}
 
 	// Verify we can write after recovery
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after recovery")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after recovery")})
 	if err != nil {
 		t.Fatalf("Write after recovery failed: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestScanDataFilesForEntryFallback(t *testing.T) {
 
 	// Write multiple entries to ensure we have something to scan
 	for i := 0; i < 10; i++ {
-		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
+		_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +141,7 @@ func TestScanDataFilesForEntryFallback(t *testing.T) {
 	defer consumer.Close()
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,13 +196,13 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("before deletion")})
+			_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("before deletion")})
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			// Get the shard
-			shard, err := client.getOrCreateShard(1)
+			shard, err := client.getOrCreateShard(0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -226,7 +226,7 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 			defer client2.Close()
 
 			// Try to write - this should trigger handleMissingShardDirectory and recovery
-			_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after deletion")})
+			_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after deletion")})
 			if err != nil {
 				t.Fatalf("Write after directory deletion failed: %v", err)
 			}
@@ -240,7 +240,7 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 			consumer := NewConsumer(client2, ConsumerOptions{Group: "test"})
 			defer consumer.Close()
 
-			messages, err := consumer.Read(ctx, []uint32{1}, 10)
+			messages, err := consumer.Read(ctx, []uint32{0}, 10)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -282,7 +282,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 
 	// Write some entries
 	for i := 0; i < 5; i++ {
-		_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
+		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -292,7 +292,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 	client.Sync(ctx)
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 	defer client2.Close()
 
 	// Try to write new data
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after corruption")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after corruption")})
 	if err != nil {
 		t.Logf("Write after corruption failed (might be expected): %v", err)
 	}
@@ -346,13 +346,13 @@ func TestConcurrentRecovery(t *testing.T) {
 	ctx := context.Background()
 
 	// Write initial data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("initial")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("initial")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Get shard directory
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shardDir := filepath.Dir(shard.indexPath)
 
 	// Close the client before deleting directory to avoid races
@@ -371,7 +371,7 @@ func TestConcurrentRecovery(t *testing.T) {
 	defer client2.Close()
 
 	// Verify we can write after recovery
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after recovery")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after recovery")})
 	if err != nil {
 		t.Fatalf("Write after recovery failed: %v", err)
 	}

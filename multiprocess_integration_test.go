@@ -358,7 +358,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		client.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+		client.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 			[]byte(`{"init":true}`),
 		})
 		client.Sync(context.Background())
@@ -414,7 +414,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		}
 
 		// Verify the 8-byte state file
-		statePath := filepath.Join(testDir, "shard-0001", "index.state")
+		statePath := filepath.Join(testDir, "shard-0000", "index.state")
 		if stat, err := os.Stat(statePath); err == nil {
 			if stat.Size() != 8 {
 				t.Errorf("Mmap state file is %d bytes, expected 8", stat.Size())
@@ -437,7 +437,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create client: %v", err)
 		}
-		ids, err := client.Append(context.Background(), "test:v1:shard:0001", [][]byte{[]byte(`{"init":true}`)})
+		ids, err := client.Append(context.Background(), "test:v1:shard:0000", [][]byte{[]byte(`{"init":true}`)})
 		if err != nil {
 			t.Fatalf("Failed to write init entry: %v", err)
 		}
@@ -456,7 +456,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Check what files exist
-		shardDir := filepath.Join(testDir, "shard-0001")
+		shardDir := filepath.Join(testDir, "shard-0000")
 		if files, err := os.ReadDir(shardDir); err == nil {
 			t.Logf("Files in shard directory after init:")
 			for _, f := range files {
@@ -527,7 +527,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 
 		// Check state BEFORE creating client to ensure it's stabilized
-		shardDir2 := filepath.Join(testDir, "shard-0001")
+		shardDir2 := filepath.Join(testDir, "shard-0000")
 		statePath2 := filepath.Join(shardDir2, "comet.state")
 		if stateFile, stateErr := os.Open(statePath2); stateErr == nil {
 			defer stateFile.Close()
@@ -562,7 +562,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		ctx := context.Background()
 
 		// Check shard length directly (this triggers rebuild with current coordination state)
-		shardLen, err := client.Len(ctx, "test:v1:shard:0001")
+		shardLen, err := client.Len(ctx, "test:v1:shard:0000")
 		if err != nil {
 			t.Logf("Failed to get shard length: %v", err)
 		} else {
@@ -607,7 +607,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		totalEntries := 0
 		readCount := 0
 		for {
-			messages, err := consumer.Read(ctx, []uint32{1}, 1000)
+			messages, err := consumer.Read(ctx, []uint32{0}, 1000)
 			if err != nil {
 				t.Logf("Read error: %v", err)
 			}
@@ -662,7 +662,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		}
 		defer client.Close()
 
-		_, err = client.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+		_, err = client.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 			[]byte(`{"after_crash":true}`),
 		})
 		if err != nil {
@@ -750,7 +750,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 
 	case role[:6] == "locker":
 		// File locking test
-		shardDir := filepath.Join(dir, "shard-0001")
+		shardDir := filepath.Join(dir, "shard-0000")
 		os.MkdirAll(shardDir, 0755)
 		lockPath := filepath.Join(shardDir, "shard.lock")
 
@@ -778,7 +778,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		defer client.Close()
 
 		ctx := context.Background()
-		streamName := "test:v1:shard:0001"
+		streamName := "test:v1:shard:0000"
 
 		// Write 5 entries with sync after each
 		for i := 1; i <= 5; i++ {
@@ -812,7 +812,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		ctx := context.Background()
 
 		// Read initial state
-		messages, _ := consumer.Read(ctx, []uint32{1}, 10)
+		messages, _ := consumer.Read(ctx, []uint32{0}, 10)
 		t.Logf("Mmap reader: initial read got %d messages", len(messages))
 
 		// Get shard to monitor mmap state
@@ -820,7 +820,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		shard, exists := client.shards[uint32(1)]
 		client.mu.RUnlock()
 
-		state := shard.loadState()
+		state := shard.state
 		if !exists || state == nil {
 			t.Fatal("Shard or unified state not found")
 		}
@@ -853,7 +853,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 				}
 
 				// Try to read new entries
-				messages, _ := consumer.Read(ctx, []uint32{1}, 100)
+				messages, _ := consumer.Read(ctx, []uint32{0}, 100)
 				for _, msg := range messages {
 					var data map[string]interface{}
 					if json.Unmarshal(msg.Data, &data) == nil {
@@ -882,7 +882,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		forceSync := os.Getenv("COMET_MP_FORCE_SYNC") == "1"
 
 		ctx := context.Background()
-		streamName := "test:v1:shard:0001" // ALL writers use same shard!
+		streamName := "test:v1:shard:0000" // ALL writers use same shard!
 
 		successCount := 0
 		var failedWrites []int
@@ -931,7 +931,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 		// Don't defer close - we're simulating a crash!
 
 		ctx := context.Background()
-		client.Append(ctx, "test:v1:shard:0001", [][]byte{
+		client.Append(ctx, "test:v1:shard:0000", [][]byte{
 			[]byte(`{"msg":"about to crash"}`),
 		})
 
@@ -1231,7 +1231,7 @@ func runLockTestWorker(t *testing.T, workerID string) {
 	ppid := os.Getppid()
 
 	dir := os.Getenv("COMET_LOCK_TEST_DIR")
-	shardDir := filepath.Join(dir, "shard-0001")
+	shardDir := filepath.Join(dir, "shard-0000")
 	lockPath := filepath.Join(shardDir, "shard.lock")
 
 	t.Logf("Worker %s: PID=%d, PPID=%d, attempting to acquire lock: %s", workerID, pid, ppid, lockPath)
@@ -1277,7 +1277,7 @@ func runLockTestWorker(t *testing.T, workerID string) {
 func runSimpleLockTest(t *testing.T) {
 	// Simple in-process test of file locking mechanism
 	dir := t.TempDir()
-	shardDir := filepath.Join(dir, "shard-0001")
+	shardDir := filepath.Join(dir, "shard-0000")
 	if err := os.MkdirAll(shardDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -1373,7 +1373,7 @@ func TestMultiProcessCrashRecovery(t *testing.T) {
 	defer client.Close()
 
 	appendCtx := context.Background()
-	_, err = client.Append(appendCtx, "test:v1:shard:0001", [][]byte{
+	_, err = client.Append(appendCtx, "test:v1:shard:0000", [][]byte{
 		[]byte(`{"after_crash":true}`),
 	})
 
@@ -1394,7 +1394,7 @@ func runCrashTestWorker(t *testing.T, workerID string) {
 	}
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write something to acquire the lock
 	_, err = client.Append(ctx, streamName, [][]byte{
@@ -1440,7 +1440,7 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+	_, err = client.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 		[]byte(`{"init":true}`),
 	})
 	if err != nil {
@@ -1451,7 +1451,7 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 	// Remove the index file to force a clean rebuild
 	// This simulates the recommended approach for multi-process mode:
 	// let readers rebuild the index by scanning files
-	os.Remove(filepath.Join(dir, "shard-0001", "index.bin"))
+	os.Remove(filepath.Join(dir, "shard-0000", "index.bin"))
 
 	// Start multiple writer processes all targeting the SAME shard
 	numWriters := 5
@@ -1527,12 +1527,12 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 	}
 
 	// Check if index file exists
-	indexPath := filepath.Join(dir, "shard-0001", "index")
+	indexPath := filepath.Join(dir, "shard-0000", "index")
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
 		t.Log("Warning: No index file found")
 
 		// Force index creation by loading the shard
-		_, err = client.Len(ctx, "test:v1:shard:0001")
+		_, err = client.Len(ctx, "test:v1:shard:0000")
 		if err != nil {
 			t.Logf("Error loading shard: %v", err)
 		}
@@ -1544,7 +1544,7 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 	}
 
 	// List directory contents
-	entries, _ := os.ReadDir(filepath.Join(dir, "shard-0001"))
+	entries, _ := os.ReadDir(filepath.Join(dir, "shard-0000"))
 	t.Log("Shard directory contents after sync:")
 	var totalDataSize int64
 	for _, entry := range entries {
@@ -1581,12 +1581,12 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 
 	if !exists {
 		t.Log("Shard 1 not loaded in client2, forcing load...")
-		_, _ = client2.Len(ctx, "test:v1:shard:0001")
+		_, _ = client2.Len(ctx, "test:v1:shard:0000")
 	}
 
 	// First, let's check what Len returns
 	t.Logf("About to call Len on shard 0001...")
-	length, err := client2.Len(ctx, "test:v1:shard:0001")
+	length, err := client2.Len(ctx, "test:v1:shard:0000")
 	if err != nil {
 		t.Logf("Error getting length: %v", err)
 	} else {
@@ -1611,7 +1611,7 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 	// Read all messages from shard 1
 	readAttempts := 0
 	for i := 0; i < 10; i++ { // Try multiple times
-		messages, err := consumer.Read(ctx, []uint32{1}, 1000)
+		messages, err := consumer.Read(ctx, []uint32{0}, 1000)
 		if err != nil {
 			t.Logf("Read error on attempt %d: %v", i, err)
 			break
@@ -1684,7 +1684,7 @@ func runContentionWorker(t *testing.T, workerID string) {
 	}()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001" // Same shard for all!
+	streamName := "test:v1:shard:0000" // Same shard for all!
 
 	successCount := 0
 	start := time.Now()
@@ -1753,7 +1753,7 @@ func TestBulletproofMultiProcess(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err = client.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+			_, err = client.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 				[]byte(`{"init": true}`),
 			})
 			if err != nil {
@@ -1781,7 +1781,7 @@ func TestBulletproofMultiProcess(t *testing.T) {
 						data := fmt.Sprintf(`{"worker":%d,"seq":%d,"data":"stress-test-%d-%d"}`,
 							workerID, j, workerID, j)
 
-						_, err := workerClient.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+						_, err := workerClient.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 							[]byte(data),
 						})
 						if err == nil {
@@ -1854,7 +1854,7 @@ func TestRapidStartupShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = client.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+	_, err = client.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 		[]byte(`{"init": true}`),
 	})
 	if err != nil {
@@ -1881,7 +1881,7 @@ func TestRapidStartupShutdown(t *testing.T) {
 				// Write a few entries quickly
 				for j := 0; j < 3; j++ {
 					data := fmt.Sprintf(`{"worker":%d,"cycle":%d,"seq":%d}`, workerID, cycle, j)
-					_, err := workerClient.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+					_, err := workerClient.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 						[]byte(data),
 					})
 					_ = err // Ignore errors for rapid cycling test
@@ -1939,7 +1939,7 @@ func TestTimeBasedStress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = client.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+	_, err = client.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 		[]byte(`{"init": true}`),
 	})
 	if err != nil {
@@ -1991,7 +1991,7 @@ func TestTimeBasedStress(t *testing.T) {
 						workerID, seq, time.Now().UnixNano())
 
 					// Use the timed context for the append to respect the overall timeout
-					_, err := workerClient.Append(ctx, "test:v1:shard:0001", [][]byte{
+					_, err := workerClient.Append(ctx, "test:v1:shard:0000", [][]byte{
 						[]byte(data),
 					})
 					if err == nil {
@@ -2087,7 +2087,7 @@ func TestEOFRetryLogic(t *testing.T) {
 	}
 	defer client.Close()
 
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write initial entry
 	_, err = client.Append(context.Background(), streamName, [][]byte{
@@ -2202,7 +2202,7 @@ func TestEOFRetryRaceCondition(t *testing.T) {
 	}
 	defer client2.Close()
 
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Write initial data
 	_, err = client1.Append(context.Background(), streamName, [][]byte{
@@ -2292,7 +2292,7 @@ func TestRetryLogicVerification(t *testing.T) {
 	defer client.Close()
 
 	// Write data to create an index
-	_, err = client.Append(context.Background(), "test:v1:shard:0001", [][]byte{
+	_, err = client.Append(context.Background(), "test:v1:shard:0000", [][]byte{
 		[]byte(`{"test":"verification"}`),
 	})
 	if err != nil {
@@ -2301,7 +2301,7 @@ func TestRetryLogicVerification(t *testing.T) {
 	client.Sync(context.Background())
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}

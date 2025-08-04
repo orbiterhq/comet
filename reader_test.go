@@ -28,7 +28,7 @@ func TestReaderBasicUsage(t *testing.T) {
 	defer client.Close()
 
 	// Write test data
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	for i := 0; i < 10; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "message": "test data for reader"}`, i))
 		_, err := client.Append(ctx, streamName, [][]byte{data})
@@ -38,7 +38,7 @@ func TestReaderBasicUsage(t *testing.T) {
 	}
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal("Failed to get shard:", err)
 	}
@@ -96,7 +96,7 @@ func TestReaderMemoryBounds(t *testing.T) {
 	defer client.Close()
 
 	// Write enough data to create multiple files
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	for i := 0; i < 20; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "message": "memory bounds test with longer data to force file rotation"}`, i))
 		_, err := client.Append(ctx, streamName, [][]byte{data})
@@ -106,7 +106,7 @@ func TestReaderMemoryBounds(t *testing.T) {
 	}
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal("Failed to get shard:", err)
 	}
@@ -166,7 +166,7 @@ func TestReaderCompressedData(t *testing.T) {
 	defer client.Close()
 
 	// Write data that will be compressed
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	largeData := []byte(fmt.Sprintf(`{"id": 1, "message": "this is a large message that should trigger compression because it exceeds the minimum compression size threshold: %s"}`,
 		"padding data to make this entry large enough for compression testing"))
 
@@ -176,7 +176,7 @@ func TestReaderCompressedData(t *testing.T) {
 	}
 
 	// Get shard and test Reader can decompress
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,13 +219,13 @@ func TestReaderErrorHandling(t *testing.T) {
 	defer client.Close()
 
 	// Write some data
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	_, err = client.Append(ctx, streamName, [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestReaderConcurrentAccess(t *testing.T) {
 	}
 	defer client.Close()
 
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	for i := 0; i < 20; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "message": "concurrent access test"}`, i))
 		_, err = client.Append(ctx, streamName, [][]byte{data})
@@ -275,7 +275,7 @@ func TestReaderConcurrentAccess(t *testing.T) {
 		}
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,12 +362,12 @@ func TestReaderClose(t *testing.T) {
 	}
 	defer client.Close()
 
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 				}
 				jsonData, _ := json.Marshal(data)
 
-				_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
+				_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{jsonData})
 				if err != nil {
 					errorCount.Add(1)
 					t.Logf("Write error: %v", err)
@@ -492,7 +492,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 			defer consumer.Close()
 
 			for ctx.Err() == nil {
-				messages, err := consumer.Read(ctx, []uint32{1}, 10)
+				messages, err := consumer.Read(ctx, []uint32{0}, 10)
 				if err != nil {
 					if ctx.Err() == nil {
 						// Some errors are expected in this stress test
@@ -594,7 +594,7 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 		storedData = append(storedData, data)
 
 		jsonData, _ := json.Marshal(data)
-		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
+		_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{jsonData})
 		if err != nil {
 			t.Fatalf("Failed to write: %v", err)
 		}
@@ -606,7 +606,7 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 	// Read all messages but don't process them immediately
 	var messages []StreamMessage
 	for len(messages) < len(storedData) {
-		batch, err := consumer.Read(ctx, []uint32{1}, 5)
+		batch, err := consumer.Read(ctx, []uint32{0}, 5)
 		if err != nil {
 			t.Fatalf("Failed to read: %v", err)
 		}
@@ -727,7 +727,7 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 			"content": fmt.Sprintf("delayed-access-test-%d", i),
 		}
 		jsonData, _ := json.Marshal(data)
-		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
+		_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{jsonData})
 		if err != nil {
 			t.Fatalf("Failed to write: %v", err)
 		}
@@ -739,7 +739,7 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 	// Read messages in batches with delays
 	totalRead := 0
 	for totalRead < numEntries {
-		messages, err := consumer.Read(ctx, []uint32{1}, 10)
+		messages, err := consumer.Read(ctx, []uint32{0}, 10)
 		if err != nil {
 			t.Fatalf("Failed to read: %v", err)
 		}
@@ -813,7 +813,7 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 		}
 
 		jsonData, _ := json.Marshal(data)
-		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
+		_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{jsonData})
 		if err != nil {
 			t.Fatalf("Failed to write: %v", err)
 		}
@@ -833,7 +833,7 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 
 			totalRead := 0
 			for totalRead < 20 { // Each consumer reads 20 entries
-				messages, err := consumer.Read(ctx, []uint32{1}, 5)
+				messages, err := consumer.Read(ctx, []uint32{0}, 5)
 				if err != nil {
 					t.Errorf("Read error: %v", err)
 					break

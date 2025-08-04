@@ -21,7 +21,7 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 
 	// Create a client with multi-process mode enabled (this is where the issue occurs)
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = true
+	config.Concurrency.ProcessCount = 2
 	client, err := NewClientWithConfig(tempDir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 
 	ctx := context.Background()
 	// Use a unique stream name to avoid conflicts with other tests
-	streamName := fmt.Sprintf("recovery-test-%d:v1:shard:0001", time.Now().UnixNano())
+	streamName := fmt.Sprintf("recovery-test-%d:v1:shard:0000", time.Now().UnixNano())
 
 	// Write some initial data to create the shard
 	data := []byte("initial data")
@@ -45,7 +45,7 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 
 	// Verify we can read the data
 	consumer := NewConsumer(client, ConsumerOptions{Group: "test-group"})
-	messages, err := consumer.Read(ctx, []uint32{1}, 1) // Only read 1 message
+	messages, err := consumer.Read(ctx, []uint32{0}, 1) // Only read 1 message
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 	}
 
 	// Find the shard directory and delete it manually
-	shardDir := filepath.Join(tempDir, "shard-0001")
+	shardDir := filepath.Join(tempDir, "shard-0000")
 	if _, err := os.Stat(shardDir); os.IsNotExist(err) {
 		t.Fatal("Shard directory should exist")
 	}
@@ -89,7 +89,7 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 	// The client should detect the missing directory and recreate it
 	newData := []byte("recovery data")
 	t.Logf("Writing data after directory deletion...")
-	t.Logf("Multi-process mode enabled: %v", config.Concurrency.EnableMultiProcessMode)
+	t.Logf("Multi-process mode enabled: %v", config.Concurrency.IsMultiProcess())
 
 	var writeErr error
 	var newIDs []MessageID
@@ -152,7 +152,7 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 
 	// Create a new consumer to avoid cached state
 	newConsumer := NewConsumer(client, ConsumerOptions{Group: "recovery-group"})
-	recoveredMessages, err := newConsumer.Read(ctx, []uint32{1}, 10)
+	recoveredMessages, err := newConsumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestShardDirectoryDeletionWithFileRotation(t *testing.T) {
 
 	// Create a client with very small file size to force rotation
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 	config.Storage.MaxFileSize = 200 // Very small to force rotation quickly
 	client, err := NewClientWithConfig(tempDir, config)
 	if err != nil {
@@ -203,7 +203,7 @@ func TestShardDirectoryDeletionWithFileRotation(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := fmt.Sprintf("rotation-recovery-test-%d:v1:shard:0001", time.Now().UnixNano())
+	streamName := fmt.Sprintf("rotation-recovery-test-%d:v1:shard:0000", time.Now().UnixNano())
 
 	// Write initial data to create the shard
 	data := []byte("initial data")
@@ -217,7 +217,7 @@ func TestShardDirectoryDeletionWithFileRotation(t *testing.T) {
 	}
 
 	// Find the shard directory
-	shardDir := filepath.Join(tempDir, "shard-0001")
+	shardDir := filepath.Join(tempDir, "shard-0000")
 	if _, err := os.Stat(shardDir); os.IsNotExist(err) {
 		t.Fatal("Shard directory should exist")
 	}
@@ -276,7 +276,7 @@ func TestHandleMissingShardDirectoryUnit(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Create a shard with a path in the temp directory
-	shardDir := filepath.Join(tempDir, "shard-0001")
+	shardDir := filepath.Join(tempDir, "shard-0000")
 	indexPath := filepath.Join(shardDir, "index.bin")
 
 	shard := &Shard{
@@ -330,20 +330,12 @@ func TestLoadIndexWithRecovery(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Create a shard with a path in a non-existent directory
-	shardDir := filepath.Join(tempDir, "shard-0001")
+	shardDir := filepath.Join(tempDir, "shard-0000")
 	indexPath := filepath.Join(shardDir, "index.bin")
-
-	// Create a dummy lock file to simulate multi-process mode
-	lockFile, err := os.CreateTemp("", "test-lock")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lockFile.Close()
-	defer os.Remove(lockFile.Name())
 
 	shard := &Shard{
 		indexPath: indexPath,
-		lockFile:  lockFile, // This indicates multi-process mode
+		// Lock file removed - processes own their shards exclusively
 		index: &ShardIndex{
 			BoundaryInterval: 100,
 			ConsumerOffsets:  make(map[string]int64),

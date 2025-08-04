@@ -19,7 +19,7 @@ func TestACKPersistenceBug(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	stream := "ack-test:v1:shard:0001"
+	stream := "ack-test:v1:shard:0000"
 
 	// Write 10 messages
 	var messages [][]byte
@@ -43,7 +43,7 @@ func TestACKPersistenceBug(t *testing.T) {
 
 	// Read and ACK first 5 messages manually
 	t.Log("=== Reading and ACKing first 5 messages ===")
-	batch1, err := consumer.Read(ctx, []uint32{1}, 5)
+	batch1, err := consumer.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestACKPersistenceBug(t *testing.T) {
 	t.Logf("Lag after restart: %d (should be 5 if ACKs persisted)", lag2)
 
 	// Read remaining messages - should only get 5, not 10
-	batch2, err := consumer2.Read(ctx, []uint32{1}, 10)
+	batch2, err := consumer2.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestProcessACKPersistence(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	stream := "process-ack:v1:shard:0001"
+	stream := "process-ack:v1:shard:0000"
 
 	var messages [][]byte
 	for i := 0; i < 20; i++ {

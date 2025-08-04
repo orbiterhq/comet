@@ -225,7 +225,7 @@ func runBrowseTestWorker(t *testing.T, role string) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	switch role {
 	case "writer":
@@ -261,7 +261,7 @@ func runBrowseTestWorker(t *testing.T, role string) {
 		}
 
 		// First check how many entries the shard has
-		shardDir := filepath.Join(dir, "shard-0001")
+		shardDir := filepath.Join(dir, "shard-0000")
 		if entries, err := os.ReadDir(shardDir); err == nil {
 			fmt.Printf("Debug: Shard directory contains %d files\n", len(entries))
 			for _, e := range entries {
@@ -317,7 +317,7 @@ func runBrowseTestWorker(t *testing.T, role string) {
 		consumer := NewConsumer(client, ConsumerOptions{Group: "test-group"})
 		defer consumer.Close()
 
-		messages, err := consumer.Read(ctx, []uint32{1}, 5)
+		messages, err := consumer.Read(ctx, []uint32{0}, 5)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
@@ -462,7 +462,7 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 				}
 			}
 		}
-		if state := s.loadState(); state != nil {
+		if state := s.state; state != nil {
 			t.Logf("Shard %d state before scan: LastEntryNumber=%d", shard, state.GetLastEntryNumber())
 		}
 		s.mu.RUnlock()

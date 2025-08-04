@@ -17,7 +17,7 @@ func TestIsolatedACKPersistence(t *testing.T) {
 
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "isolated:v1:shard:0001"
+	stream := "isolated:v1:shard:0000"
 	totalMessages := 100
 
 	// Enable debug logging
@@ -88,7 +88,7 @@ func TestIsolatedACKPersistence(t *testing.T) {
 	t.Logf("Consumer1: Read %d messages total", messagesRead)
 
 	// Get the shard to check offset
-	shard, err := client2.getOrCreateShard(1)
+	shard, err := client2.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestIsolatedACKPersistence(t *testing.T) {
 	}
 
 	// Check what offset is persisted
-	shard2, err := client3.getOrCreateShard(1)
+	shard2, err := client3.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}

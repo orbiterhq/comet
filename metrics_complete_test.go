@@ -24,13 +24,13 @@ func TestAllInternalMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write some data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
@@ -102,13 +102,13 @@ func TestCompressionEdgeCaseMetrics(t *testing.T) {
 	}
 
 	// Write both types
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{compressible, incompressible})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{compressible, incompressible})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
@@ -143,7 +143,7 @@ func TestCheckpointMetrics(t *testing.T) {
 
 	// Write data
 	for i := 0; i < 10; i++ {
-		_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("checkpoint test")})
+		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("checkpoint test")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,8 +153,8 @@ func TestCheckpointMetrics(t *testing.T) {
 	// Force checkpoint
 	client.Sync(ctx)
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
@@ -185,7 +185,7 @@ func TestSyncLatencyMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write and sync
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("sync test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("sync test")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,8 +193,8 @@ func TestSyncLatencyMetrics(t *testing.T) {
 	// Force sync
 	client.Sync(ctx)
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
@@ -224,13 +224,13 @@ func TestRotationFailureMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write data to trigger rotation
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{make([]byte, 50)})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{make([]byte, 50)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
@@ -258,13 +258,13 @@ func TestIndexErrorMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("index test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("index test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
@@ -291,20 +291,20 @@ func TestCorruptionMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("corruption test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("corruption test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	if shard.loadState() == nil {
+	shard, _ := client.getOrCreateShard(0)
+	if shard.state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
 	client.Close()
 
 	// Corrupt a data file
-	dataFiles, _ := filepath.Glob(filepath.Join(dir, "shard-0001", "log-*.comet"))
+	dataFiles, _ := filepath.Glob(filepath.Join(dir, "shard-0000", "log-*.comet"))
 	if len(dataFiles) > 0 {
 		// Write garbage to the middle of the file
 		f, err := os.OpenFile(dataFiles[0], os.O_WRONLY, 0644)
@@ -326,9 +326,9 @@ func TestCorruptionMetrics(t *testing.T) {
 
 	// Try to get shard to check metrics
 	if client2 != nil {
-		shard2, _ := client2.getOrCreateShard(1)
+		shard2, _ := client2.getOrCreateShard(0)
 		if shard2 != nil {
-			if state := shard2.loadState(); state != nil {
+			if state := shard2.state; state != nil {
 				corruptionDetected := atomic.LoadUint64(&state.CorruptionDetected)
 				partialWrites := atomic.LoadUint64(&state.PartialWrites)
 
@@ -358,7 +358,7 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 
 	// Write data
 	for i := 0; i < 5; i++ {
-		_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("retention test")})
+		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("retention test")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -369,14 +369,14 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 	defer consumer.Close()
 
 	// Read but don't ack - this should protect entries
-	consumer.Read(ctx, []uint32{1}, 2)
+	consumer.Read(ctx, []uint32{0}, 2)
 
 	// Wait and force retention
 	time.Sleep(20 * time.Millisecond)
 	client.ForceRetentionCleanup()
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
@@ -409,13 +409,13 @@ func TestMultiProcessDetailedMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write with first client
-	_, err = client1.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("process1")})
+	_, err = client1.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("process1")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard1, _ := client1.getOrCreateShard(1)
-	if shard1.loadState() == nil {
+	shard1, _ := client1.getOrCreateShard(0)
+	if shard1.state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}
 
@@ -436,11 +436,11 @@ func TestMultiProcessDetailedMetrics(t *testing.T) {
 		wg.Add(2) // Add 2 for each iteration (one for each goroutine)
 		go func() {
 			defer wg.Done()
-			client1.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("concurrent1")})
+			client1.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("concurrent1")})
 		}()
 		go func() {
 			defer wg.Done()
-			client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("concurrent2")})
+			client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("concurrent2")})
 		}()
 	}
 
@@ -481,13 +481,13 @@ func TestMetricsCompleteness(t *testing.T) {
 	ctx := context.Background()
 
 	// Create shard
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	if state == nil {
 		t.Skip("State not available in non-mmap mode")
 	}

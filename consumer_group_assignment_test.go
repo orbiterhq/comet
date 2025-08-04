@@ -23,7 +23,7 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stream := "test:v1:shard:0001"
+	stream := "test:v1:shard:0000"
 	var messages [][]byte
 	for i := 0; i < 100; i++ {
 		messages = append(messages, []byte(fmt.Sprintf("msg-%03d", i)))
@@ -152,7 +152,7 @@ func TestConsumerFailover(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stream := "failover:v1:shard:0001"
+	stream := "failover:v1:shard:0000"
 	var messages [][]byte
 	for i := 0; i < 50; i++ {
 		messages = append(messages, []byte(fmt.Sprintf("msg-%03d", i)))
@@ -237,7 +237,7 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 	}
 
 	streams := []string{
-		"multi:v1:shard:0001",
+		"multi:v1:shard:0000",
 		"multi:v1:shard:0002",
 		"multi:v1:shard:0003",
 	}
@@ -349,7 +349,7 @@ func TestDebugMessageLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stream := "debug:v1:shard:0001"
+	stream := "debug:v1:shard:0000"
 	var messages [][]byte
 	for i := 0; i < 100; i++ {
 		messages = append(messages, []byte(fmt.Sprintf("debug-msg-%03d", i)))
@@ -445,7 +445,7 @@ func TestDebugMessageLoss(t *testing.T) {
 	}
 
 	// Check consumer offset state
-	shard, err := client3.getOrCreateShard(1)
+	shard, err := client3.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}

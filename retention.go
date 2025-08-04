@@ -5,7 +5,6 @@ import (
 	"os"
 	"sort"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -92,7 +91,7 @@ func (c *Client) runRetentionCleanup() {
 	for _, shard := range c.shards {
 		shards = append(shards, shard)
 		// Track retention run in each shard's metrics
-		if state := shard.loadState(); state != nil {
+		if state := shard.state; state != nil {
 			atomic.AddUint64(&state.RetentionRuns, 1)
 			atomic.StoreInt64(&state.LastRetentionNanos, start.UnixNano())
 		}
@@ -114,7 +113,7 @@ func (c *Client) runRetentionCleanup() {
 	// Update retention time metrics
 	duration := time.Since(start)
 	for _, shard := range shards {
-		if state := shard.loadState(); state != nil {
+		if state := shard.state; state != nil {
 			atomic.AddInt64(&state.RetentionTimeNanos, duration.Nanoseconds())
 		}
 	}
@@ -126,7 +125,7 @@ func (c *Client) runRetentionCleanup() {
 			shard.mu.RLock()
 			totalFiles += len(shard.index.Files)
 			shard.mu.RUnlock()
-			if state := shard.loadState(); state != nil {
+			if state := shard.state; state != nil {
 				deletedFiles += int(atomic.LoadUint64(&state.FilesDeleted))
 			}
 		}
@@ -142,23 +141,8 @@ func (c *Client) runRetentionCleanup() {
 
 // cleanupShard cleans up old files in a single shard
 func (c *Client) cleanupShard(shard *Shard) int64 {
-	// For multi-process safety, acquire retention lock first
-	if c.config.Concurrency.EnableMultiProcessMode && shard.retentionLockFile != nil {
-		// Use non-blocking try-lock to avoid hanging if another process is doing retention
-		if err := syscall.Flock(int(shard.retentionLockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			// Another process is doing retention - skip this cleanup
-			// Return current shard size without cleanup
-			shard.mu.RLock()
-			var currentSize int64
-			for _, file := range shard.index.Files {
-				currentSize += file.EndOffset - file.StartOffset
-			}
-			shard.mu.RUnlock()
-			return currentSize
-		}
-		// Ensure we release the lock when done
-		defer syscall.Flock(int(shard.retentionLockFile.Fd()), syscall.LOCK_UN)
-	}
+	// Since processes own their shards exclusively, no retention lock needed
+	// Only the process that owns this shard will run retention on it
 
 	shard.mu.RLock()
 	files := make([]FileInfo, len(shard.index.Files))
@@ -234,7 +218,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 			if fileLastEntry >= oldestProtectedEntry {
 				shouldDelete = false
 				// Track files protected by consumers
-				if state := shard.loadState(); state != nil {
+				if state := shard.state; state != nil {
 					atomic.AddUint64(&state.ProtectedByConsumers, 1)
 				}
 			}
@@ -285,7 +269,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 	}
 
 	// Update oldest entry timestamp
-	if state := shard.loadState(); state != nil {
+	if state := shard.state; state != nil {
 		if len(filesToKeep) > 0 {
 			// Find the oldest file that remains
 			oldestTime := filesToKeep[0].StartTime
@@ -329,15 +313,7 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	}
 
 	// STEP 1: Update the shard index FIRST to prevent readers from accessing files we're about to delete
-	// For multi-process safety, use the index lock
-	if c.config.Concurrency.EnableMultiProcessMode && shard.indexLockFile != nil {
-		// Acquire exclusive lock for index writes
-		if err := syscall.Flock(int(shard.indexLockFile.Fd()), syscall.LOCK_EX); err != nil {
-			// Failed to acquire index lock - skip deletion to avoid corruption
-			return
-		}
-		defer syscall.Flock(int(shard.indexLockFile.Fd()), syscall.LOCK_UN)
-	}
+	// Since processes own their shards exclusively, no index lock needed
 
 	shard.mu.Lock()
 
@@ -378,7 +354,7 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 
 	// CRITICAL: Update mmap state timestamp to signal other processes that index changed
 	// This ensures other processes will reload their stale indexes before reading
-	if state := shard.loadState(); state != nil {
+	if state := shard.state; state != nil {
 		state.SetLastIndexUpdate(time.Now().UnixNano())
 	}
 
@@ -395,7 +371,7 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 		if err != nil && !os.IsNotExist(err) {
 			// Log error but continue - file may have been deleted by another process
 			// Track retention errors
-			if state := shard.loadState(); state != nil {
+			if state := shard.state; state != nil {
 				atomic.AddUint64(&state.RetentionErrors, 1)
 			}
 			continue
@@ -406,7 +382,7 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	}
 
 	// Update retention metrics
-	if state := shard.loadState(); state != nil && deletedCount > 0 {
+	if state := shard.state; state != nil && deletedCount > 0 {
 		atomic.AddUint64(&state.FilesDeleted, uint64(deletedCount))
 		atomic.AddUint64(&state.BytesReclaimed, bytesReclaimed)
 		atomic.AddUint64(&state.EntriesDeleted, entriesDeleted)

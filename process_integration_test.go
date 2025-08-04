@@ -25,7 +25,7 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 			totalMsgs:   200,
 			batchSize:   25,
 			shardNumber: 1,
-			streamName:  "integration:v1:shard:0001",
+			streamName:  "integration:v1:shard:0000",
 		},
 		{
 			name:        "MultiProcess_LargeBatches",
@@ -177,7 +177,7 @@ func TestProcessWithDynamicDataAddition(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "dynamic:v1:shard:0001"
+	stream := "dynamic:v1:shard:0000"
 
 	// Write initial batch
 	initialCount := 50

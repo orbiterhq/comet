@@ -13,7 +13,7 @@ import (
 func TestSingleProcessACKPersistenceIsolated(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig() // Single-process mode
-	stream := "single:v1:shard:0001"
+	stream := "single:v1:shard:0000"
 	totalMessages := 100
 
 	// Enable debug logging
@@ -84,7 +84,7 @@ func TestSingleProcessACKPersistenceIsolated(t *testing.T) {
 	t.Logf("Consumer1: Read %d messages total", messagesRead)
 
 	// Get the shard to check offset
-	shard, err := client2.getOrCreateShard(1)
+	shard, err := client2.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestSingleProcessACKPersistenceIsolated(t *testing.T) {
 	}
 
 	// Check what offset is persisted
-	shard2, err := client3.getOrCreateShard(1)
+	shard2, err := client3.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}

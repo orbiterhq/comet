@@ -15,7 +15,7 @@ import (
 func TestMessageLoss(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	stream := "loss:v1:shard:0001"
+	stream := "loss:v1:shard:0000"
 
 	// Enable debug logging
 	SetDebug(true)
@@ -109,7 +109,7 @@ func TestMessageLoss(t *testing.T) {
 
 	// First, check what offset the shared group is at
 	checkClient, _ := NewClientWithConfig(dir, config)
-	checkShard, _ := checkClient.getOrCreateShard(1)
+	checkShard, _ := checkClient.getOrCreateShard(0)
 	checkShard.mu.RLock()
 	initialOffset := checkShard.index.ConsumerOffsets["shared-group"]
 	checkShard.mu.RUnlock()
@@ -130,7 +130,7 @@ func TestMessageLoss(t *testing.T) {
 			})
 
 			// Check offset before reading
-			shard, _ := client.getOrCreateShard(1)
+			shard, _ := client.getOrCreateShard(0)
 			shard.mu.RLock()
 			startOffset := shard.index.ConsumerOffsets["shared-group"]
 			shard.mu.RUnlock()
