@@ -492,8 +492,6 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 			}
 		}
 
-		// TODO: Add idempotent processing as opt-in feature later
-		// For now, focus on deterministic assignment and hybrid ACKs
 
 		// Process batch with retries
 		var processErr error
@@ -774,7 +772,6 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 // scanDataFilesForEntry directly scans data files to find an entry when index is incomplete
 func (c *Consumer) scanDataFilesForEntry(shard *Shard, targetEntry int64) (EntryPosition, error) {
 	// This is the fallback when index-based lookup fails in multi-process mode
-	// TODO: Optimize this function - currently using a simple approach (todo item #13)
 
 	shard.mu.RLock()
 	files := make([]FileInfo, len(shard.index.Files))

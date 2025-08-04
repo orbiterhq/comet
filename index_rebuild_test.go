@@ -36,7 +36,7 @@ func TestIndexRebuild(t *testing.T) {
 	// Force file rotation to create multiple files
 	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
-	err = shard.rotateFile(&client.metrics, &config, nil)
+	err = shard.rotateFile(&client.metrics, &config)
 	shard.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
@@ -386,7 +386,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	// Force file rotation to create multiple files
 	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
-	err = shard.rotateFile(&client.metrics, &config, nil)
+	err = shard.rotateFile(&client.metrics, &config)
 	shard.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)

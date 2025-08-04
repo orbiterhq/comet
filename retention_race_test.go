@@ -65,7 +65,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 		// Force rotation very frequently to create many small files
 		if (i+1)%2 == 0 {
 			shard.mu.Lock()
-			err = shard.rotateFile(&client.metrics, &config, nil)
+			err = shard.rotateFile(&client.metrics, &config)
 			shard.mu.Unlock()
 			if err != nil {
 				t.Fatalf("failed to rotate file: %v", err)

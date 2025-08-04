@@ -17,9 +17,6 @@ func init() {
 	}
 }
 
-// debug is deprecated and should not be used directly - use IsDebug() instead
-// Kept for backward compatibility but will be removed in future versions
-var Debug = false // This is a static value now, use IsDebug() for actual state
 
 // SetDebug allows runtime control of debug mode
 func SetDebug(enabled bool) {
