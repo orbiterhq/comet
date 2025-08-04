@@ -28,7 +28,7 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 			streamName:  "integration:v1:shard:0001",
 		},
 		{
-			name:        "MultiProcess_LargeBatches", 
+			name:        "MultiProcess_LargeBatches",
 			config:      MultiProcessConfig,
 			totalMsgs:   500,
 			batchSize:   100,
@@ -95,7 +95,7 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 				processed := atomic.AddInt64(&processedCount, int64(len(msgs)))
 				lastBatchSize = len(msgs)
 
-				t.Logf("%s: Batch %d processed %d messages (total: %d/%d)", 
+				t.Logf("%s: Batch %d processed %d messages (total: %d/%d)",
 					tt.name, currentBatch, len(msgs), processed, tt.totalMsgs)
 
 				// Verify message contents
@@ -117,7 +117,7 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 
 			// Start processing
 			startTime := time.Now()
-			err = consumer.Process(processCtx, processFunc,
+			consumer.Process(processCtx, processFunc,
 				WithStream("integration:v1:shard:*"),
 				WithBatchSize(tt.batchSize),
 				WithAutoAck(true),
@@ -142,6 +142,11 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 
 			if finalBatches < 1 {
 				t.Error("Expected at least 1 batch processed")
+			}
+
+			// Sync to ensure ACKs are persisted
+			if err := client.Sync(ctx); err != nil {
+				t.Errorf("Failed to sync: %v", err)
 			}
 
 			// Verify consumer lag is zero (all messages consumed)
@@ -200,7 +205,7 @@ func TestProcessWithDynamicDataAddition(t *testing.T) {
 		currentBatch := atomic.AddInt64(&batchCount, 1)
 		processed := atomic.AddInt64(&processedCount, int64(len(msgs)))
 
-		t.Logf("Dynamic test batch %d: processed %d messages (total: %d)", 
+		t.Logf("Dynamic test batch %d: processed %d messages (total: %d)",
 			currentBatch, len(msgs), processed)
 
 		// After processing initial messages, add more data
@@ -208,13 +213,13 @@ func TestProcessWithDynamicDataAddition(t *testing.T) {
 			dynamicDataAdded = true
 			go func() {
 				time.Sleep(100 * time.Millisecond)
-				
+
 				additionalCount := 25
 				var additionalMessages [][]byte
 				for i := 0; i < additionalCount; i++ {
 					additionalMessages = append(additionalMessages, []byte(fmt.Sprintf("dynamic-msg-%d", i)))
 				}
-				
+
 				_, err := client.Append(context.Background(), stream, additionalMessages)
 				if err != nil {
 					t.Errorf("Failed to add dynamic data: %v", err)
@@ -233,7 +238,7 @@ func TestProcessWithDynamicDataAddition(t *testing.T) {
 		return nil
 	}
 
-	err = consumer.Process(processCtx, processFunc,
+	consumer.Process(processCtx, processFunc,
 		WithStream("dynamic:v1:shard:*"),
 		WithBatchSize(10),
 		WithAutoAck(true),
@@ -244,11 +249,11 @@ func TestProcessWithDynamicDataAddition(t *testing.T) {
 	finalBatches := atomic.LoadInt64(&batchCount)
 	expectedTotal := int64(initialCount + 25)
 
-	t.Logf("Dynamic test results: processed %d/%d messages in %d batches", 
+	t.Logf("Dynamic test results: processed %d/%d messages in %d batches",
 		finalProcessed, expectedTotal, finalBatches)
 
 	if finalProcessed < expectedTotal {
-		t.Errorf("Expected at least %d messages (initial + dynamic), got %d", 
+		t.Errorf("Expected at least %d messages (initial + dynamic), got %d",
 			expectedTotal, finalProcessed)
 	}
 

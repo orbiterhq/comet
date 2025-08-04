@@ -28,7 +28,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 	// Step 1: Write test data using main process
 	t.Logf("Writing %d messages to %s", totalMessages, stream)
 	config := MultiProcessConfig()
-	
+
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	client2.Close()
-	
+
 	if length != int64(totalMessages) {
 		t.Fatalf("Expected %d messages written, got %d", totalMessages, length)
 	}
@@ -64,17 +64,17 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 
 	// Step 2: Launch multiple worker processes
 	t.Logf("Launching %d worker processes", numWorkers)
-	
+
 	var wg sync.WaitGroup
 	results := make(chan workerResult, numWorkers)
-	
+
 	for workerID := 0; workerID < numWorkers; workerID++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			
+
 			// Launch worker process
-			cmd := exec.Command("go", "test", "-run", "TestMultiProcessWorker", 
+			cmd := exec.Command("go", "test", "-run", "TestMultiProcessWorker",
 				"-timeout", "30s", "-v")
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("COMET_TEST_DATA_DIR=%s", dir),
@@ -82,7 +82,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 				fmt.Sprintf("COMET_TEST_BATCH_SIZE=%d", batchSize),
 				fmt.Sprintf("COMET_TEST_STREAM=%s", stream),
 			)
-			
+
 			output, err := cmd.CombinedOutput()
 			results <- workerResult{
 				workerID: id,
@@ -109,7 +109,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 
 	// Step 3: Collect and analyze results
 	var successfulWorkers int
-	
+
 	for result := range results {
 		if result.err != nil {
 			t.Logf("Worker %d failed: %v", result.workerID, result.err)
@@ -125,7 +125,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 
 	// Step 4: Verify final state
 	t.Logf("Integration test completed: %d/%d workers successful", successfulWorkers, numWorkers)
-	
+
 	if successfulWorkers == 0 {
 		t.Fatal("No workers completed successfully")
 	}
@@ -141,7 +141,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	if finalLength != int64(totalMessages) {
 		t.Errorf("Data integrity check failed: expected %d messages, got %d", totalMessages, finalLength)
 	}
@@ -165,7 +165,7 @@ func TestMultiProcessWorker(t *testing.T) {
 	workerID, _ := strconv.Atoi(workerIDStr)
 	batchSize, _ := strconv.Atoi(batchSizeStr)
 
-	t.Logf("Worker %d starting: dataDir=%s, batchSize=%d", 
+	t.Logf("Worker %d starting: dataDir=%s, batchSize=%d",
 		workerID, dataDir, batchSize)
 
 	// Initialize client in multi-process mode
@@ -191,8 +191,8 @@ func TestMultiProcessWorker(t *testing.T) {
 	processFunc := func(ctx context.Context, msgs []StreamMessage) error {
 		batchCount++
 		processedCount += len(msgs)
-		
-		t.Logf("Worker %d: Batch %d processed %d messages (total: %d)", 
+
+		t.Logf("Worker %d: Batch %d processed %d messages (total: %d)",
 			workerID, batchCount, len(msgs), processedCount)
 
 		// Simulate some processing work
@@ -200,7 +200,7 @@ func TestMultiProcessWorker(t *testing.T) {
 
 		// Stop after processing a reasonable amount or timeout
 		if processedCount >= 50 || batchCount >= 10 {
-			t.Logf("Worker %d: Stopping after processing %d messages in %d batches", 
+			t.Logf("Worker %d: Stopping after processing %d messages in %d batches",
 				workerID, processedCount, batchCount)
 			cancel()
 		}
@@ -216,7 +216,7 @@ func TestMultiProcessWorker(t *testing.T) {
 		WithPollInterval(100*time.Millisecond),
 	)
 
-	t.Logf("Worker %d final results: processed %d messages in %d batches", 
+	t.Logf("Worker %d final results: processed %d messages in %d batches",
 		workerID, processedCount, batchCount)
 
 	// Success criteria: must process at least some messages
@@ -269,15 +269,15 @@ func TestProcessMultiProcessContention(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			
-			cmd := exec.Command("go", "test", "-run", "TestMultiProcessContentionWorker", 
+
+			cmd := exec.Command("go", "test", "-run", "TestMultiProcessContentionWorker",
 				"-timeout", "20s", "-v")
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("COMET_TEST_DATA_DIR=%s", dir),
 				fmt.Sprintf("COMET_TEST_WORKER_ID=%d", id),
 				fmt.Sprintf("COMET_TEST_STREAM=%s", stream),
 			)
-			
+
 			output, err := cmd.CombinedOutput()
 			results <- workerResult{
 				workerID: id,
@@ -306,7 +306,7 @@ func TestProcessMultiProcessContention(t *testing.T) {
 	}
 
 	if successCount < 1 {
-		t.Fatal("No contention workers completed successfully")  
+		t.Fatal("No contention workers completed successfully")
 	}
 
 	t.Logf("✅ Multi-process contention test passed with %d successful workers", successCount)
@@ -338,17 +338,17 @@ func TestMultiProcessContentionWorker(t *testing.T) {
 	defer cancel()
 
 	processedCount := 0
-	
+
 	processFunc := func(ctx context.Context, msgs []StreamMessage) error {
 		processedCount += len(msgs)
-		t.Logf("Contention worker %d: processed %d messages (total: %d)", 
+		t.Logf("Contention worker %d: processed %d messages (total: %d)",
 			workerID, len(msgs), processedCount)
-		
+
 		// Stop after reasonable processing
 		if processedCount >= 30 {
 			cancel()
 		}
-		
+
 		return nil
 	}
 
@@ -359,7 +359,7 @@ func TestMultiProcessContentionWorker(t *testing.T) {
 	)
 
 	t.Logf("Contention worker %d final: processed %d messages", workerID, processedCount)
-	
+
 	// In contention scenario, it's ok if one worker gets most/all messages
 	// The key is that Process() doesn't hang or fail
 	t.Logf("✅ Contention worker %d completed", workerID)

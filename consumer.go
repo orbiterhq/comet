@@ -50,6 +50,10 @@ type Consumer struct {
 	// Composite types
 	readers sync.Map // Cached readers per shard (optimized for read-heavy workload)
 
+	// Track highest read entry per shard for AckRange validation
+	highestReadMu sync.RWMutex
+	highestRead   map[uint32]int64 // shardID -> highest entry read
+
 	// Strings last
 	group string
 }
@@ -191,9 +195,14 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 	if group == "" {
 		group = "default"
 	}
+
+	// Register this consumer group as active
+	client.registerConsumerGroup(group)
+
 	return &Consumer{
-		client: client,
-		group:  group,
+		client:      client,
+		group:       group,
+		highestRead: make(map[uint32]int64),
 		// readers sync.Map is zero-initialized and ready to use
 	}
 }
@@ -214,12 +223,16 @@ func (c *Consumer) Close() error {
 		}
 		return true
 	})
+
+	// Deregister this consumer group
+	c.client.deregisterConsumerGroup(c.group)
+
 	return nil
 }
 
 // Read reads up to count entries from the specified shards starting from the consumer group's current offset.
 // This is a low-level method for manual message processing - you probably want Process() instead.
-// 
+//
 // Key differences from Process():
 // - Read() is one-shot, Process() is continuous
 // - Read() requires manual ACKing, Process() can auto-ACK
@@ -301,9 +314,6 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 		return fmt.Errorf("either Shards or Stream must be specified")
 	}
 
-	// Apply defaults (already set in buildProcessConfig)
-	autoAck := cfg.autoAck
-
 	// Main processing loop
 	for {
 		select {
@@ -360,10 +370,18 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 		}
 
 		// Auto-ack if enabled and processing succeeded
-		if autoAck && processErr == nil {
+		if cfg.autoAck && processErr == nil {
 			for _, msg := range messages {
-				if err := c.Ack(ctx, msg.ID); err != nil && cfg.onError != nil {
-					cfg.onError(fmt.Errorf("ack failed for message %s: %w", msg.ID, err), 0)
+				if err := c.Ack(ctx, msg.ID); err != nil {
+					if cfg.onError != nil {
+						cfg.onError(fmt.Errorf("ack failed for message %s: %w", msg.ID, err), 0)
+					}
+					// Also log for debugging
+					if IsDebug() && c.client.logger != nil {
+						c.client.logger.Debug("AutoAck failed",
+							"messageID", msg.ID,
+							"error", err)
+					}
 				}
 			}
 		}
@@ -511,6 +529,17 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		startEntryNum = 0
 	}
 
+	// DEBUG: Log the read position determination
+	if IsDebug() {
+		if logger := shard.logger; logger != nil {
+			logger.Debug("Consumer read position",
+				"consumerGroup", c.group,
+				"startEntryNum", startEntryNum,
+				"exists", exists,
+				"allOffsets", shard.index.ConsumerOffsets)
+		}
+	}
+
 	// After retention, the requested start entry might no longer exist
 	// Adjust to the earliest available entry if needed
 	if len(shard.index.Files) > 0 {
@@ -635,6 +664,16 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		atomic.AddUint64(&state.TotalEntriesRead, uint64(len(messages)))
 	}
 
+	// Track highest read entry for AckRange validation
+	if len(messages) > 0 {
+		lastRead := messages[len(messages)-1].ID.EntryNumber
+		c.highestReadMu.Lock()
+		if current, exists := c.highestRead[shard.shardID]; !exists || lastRead > current {
+			c.highestRead[shard.shardID] = lastRead
+		}
+		c.highestReadMu.Unlock()
+	}
+
 	return messages, nil
 }
 
@@ -692,6 +731,17 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		// This ensures we won't re-read this entry
 		nextEntry := messageID.EntryNumber + 1
 		shard.index.ConsumerOffsets[c.group] = nextEntry
+
+		// DEBUG: Log the ACK operation
+		if IsDebug() {
+			if logger := shard.logger; logger != nil {
+				logger.Debug("Consumer ACK",
+					"consumerGroup", c.group,
+					"messageID", messageID.String(),
+					"nextEntry", nextEntry,
+					"allOffsets", shard.index.ConsumerOffsets)
+			}
+		}
 		// Mark that we need a checkpoint
 		shard.writesSinceCheckpoint++
 		// Track acked entries
@@ -700,15 +750,13 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		}
 		shard.mu.Unlock()
 
-		// In multi-process mode, we need to persist consumer offsets immediately
-		// since they're not included in regular write checkpoints
-		if c.client.config.Concurrency.EnableMultiProcessMode {
-			// Force immediate persistence of consumer offset - don't wait for checkpoint timer
-			if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-				c.client.logger.Warn("Failed to persist consumer offset after ACK", "error", err)
-			}
+		// Persist consumer offsets immediately to prevent data loss
+		// In single-process mode, this prevents ACK loss if process crashes
+		// In multi-process mode, this ensures other processes see the update
+		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+			c.client.logger.Warn("Failed to persist consumer offset after ACK", "error", err)
 		}
-		
+
 		return nil
 	}
 
@@ -760,12 +808,10 @@ func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 		}
 
 		shard.mu.Unlock()
-		
-		// In multi-process mode, persist consumer offsets after batch ACK
-		if c.client.config.Concurrency.EnableMultiProcessMode {
-			if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-				c.client.logger.Warn("Failed to persist consumer offsets after batch ACK", "error", err)
-			}
+
+		// Persist consumer offsets immediately to prevent data loss
+		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+			c.client.logger.Warn("Failed to persist consumer offsets after batch ACK", "error", err)
 		}
 	}
 
@@ -846,18 +892,17 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	shard.writesSinceCheckpoint++
 	shard.mu.Unlock()
 
-	// In multi-process mode, persist consumer offset change immediately
-	if c.client.config.Concurrency.EnableMultiProcessMode {
-		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-			c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
-		}
+	// Persist consumer offset change immediately to prevent data loss
+	if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+		c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
 	}
-	
+
 	return nil
 }
 
 // AckRange acknowledges all messages in a contiguous range for a shard
 // This is more efficient than individual acks for bulk processing
+// IMPORTANT: This method only allows ACKing messages that have been read by this consumer
 func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEntry int64) error {
 	if fromEntry > toEntry {
 		return fmt.Errorf("invalid range: from %d > to %d", fromEntry, toEntry)
@@ -869,23 +914,50 @@ func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEn
 	}
 
 	shard.mu.Lock()
-	// Update to one past the end of the range
-	newOffset := toEntry + 1
+	// Get current consumer offset
 	currentOffset, exists := shard.index.ConsumerOffsets[c.group]
-
-	// Only update if this advances the offset (no going backwards)
-	if !exists || newOffset > currentOffset {
-		shard.index.ConsumerOffsets[c.group] = newOffset
-		// Mark that we need a checkpoint
-		shard.writesSinceCheckpoint++
+	if !exists {
+		currentOffset = 0
 	}
+
+	// Check if we're trying to ACK beyond what we've read
+	c.highestReadMu.RLock()
+	highestRead, hasRead := c.highestRead[shardID]
+	c.highestReadMu.RUnlock()
+
+	if hasRead && toEntry > highestRead {
+		shard.mu.Unlock()
+		return fmt.Errorf("cannot ACK range [%d,%d]: consumer has only read up to entry %d",
+			fromEntry, toEntry, highestRead)
+	}
+
+	// Also warn if there's a gap from current offset
+	if fromEntry > currentOffset && c.client.logger != nil {
+		c.client.logger.Warn("AckRange might be skipping entries",
+			"consumerGroup", c.group,
+			"rangeStart", fromEntry,
+			"currentOffset", currentOffset,
+			"gap", fromEntry-currentOffset)
+	}
+
+	// This is actually moving the offset backwards, which might be intentional
+	// for reprocessing scenarios, so we'll allow it with a warning
+	newOffset := toEntry + 1
+	if newOffset < currentOffset && c.client.logger != nil {
+		c.client.logger.Warn("AckRange moving offset backwards",
+			"consumerGroup", c.group,
+			"currentOffset", currentOffset,
+			"newOffset", newOffset)
+	}
+
+	shard.index.ConsumerOffsets[c.group] = newOffset
+	// Mark that we need a checkpoint
+	shard.writesSinceCheckpoint++
 	shard.mu.Unlock()
 
-	// In multi-process mode, persist consumer offset change immediately
-	if c.client.config.Concurrency.EnableMultiProcessMode {
-		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-			c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
-		}
+	// Persist consumer offset change immediately to prevent data loss
+	if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+		c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
 	}
 
 	return nil
@@ -943,9 +1015,22 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 		ConsumerOffsets: make(map[string]int64),
 	}
 
-	// Copy consumer offsets
+	// Copy consumer offsets, but only include offsets for this consumer's group
+	// This prevents consumer group offset leakage between different client instances
+	activeGroups := c.client.getActiveGroups()
 	for group, offset := range shard.index.ConsumerOffsets {
-		stats.ConsumerOffsets[group] = offset
+		if activeGroups[group] {
+			stats.ConsumerOffsets[group] = offset
+		}
+	}
+
+	if IsDebug() && c.client.logger != nil {
+		c.client.logger.Debug("GetShardStats filtered consumer offsets",
+			"consumerGroup", c.group,
+			"shardID", shardID,
+			"activeGroups", activeGroups,
+			"allIndexOffsets", shard.index.ConsumerOffsets,
+			"filteredOffsets", stats.ConsumerOffsets)
 	}
 
 	// Calculate totals from files
@@ -999,14 +1084,14 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan for shard directories: %w", err)
 	}
-	
+
 	for _, shardDir := range shardDirs {
 		// Extract shard ID from directory name (e.g., "shard-0166" -> 166)
 		dirName := filepath.Base(shardDir)
 		if !strings.HasPrefix(dirName, "shard-") {
 			continue
 		}
-		
+
 		shardIDStr := strings.TrimPrefix(dirName, "shard-")
 		var shardID uint64
 		if _, parseErr := fmt.Sscanf(shardIDStr, "%04d", &shardID); parseErr == nil {

@@ -92,14 +92,14 @@ func TestQuickACKStress(t *testing.T) {
 			break
 		}
 
-		t.Logf("Restart %d: processed %d (session), %d (total)", 
+		t.Logf("Restart %d: processed %d (session), %d (total)",
 			restart, sessionProcessed, atomic.LoadInt64(&totalProcessed))
 	}
 
 	finalProcessed := atomic.LoadInt64(&totalProcessed)
 	finalDuplicates := atomic.LoadInt64(&duplicates)
 
-	t.Logf("Quick stress results: processed=%d/%d, duplicates=%d", 
+	t.Logf("Quick stress results: processed=%d/%d, duplicates=%d",
 		finalProcessed, totalMessages, finalDuplicates)
 
 	if finalDuplicates > 0 {
@@ -134,7 +134,7 @@ func TestACKEdgeCases(t *testing.T) {
 func testEmptyBatchACK(t *testing.T) {
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	
+
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func testDuplicateACK(t *testing.T) {
 	stream := "dup:v1:shard:0001"
 
 	// Write message
-	client, err := NewClientWithConfig(dir, config)  
+	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,9 +362,9 @@ func testACKDuringRotation(t *testing.T) {
 	// Write and ACK messages while triggering file rotations
 	for i := 0; i < 100; i++ {
 		// Write message
-		msg := []byte(fmt.Sprintf("rotation-msg-%03d-%s", i, 
+		msg := []byte(fmt.Sprintf("rotation-msg-%03d-%s", i,
 			string(make([]byte, 100)))) // Large message to trigger rotation
-		
+
 		_, err = client.Append(ctx, stream, [][]byte{msg})
 		if err != nil {
 			t.Fatal(err)

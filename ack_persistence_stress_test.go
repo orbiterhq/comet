@@ -24,7 +24,7 @@ func TestACKPersistenceStress(t *testing.T) {
 	tests := []struct {
 		name           string
 		totalMessages  int
-		batchSize      int  
+		batchSize      int
 		numConsumers   int
 		processDelayMs int
 		restartFreq    int // Restart every N batches
@@ -65,7 +65,7 @@ func TestACKPersistenceStress(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			runACKStressTest(t, tt.totalMessages, tt.batchSize, tt.numConsumers, 
+			runACKStressTest(t, tt.totalMessages, tt.batchSize, tt.numConsumers,
 				tt.processDelayMs, tt.restartFreq)
 		})
 	}
@@ -75,7 +75,7 @@ func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, proc
 	dir := t.TempDir()
 	config := MultiProcessConfig()
 	stream := fmt.Sprintf("stress:v1:shard:0001")
-	
+
 	// Step 1: Write all test messages
 	t.Logf("Writing %d messages", totalMessages)
 	client, err := NewClientWithConfig(dir, config)
@@ -109,8 +109,8 @@ func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, proc
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			runStressConsumer(t, dir, stream, id, batchSize, processDelayMs, 
-				restartFreq, &processedMessages, &totalProcessed, 
+			runStressConsumer(t, dir, stream, id, batchSize, processDelayMs,
+				restartFreq, &processedMessages, &totalProcessed,
 				&totalDuplicates, &totalRestarts, results)
 		}(consumerID)
 	}
@@ -127,7 +127,7 @@ func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, proc
 	defer ticker.Stop()
 
 	timeout := time.After(120 * time.Second) // 2 minute timeout
-	
+
 	for {
 		select {
 		case <-done:
@@ -136,7 +136,7 @@ func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, proc
 			processed := atomic.LoadInt64(&totalProcessed)
 			duplicates := atomic.LoadInt64(&totalDuplicates)
 			restarts := atomic.LoadInt64(&totalRestarts)
-			t.Logf("Progress: processed=%d/%d, duplicates=%d, restarts=%d", 
+			t.Logf("Progress: processed=%d/%d, duplicates=%d, restarts=%d",
 				processed, totalMessages, duplicates, restarts)
 		case <-timeout:
 			t.Fatal("Stress test timed out after 2 minutes")
@@ -154,7 +154,7 @@ finished:
 			t.Logf("Consumer %d failed: %v", result.consumerID, result.err)
 		} else {
 			successfulConsumers++
-			t.Logf("Consumer %d succeeded: processed=%d, duplicates=%d", 
+			t.Logf("Consumer %d succeeded: processed=%d, duplicates=%d",
 				result.consumerID, result.processed, result.duplicates)
 		}
 	}
@@ -188,7 +188,7 @@ finished:
 	})
 
 	if uniqueCount < totalMessages {
-		t.Errorf("CRITICAL: Only %d/%d unique messages processed - some were lost!", 
+		t.Errorf("CRITICAL: Only %d/%d unique messages processed - some were lost!",
 			uniqueCount, totalMessages)
 	}
 
@@ -200,8 +200,8 @@ finished:
 	t.Logf("✅ ACK persistence stress test PASSED")
 }
 
-func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSize, 
-	processDelayMs, restartFreq int, processedMessages *sync.Map, 
+func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSize,
+	processDelayMs, restartFreq int, processedMessages *sync.Map,
 	totalProcessed, totalDuplicates, totalRestarts *int64, results chan<- stressResult) {
 
 	var localProcessed int64
@@ -230,7 +230,7 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 
 		processFunc := func(ctx context.Context, msgs []StreamMessage) error {
 			batchCount++
-			
+
 			// Add processing delay to simulate real work
 			if processDelayMs > 0 {
 				time.Sleep(time.Duration(processDelayMs) * time.Millisecond)
@@ -327,16 +327,16 @@ func TestACKPersistenceRaceConditions(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			
+
 			// Launch as separate OS process
-			cmd := exec.Command("go", "test", "-run", "TestACKRaceWorker", 
+			cmd := exec.Command("go", "test", "-run", "TestACKRaceWorker",
 				"-timeout", "60s", "-v")
 			cmd.Env = append(os.Environ(),
 				fmt.Sprintf("COMET_RACE_DATA_DIR=%s", dir),
 				fmt.Sprintf("COMET_RACE_WORKER_ID=%d", id),
 				fmt.Sprintf("COMET_RACE_STREAM=%s", stream),
 			)
-			
+
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Logf("Race worker %d failed: %v\nOutput:\n%s", id, err, string(output))
@@ -394,10 +394,10 @@ func TestACKRaceWorker(t *testing.T) {
 	defer cancel()
 
 	processedCount := 0
-	
+
 	processFunc := func(ctx context.Context, msgs []StreamMessage) error {
 		processedCount += len(msgs)
-		
+
 		// Rapidly ACK to create race conditions
 		for _, msg := range msgs {
 			// Manual ACK to test race conditions
@@ -410,7 +410,7 @@ func TestACKRaceWorker(t *testing.T) {
 		if processedCount >= 100 {
 			cancel()
 		}
-		
+
 		return nil
 	}
 
@@ -432,10 +432,10 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 
 	dir := t.TempDir()
 	config := MultiProcessConfig()
-	
+
 	// Use small files to trigger more rotations
 	config.Storage.MaxFileSize = 1024 * 1024 // 1MB files
-	
+
 	stream := "memory:v1:shard:0001"
 	totalMessages := 10000 // Large number to create memory pressure
 
@@ -448,7 +448,7 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 	var messages [][]byte
 	for i := 0; i < totalMessages; i++ {
 		// Larger messages to increase memory pressure
-		data := fmt.Sprintf("memory-pressure-msg-%06d-%s", i, 
+		data := fmt.Sprintf("memory-pressure-msg-%06d-%s", i,
 			string(make([]byte, 500))) // 500 byte padding
 		messages = append(messages, []byte(data))
 	}
@@ -476,7 +476,7 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 		}
 
 		consumer := NewConsumer(client, ConsumerOptions{Group: "memory-test"})
-		
+
 		sessionProcessed := 0
 		processCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 
@@ -505,7 +505,7 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 			WithAutoAck(true),
 		)
 
-		consumer.Close() 
+		consumer.Close()
 		client.Close()
 		cancel()
 
@@ -514,7 +514,7 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 		}
 
 		restartCount++
-		t.Logf("Memory test restart %d: processed %d messages this session (total: %d)", 
+		t.Logf("Memory test restart %d: processed %d messages this session (total: %d)",
 			restartCount, sessionProcessed, processedCount)
 	}
 

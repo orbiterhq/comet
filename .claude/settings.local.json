@@ -18,7 +18,8 @@
       "Bash(git stash:*)",
       "Bash(git diff:*)",
       "Bash(dprint fmt:*)",
-      "Bash(DEBUG=true go test -run TestIndexMetrics -v)"
+      "Bash(DEBUG=true go test -run TestIndexMetrics -v)",
+      "Bash(mkdir:*)"
     ],
     "deny": []
   }

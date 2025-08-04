@@ -25,14 +25,14 @@ func TestProcessMultiProcessMode(t *testing.T) {
 	// Write multiple batches worth of data
 	batchSize := 25
 	totalMessages := 100
-	
+
 	t.Logf("Writing %d messages to %s in multi-process mode", totalMessages, stream)
-	
+
 	var messages [][]byte
 	for i := 0; i < totalMessages; i++ {
 		messages = append(messages, []byte(fmt.Sprintf("multi-process-msg-%d", i)))
 	}
-	
+
 	_, err = client.Append(ctx, stream, messages)
 	if err != nil {
 		t.Fatal(err)
@@ -44,26 +44,26 @@ func TestProcessMultiProcessMode(t *testing.T) {
 
 	var processedCount int64
 	var batchCount int64
-	
+
 	processCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	processFunc := func(ctx context.Context, msgs []StreamMessage) error {
 		currentBatch := atomic.AddInt64(&batchCount, 1)
 		processed := atomic.AddInt64(&processedCount, int64(len(msgs)))
-		
-		t.Logf("Multi-process batch %d: processed %d messages (total: %d/%d)", 
+
+		t.Logf("Multi-process batch %d: processed %d messages (total: %d/%d)",
 			currentBatch, len(msgs), processed, totalMessages)
-		
+
 		if int(processed) >= totalMessages {
 			t.Logf("All multi-process messages processed, canceling")
 			cancel()
 		}
-		
+
 		return nil
 	}
 
-	err = consumer.Process(processCtx, processFunc,
+	consumer.Process(processCtx, processFunc,
 		WithStream("test:v1:shard:*"), // Wildcard pattern
 		WithBatchSize(batchSize),
 		WithAutoAck(true),
@@ -72,7 +72,7 @@ func TestProcessMultiProcessMode(t *testing.T) {
 	finalProcessed := atomic.LoadInt64(&processedCount)
 	finalBatches := atomic.LoadInt64(&batchCount)
 
-	t.Logf("Multi-process final: processed %d/%d messages in %d batches", 
+	t.Logf("Multi-process final: processed %d/%d messages in %d batches",
 		finalProcessed, totalMessages, finalBatches)
 
 	if finalProcessed < int64(totalMessages) {
@@ -100,7 +100,7 @@ func TestProcessWithErrors(t *testing.T) {
 	for i := 0; i < totalMessages; i++ {
 		messages = append(messages, []byte(fmt.Sprintf("error-test-%d", i)))
 	}
-	
+
 	_, err = client.Append(ctx, stream, messages)
 	if err != nil {
 		t.Fatal(err)
@@ -111,30 +111,30 @@ func TestProcessWithErrors(t *testing.T) {
 
 	var processedCount int64
 	var errorCount int64
-	
+
 	processCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	processFunc := func(ctx context.Context, msgs []StreamMessage) error {
 		processed := atomic.AddInt64(&processedCount, int64(len(msgs)))
-		
+
 		// Simulate error on first batch only
 		if processed <= 25 {
 			atomic.AddInt64(&errorCount, 1)
 			t.Logf("Simulating error on batch with %d messages (total processed: %d)", len(msgs), processed)
 			return fmt.Errorf("simulated error")
 		}
-		
+
 		t.Logf("Successfully processed batch with %d messages (total: %d)", len(msgs), processed)
-		
+
 		if int(processed) >= totalMessages {
 			cancel()
 		}
-		
+
 		return nil
 	}
 
-	err = consumer.Process(processCtx, processFunc,
+	consumer.Process(processCtx, processFunc,
 		WithStream("test:v1:shard:*"),
 		WithBatchSize(25),
 		WithMaxRetries(2), // Allow retries
@@ -144,7 +144,7 @@ func TestProcessWithErrors(t *testing.T) {
 	finalProcessed := atomic.LoadInt64(&processedCount)
 	finalErrors := atomic.LoadInt64(&errorCount)
 
-	t.Logf("Error test final: processed %d/%d messages, %d errors", 
+	t.Logf("Error test final: processed %d/%d messages, %d errors",
 		finalProcessed, totalMessages, finalErrors)
 
 	// Should process all messages even with initial errors (due to retries)
@@ -158,7 +158,7 @@ func TestProcessLongRunning(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping long running test")
 	}
-	
+
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
@@ -177,7 +177,7 @@ func TestProcessLongRunning(t *testing.T) {
 	for i := 0; i < initialMessages; i++ {
 		messages = append(messages, []byte(fmt.Sprintf("long-running-%d", i)))
 	}
-	
+
 	_, err = client.Append(ctx, stream, messages)
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestProcessLongRunning(t *testing.T) {
 	defer consumer.Close()
 
 	var processedCount int64
-	
+
 	// Run for longer period
 	processCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -195,7 +195,7 @@ func TestProcessLongRunning(t *testing.T) {
 	processFunc := func(ctx context.Context, msgs []StreamMessage) error {
 		processed := atomic.AddInt64(&processedCount, int64(len(msgs)))
 		t.Logf("Long-running: processed batch of %d (total: %d)", len(msgs), processed)
-		
+
 		// After processing initial messages, add more messages to test continuous processing
 		if processed == int64(initialMessages) {
 			go func() {
@@ -209,17 +209,17 @@ func TestProcessLongRunning(t *testing.T) {
 				t.Logf("Added %d additional messages", additionalMessages)
 			}()
 		}
-		
+
 		// Cancel after processing both batches
 		if processed >= int64(initialMessages+25) {
 			t.Logf("Processed all messages including additional ones")
 			cancel()
 		}
-		
+
 		return nil
 	}
 
-	err = consumer.Process(processCtx, processFunc,
+	consumer.Process(processCtx, processFunc,
 		WithStream("test:v1:shard:*"),
 		WithBatchSize(10),
 		WithAutoAck(true),

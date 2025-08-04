@@ -25,14 +25,14 @@ func TestProcessContinuousBatching(t *testing.T) {
 	// Write MORE messages than one batch size
 	batchSize := 50
 	totalMessages := 150 // 3 batches worth
-	
+
 	t.Logf("Writing %d messages to %s", totalMessages, stream)
-	
+
 	var messages [][]byte
 	for i := 0; i < totalMessages; i++ {
 		messages = append(messages, []byte(fmt.Sprintf("message-%d", i)))
 	}
-	
+
 	_, err = client.Append(ctx, stream, messages)
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +54,7 @@ func TestProcessContinuousBatching(t *testing.T) {
 
 	var processedCount int64
 	var batchCount int64
-	
+
 	// Create a context that will cancel after reasonable time
 	processCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -62,21 +62,21 @@ func TestProcessContinuousBatching(t *testing.T) {
 	processFunc := func(ctx context.Context, msgs []StreamMessage) error {
 		currentBatch := atomic.AddInt64(&batchCount, 1)
 		processed := atomic.AddInt64(&processedCount, int64(len(msgs)))
-		
-		t.Logf("Batch %d: processed %d messages (total: %d/%d)", 
+
+		t.Logf("Batch %d: processed %d messages (total: %d/%d)",
 			currentBatch, len(msgs), processed, totalMessages)
-		
+
 		// If we've processed all messages, cancel to exit Process()
 		if int(processed) >= totalMessages {
 			t.Logf("All messages processed, canceling context")
 			cancel()
 		}
-		
+
 		return nil
 	}
 
 	// Start processing with small batch size to force multiple batches
-	err = consumer.Process(processCtx, processFunc,
+	consumer.Process(processCtx, processFunc,
 		WithStream("test:v1:shard:*"),
 		WithBatchSize(batchSize),
 		WithAutoAck(true),
@@ -86,18 +86,18 @@ func TestProcessContinuousBatching(t *testing.T) {
 	finalProcessed := atomic.LoadInt64(&processedCount)
 	finalBatches := atomic.LoadInt64(&batchCount)
 
-	t.Logf("Final results: processed %d/%d messages in %d batches", 
+	t.Logf("Final results: processed %d/%d messages in %d batches",
 		finalProcessed, totalMessages, finalBatches)
 
 	// The bug: if Process() stops after one batch, we'll see:
 	// - processedCount = batchSize (50) instead of totalMessages (150)
 	// - batchCount = 1 instead of 3
-	
+
 	if finalProcessed < int64(totalMessages) {
-		t.Errorf("BUG REPRODUCED: Process() stopped early! Expected %d messages, got %d", 
+		t.Errorf("BUG REPRODUCED: Process() stopped early! Expected %d messages, got %d",
 			totalMessages, finalProcessed)
 		t.Errorf("Expected ~%d batches, got %d", (totalMessages+batchSize-1)/batchSize, finalBatches)
-		
+
 		// Check consumer lag to see if messages are still available
 		lag, err := consumer.GetLag(ctx, 1)
 		if err == nil {
@@ -120,13 +120,13 @@ func TestProcessOffsetPersistence(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	stream := "test:v1:shard:0001" 
+	stream := "test:v1:shard:0001"
 
 	// Write some messages
 	messages := [][]byte{
 		[]byte("msg1"), []byte("msg2"), []byte("msg3"), []byte("msg4"), []byte("msg5"),
 	}
-	
+
 	_, err = client.Append(ctx, stream, messages)
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +177,7 @@ func TestProcessOffsetPersistence(t *testing.T) {
 	// Verify we got different messages
 	if len(batch1) > 0 && len(batch2) > 0 {
 		if batch1[0].ID.EntryNumber >= batch2[0].ID.EntryNumber {
-			t.Errorf("Second batch didn't advance: batch1[0]=%d, batch2[0]=%d", 
+			t.Errorf("Second batch didn't advance: batch1[0]=%d, batch2[0]=%d",
 				batch1[0].ID.EntryNumber, batch2[0].ID.EntryNumber)
 		}
 	}

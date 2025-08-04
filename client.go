@@ -370,16 +370,18 @@ func validateConfig(cfg *CometConfig) error {
 
 // Client implements a local file-based stream client with append-only storage
 type Client struct {
-	dataDir     string
-	config      CometConfig
-	logger      Logger
-	shards      map[uint32]*Shard
-	metrics     ClientMetrics
-	mu          sync.RWMutex
-	closed      bool
-	retentionWg sync.WaitGroup
-	stopCh      chan struct{}
-	startTime   time.Time
+	dataDir        string
+	config         CometConfig
+	logger         Logger
+	shards         map[uint32]*Shard
+	metrics        ClientMetrics
+	mu             sync.RWMutex
+	closed         bool
+	retentionWg    sync.WaitGroup
+	stopCh         chan struct{}
+	startTime      time.Time
+	activeGroups   map[string]bool // Track consumer groups used by this client
+	activeGroupsMu sync.RWMutex    // Protects activeGroups
 }
 
 // Shard represents a single stream shard with its own files
@@ -586,18 +588,60 @@ func NewClientWithConfig(dataDir string, config CometConfig) (*Client, error) {
 	}
 
 	c := &Client{
-		dataDir:   dataDir,
-		config:    config,
-		logger:    logger,
-		shards:    make(map[uint32]*Shard),
-		stopCh:    make(chan struct{}),
-		startTime: time.Now(),
+		dataDir:      dataDir,
+		config:       config,
+		logger:       logger,
+		shards:       make(map[uint32]*Shard),
+		stopCh:       make(chan struct{}),
+		startTime:    time.Now(),
+		activeGroups: make(map[string]bool),
 	}
 
 	// Start retention manager if configured
 	c.startRetentionManager()
 
 	return c, nil
+}
+
+// registerConsumerGroup registers a consumer group as active for this client
+func (c *Client) registerConsumerGroup(group string) {
+	if group == "" {
+		group = "default"
+	}
+
+	c.activeGroupsMu.Lock()
+	c.activeGroups[group] = true
+	c.activeGroupsMu.Unlock()
+}
+
+// deregisterConsumerGroup removes a consumer group from the active set
+func (c *Client) deregisterConsumerGroup(group string) {
+	if group == "" {
+		group = "default"
+	}
+
+	c.activeGroupsMu.Lock()
+	delete(c.activeGroups, group)
+	c.activeGroupsMu.Unlock()
+}
+
+// getActiveGroups returns a copy of active consumer groups for this client
+func (c *Client) getActiveGroups() map[string]bool {
+	c.activeGroupsMu.RLock()
+	defer c.activeGroupsMu.RUnlock()
+
+	groups := make(map[string]bool, len(c.activeGroups))
+	for group := range c.activeGroups {
+		groups[group] = true
+	}
+
+	if IsDebug() && c.logger != nil {
+		c.logger.Debug("getActiveGroups called",
+			"activeGroups", groups,
+			"numActiveGroups", len(groups))
+	}
+
+	return groups
 }
 
 // Append adds entries to a stream shard (append-only semantics)
@@ -613,7 +657,7 @@ func (c *Client) Append(ctx context.Context, stream string, entries [][]byte) ([
 		return nil, err
 	}
 
-	return shard.appendEntries(entries, &c.metrics, &c.config)
+	return shard.appendEntries(entries, &c.metrics, &c.config, c.getActiveGroups())
 }
 
 // Len returns the number of entries in a stream shard
@@ -643,8 +687,8 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 				}
 				defer syscall.Flock(int(shard.lockFile.Fd()), syscall.LOCK_UN)
 
-				// Reload index to get current state
-				if err := shard.loadIndex(); err != nil {
+				// Reload index to get current state (no consumer group filtering needed for Len)
+				if err := shard.loadIndexWithActiveGroups(nil); err != nil {
 					return 0, fmt.Errorf("failed to reload index for Len: %w", err)
 				}
 			}
@@ -777,10 +821,14 @@ func (c *Client) Sync(ctx context.Context) error {
 						indexCopy.CurrentWriteOffset = diskIndex.CurrentWriteOffset
 					}
 
-					// Merge consumer offsets - keep the highest offset for each consumer
+					// Merge consumer offsets - only for groups actively used by this client
+					activeGroups := c.getActiveGroups()
 					for group, offset := range diskIndex.ConsumerOffsets {
-						if currentOffset, exists := indexCopy.ConsumerOffsets[group]; !exists || offset > currentOffset {
-							indexCopy.ConsumerOffsets[group] = offset
+						// Only merge offsets for consumer groups actively used by this client
+						if activeGroups[group] {
+							if currentOffset, exists := indexCopy.ConsumerOffsets[group]; !exists || offset > currentOffset {
+								indexCopy.ConsumerOffsets[group] = offset
+							}
 						}
 					}
 
@@ -1051,7 +1099,9 @@ func (c *Client) loadExistingShard(shardID uint32, shardDir string) (*Shard, err
 			"shardID", shardID,
 			"indexBeforeLoad", shard.index.CurrentEntryNumber)
 	}
-	if err := shard.loadIndex(); err != nil {
+	// Filter index loading to only include active consumer groups
+	activeGroups := c.getActiveGroups()
+	if err := shard.loadIndexWithActiveGroups(activeGroups); err != nil {
 		return nil, fmt.Errorf("failed to load index: %w", err)
 	}
 	if IsDebug() && c.logger != nil {
@@ -1342,7 +1392,9 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 			"currentEntryNumber", shard.index.CurrentEntryNumber)
 	}
 
-	if err := shard.loadIndex(); err != nil {
+	// Filter index loading to only include active consumer groups
+	activeGroups := c.getActiveGroups()
+	if err := shard.loadIndexWithActiveGroups(activeGroups); err != nil {
 		return nil, err
 	}
 
@@ -1477,7 +1529,7 @@ type WriteRequest struct {
 }
 
 // appendEntries adds raw entry bytes to the shard with I/O outside locks
-func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, config *CometConfig) ([]MessageID, error) {
+func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, config *CometConfig, activeGroups map[string]bool) ([]MessageID, error) {
 	startTime := time.Now()
 
 	// Pre-compress entries OUTSIDE the lock to reduce contention
@@ -1803,7 +1855,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 		if writeErr != nil && strings.Contains(writeErr.Error(), "rotation needed") {
 			// Must acquire mutex before rotating to avoid race conditions
 			s.mu.Lock()
-			rotErr := s.rotateFile(clientMetrics, config)
+			rotErr := s.rotateFile(clientMetrics, config, activeGroups)
 			s.mu.Unlock()
 
 			if rotErr != nil {
@@ -2046,12 +2098,12 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 			// Note: Async checkpointing happens in UpdateFunc now
 		} else {
 			// Single-process mode: use regular checkpointing
-			s.maybeCheckpoint(clientMetrics, config)
+			s.maybeCheckpoint(clientMetrics, config, activeGroups)
 		}
 
 		// Check if we need to rotate file
 		if s.index.CurrentWriteOffset > config.Storage.MaxFileSize {
-			if err := s.rotateFile(clientMetrics, config); err != nil {
+			if err := s.rotateFile(clientMetrics, config, activeGroups); err != nil {
 				criticalErr = fmt.Errorf("failed to rotate file: %w", err)
 				return
 			}
@@ -2067,7 +2119,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 }
 
 // maybeCheckpoint persists the index if needed
-func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfig) {
+func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfig, activeGroups map[string]bool) {
 	if time.Since(s.lastCheckpoint) > time.Duration(config.Storage.CheckpointTime)*time.Millisecond {
 
 		// Flush and sync writer
@@ -2150,10 +2202,13 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 							indexCopy.CurrentWriteOffset = diskIndex.CurrentWriteOffset
 						}
 
-						// Merge consumer offsets - keep the highest offset for each consumer
+						// Merge consumer offsets - only for groups actively used by this client
 						for group, offset := range diskIndex.ConsumerOffsets {
-							if currentOffset, exists := indexCopy.ConsumerOffsets[group]; !exists || offset > currentOffset {
-								indexCopy.ConsumerOffsets[group] = offset
+							// Only merge offsets for consumer groups actively used by this client
+							if activeGroups != nil && activeGroups[group] {
+								if currentOffset, exists := indexCopy.ConsumerOffsets[group]; !exists || offset > currentOffset {
+									indexCopy.ConsumerOffsets[group] = offset
+								}
 							}
 						}
 
@@ -2794,11 +2849,13 @@ func (s *Shard) cloneIndex() *ShardIndex {
 func (s *Shard) persistIndex() error {
 	// Clone the index - caller already holds lock
 	indexCopy := s.cloneIndex()
+
 	if IsDebug() && s.logger != nil {
 		s.logger.Debug("persistIndex called",
 			"shardID", s.shardID,
 			"originalNodes", len(s.index.BinaryIndex.Nodes),
-			"copyNodes", len(indexCopy.BinaryIndex.Nodes))
+			"copyNodes", len(indexCopy.BinaryIndex.Nodes),
+			"consumerGroups", len(indexCopy.ConsumerOffsets))
 	}
 
 	// Calculate total file bytes while we have the index
@@ -2910,6 +2967,13 @@ func (s *Shard) discoverDataFiles() error {
 // loadIndex loads the shard index from disk.
 // IMPORTANT: This function modifies s.index and must be called with s.mu held.
 func (s *Shard) loadIndex() error {
+	return s.loadIndexWithActiveGroups(nil)
+}
+
+// loadIndexWithActiveGroups loads the index from disk, filtering consumer offsets to only include active groups.
+// If activeGroups is nil, all consumer offsets are loaded (backward compatibility).
+// IMPORTANT: This function modifies s.index and must be called with s.mu held.
+func (s *Shard) loadIndexWithActiveGroups(activeGroups map[string]bool) error {
 	// In multi-process mode, always scan for new files first
 	if s.lockFile != nil { // Multi-process mode indicator
 		if err := s.discoverDataFiles(); err != nil {
@@ -2979,6 +3043,18 @@ func (s *Shard) loadIndex() error {
 				if err != nil {
 					return fmt.Errorf("failed to load index created by another process: %w", err)
 				}
+
+				// Filter consumer offsets based on active groups if provided
+				if len(activeGroups) > 0 {
+					filteredOffsets := make(map[string]int64)
+					for group, offset := range newIndex.ConsumerOffsets {
+						if activeGroups[group] {
+							filteredOffsets[group] = offset
+						}
+					}
+					newIndex.ConsumerOffsets = filteredOffsets
+				}
+
 				// Note: Assignment to s.index requires caller to hold s.mu
 				s.index = newIndex
 				return nil
@@ -3102,6 +3178,27 @@ func (s *Shard) loadIndex() error {
 		existingCurrentEntryNumber = s.index.CurrentEntryNumber
 		existingCurrentWriteOffset = s.index.CurrentWriteOffset
 		existingCurrentFile = s.index.CurrentFile
+	}
+
+	// Filter consumer offsets based on active groups if provided
+	if len(activeGroups) > 0 {
+		originalCount := len(index.ConsumerOffsets)
+		filteredOffsets := make(map[string]int64)
+		for group, offset := range index.ConsumerOffsets {
+			if activeGroups[group] {
+				filteredOffsets[group] = offset
+			}
+		}
+		index.ConsumerOffsets = filteredOffsets
+
+		if IsDebug() && s.logger != nil {
+			s.logger.Debug("loadIndex: filtered consumer offsets",
+				"shardID", s.shardID,
+				"originalCount", originalCount,
+				"filteredCount", len(filteredOffsets),
+				"activeGroups", activeGroups,
+				"filteredOffsets", filteredOffsets)
+		}
 	}
 
 	// Note: Assignment to s.index requires caller to hold s.mu
@@ -3763,7 +3860,7 @@ func (s *Shard) recoverFromCrash() error {
 
 // rotateFile closes current file and starts a new one
 // NOTE: This method assumes the caller holds s.mu (main shard mutex)
-func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) error {
+func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig, activeGroups map[string]bool) error {
 	// Handle mmap writer rotation
 	if s.mmapWriter != nil {
 		// Update final stats for current file BEFORE rotation
@@ -3820,7 +3917,7 @@ func (s *Shard) rotateFile(clientMetrics *ClientMetrics, config *CometConfig) er
 		// Force a checkpoint after rotation to ensure index is persisted
 		// This is critical in multi-process mode so other processes see the new files
 		s.lastCheckpoint = time.Time{} // Reset to force checkpoint
-		s.maybeCheckpoint(clientMetrics, config)
+		s.maybeCheckpoint(clientMetrics, config, activeGroups)
 
 		// Update the metrics that would have been updated by persistIndex
 		if state := s.loadState(); state != nil {
@@ -4004,7 +4101,7 @@ func (c *Client) Close() error {
 
 		// Final checkpoint - pass nil for metrics since we're shutting down
 		// Use the actual config for final checkpoint
-		shard.maybeCheckpoint(nil, &c.config)
+		shard.maybeCheckpoint(nil, &c.config, c.getActiveGroups())
 
 		// Acquire write lock to ensure no writes are in progress
 		shard.writeMu.Lock()
@@ -4265,7 +4362,7 @@ func (c *Client) ListRecent(ctx context.Context, streamName string, limit int) (
 	// In multi-process mode, reload index to get latest state
 	if c.config.Concurrency.EnableMultiProcessMode {
 		shard.mu.Lock()
-		if err := shard.loadIndex(); err != nil {
+		if err := shard.loadIndexWithActiveGroups(nil); err != nil {
 			shard.mu.Unlock()
 			return nil, fmt.Errorf("failed to reload index: %w", err)
 		}
@@ -4351,7 +4448,7 @@ func (c *Client) ScanAll(ctx context.Context, streamName string, fn func(context
 	// In multi-process mode, reload index to get latest state
 	if c.config.Concurrency.EnableMultiProcessMode {
 		shard.mu.Lock()
-		if err := shard.loadIndex(); err != nil {
+		if err := shard.loadIndexWithActiveGroups(nil); err != nil {
 			shard.mu.Unlock()
 			return fmt.Errorf("failed to reload index: %w", err)
 		}
