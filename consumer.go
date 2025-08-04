@@ -748,14 +748,16 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		if state := shard.loadState(); state != nil {
 			atomic.AddUint64(&state.AckedEntries, 1)
 		}
-		shard.mu.Unlock()
 
 		// Persist consumer offsets immediately to prevent data loss
 		// In single-process mode, this prevents ACK loss if process crashes
 		// In multi-process mode, this ensures other processes see the update
+		// Note: persistIndex must be called while holding the lock
 		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
 			c.client.logger.Warn("Failed to persist consumer offset after ACK", "error", err)
 		}
+
+		shard.mu.Unlock()
 
 		return nil
 	}
@@ -807,12 +809,13 @@ func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 			}
 		}
 
-		shard.mu.Unlock()
-
 		// Persist consumer offsets immediately to prevent data loss
+		// Note: persistIndex must be called while holding the lock
 		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
 			c.client.logger.Warn("Failed to persist consumer offsets after batch ACK", "error", err)
 		}
+
+		shard.mu.Unlock()
 	}
 
 	return nil
