@@ -724,7 +724,7 @@ func BenchmarkConsumer_LagMeasurement(b *testing.B) {
 	if err != nil {
 		b.Fatalf("failed to parse shard ID: %v", err)
 	}
-	
+
 	// Set consumer behind by 500 entries
 	err = consumer.ResetOffset(ctx, parsedShardID, 500)
 	if err != nil {
