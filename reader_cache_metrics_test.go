@@ -215,7 +215,7 @@ func TestReaderCacheEviction(t *testing.T) {
 	reader.mappingMu.Lock()
 	// Map file 0
 	if len(reader.fileInfos) > 0 {
-		mapped, err := reader.mapFile(0, reader.fileInfos[0])
+		mapped, err := reader.mapFile(reader.fileInfos[0])
 		if err == nil {
 			reader.mappedFiles[0] = mapped
 			atomic.StoreUint64(&evictionState.ReaderMappedFiles, uint64(len(reader.mappedFiles)))

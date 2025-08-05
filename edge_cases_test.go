@@ -889,7 +889,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 			messageIDs = append(messageIDs, msg.ID)
 
 			// Verify data integrity
-			var decoded map[string]interface{}
+			var decoded map[string]any
 			if err := json.Unmarshal(msg.Data, &decoded); err != nil {
 				t.Errorf("failed to decode message %s: %v", msg.ID, err)
 			}

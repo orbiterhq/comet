@@ -488,7 +488,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 		go func(writerID int) {
 			defer writerWg.Done()
 			for j := 0; ctx.Err() == nil && j < numEntries/numWriters; j++ {
-				data := map[string]interface{}{
+				data := map[string]any{
 					"writer": writerID,
 					"seq":    j,
 					"data":   fmt.Sprintf("test-data-%d-%d", writerID, j),
@@ -549,7 +549,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 					time.Sleep(time.Duration(rand.Intn(100)) * time.Microsecond)
 
 					// This should not segfault even if the underlying memory was unmapped
-					var decoded map[string]interface{}
+					var decoded map[string]any
 					if err := json.Unmarshal(msg.Data, &decoded); err != nil {
 						errorCount.Add(1)
 						t.Logf("Failed to unmarshal data: %v", err)
@@ -620,9 +620,9 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 	ctx := context.Background()
 
 	// Write entries across multiple files
-	var storedData []map[string]interface{}
+	var storedData []map[string]any
 	for i := 0; i < 20; i++ {
-		data := map[string]interface{}{
+		data := map[string]any{
 			"id":   i,
 			"data": fmt.Sprintf("test-entry-%d", i),
 		}
@@ -660,7 +660,7 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 
 	// Now process the messages - the data should still be valid
 	for i, msg := range messages {
-		var decoded map[string]interface{}
+		var decoded map[string]any
 		if err := json.Unmarshal(msg.Data, &decoded); err != nil {
 			t.Errorf("Failed to unmarshal message %d: %v", i, err)
 			continue
@@ -695,7 +695,7 @@ func TestReaderMemoryPressure(t *testing.T) {
 	for i := 0; i < numEntries; i++ {
 		// Create varying sizes of data
 		dataSize := 50 + rand.Intn(100)
-		data := map[string]interface{}{
+		data := map[string]any{
 			"id":   i,
 			"data": string(make([]byte, dataSize)),
 			"size": dataSize,
@@ -735,7 +735,7 @@ func TestReaderMemoryPressure(t *testing.T) {
 
 				for _, msg := range messages {
 					// Verify data can be decoded
-					var decoded map[string]interface{}
+					var decoded map[string]any
 					if err := json.Unmarshal(msg.Data, &decoded); err != nil {
 						t.Errorf("Failed to decode message on shard %d: %v", shardID, err)
 					}
@@ -767,7 +767,7 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 	// Write test data
 	numEntries := 50
 	for i := 0; i < numEntries; i++ {
-		data := map[string]interface{}{
+		data := map[string]any{
 			"id":      i,
 			"content": fmt.Sprintf("delayed-access-test-%d", i),
 		}
@@ -821,7 +821,7 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 
 		// Now access the delayed data - should not segfault
 		for _, dm := range delayedMessages {
-			var decoded map[string]interface{}
+			var decoded map[string]any
 			if err := json.Unmarshal(dm.data, &decoded); err != nil {
 				t.Errorf("Failed to decode delayed message: %v", err)
 			}
@@ -849,17 +849,17 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 
 	// Write mixed compressed and uncompressed data
 	for i := 0; i < 100; i++ {
-		var data map[string]interface{}
+		var data map[string]any
 		if i%2 == 0 {
 			// Small data - won't be compressed
-			data = map[string]interface{}{
+			data = map[string]any{
 				"id":   i,
 				"type": "small",
 				"data": "x",
 			}
 		} else {
 			// Large data - will be compressed
-			data = map[string]interface{}{
+			data = map[string]any{
 				"id":   i,
 				"type": "large",
 				"data": string(make([]byte, 200)),
@@ -901,7 +901,7 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 
 				for _, msg := range messages {
 					// Decode and verify
-					var decoded map[string]interface{}
+					var decoded map[string]any
 					if err := json.Unmarshal(msg.Data, &decoded); err != nil {
 						t.Errorf("Failed to decode: %v", err)
 						continue

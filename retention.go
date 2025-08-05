@@ -286,7 +286,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 
 	// Actually delete the files
 	if len(filesToDelete) > 0 {
-		c.deleteFiles(shard, filesToDelete, &c.metrics)
+		c.deleteFiles(shard, filesToDelete)
 	}
 
 	// Update oldest entry timestamp
@@ -328,7 +328,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 
 // deleteFiles removes files from disk and updates the shard index
 // CRITICAL: Updates index BEFORE deleting files to prevent readers from accessing deleted files
-func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetrics) {
+func (c *Client) deleteFiles(shard *Shard, files []FileInfo) {
 	if len(files) == 0 {
 		return
 	}
@@ -465,7 +465,7 @@ func (c *Client) enforceGlobalSizeLimit(shards []*Shard, currentTotal int64) {
 
 	// Perform deletions
 	for shard, files := range deletionMap {
-		c.deleteFiles(shard, files, &c.metrics)
+		c.deleteFiles(shard, files)
 	}
 }
 

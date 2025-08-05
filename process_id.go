@@ -90,7 +90,7 @@ func doGetProcessID(shmFile string) int {
 	myPID := uint32(os.Getpid())
 
 	// Try to acquire a slot
-	for i := 0; i < maxWorkers; i++ {
+	for i := range maxWorkers {
 		offset := i * slotSize
 		pidPtr := (*uint32)(unsafe.Pointer(&data[offset]))
 

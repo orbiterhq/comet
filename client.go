@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,7 +24,7 @@ import (
 
 // shardIndexPool reuses ShardIndex objects to reduce allocations
 var shardIndexPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &ShardIndex{
 			ConsumerOffsets: make(map[string]int64),
 			Files:           make([]FileInfo, 0),
@@ -815,7 +816,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	}
 
 	// Open or create current data file
-	if err := shard.openDataFileWithConfig(shardDir, &c.config); err != nil {
+	if err := shard.openDataFileWithConfig(shardDir); err != nil {
 		return nil, err
 	}
 
@@ -934,7 +935,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	compressedEntries := s.preCompressEntries(entries, config)
 
 	// Prepare write request while holding lock
-	writeReq, criticalErr := s.prepareWriteRequest(entries, compressedEntries, startTime, config, clientMetrics)
+	writeReq, criticalErr := s.prepareWriteRequest(entries, compressedEntries, startTime)
 	if criticalErr != nil {
 		// Track failure metrics
 		if state := s.state; state != nil {
@@ -946,7 +947,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	}
 
 	// Perform I/O OUTSIDE the lock
-	writeErr := s.performWrite(writeReq, config, clientMetrics)
+	writeErr := s.performWrite(writeReq, config)
 	if writeErr != nil {
 		// Track failure metrics
 		if state := s.state; state != nil {
@@ -961,7 +962,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	s.trackWriteMetrics(startTime, entries, compressedEntries, clientMetrics)
 
 	// Post-write operations (checkpointing, rotation check)
-	if err := s.performPostWriteOperations(config, clientMetrics, len(entries)); err != nil {
+	if err := s.performPostWriteOperations(config, clientMetrics); err != nil {
 		return nil, err
 	}
 
@@ -969,7 +970,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 }
 
 // prepareWriteRequest builds the write request under lock
-func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []CompressedEntry, startTime time.Time, config *CometConfig, clientMetrics *ClientMetrics) (WriteRequest, error) {
+func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []CompressedEntry, startTime time.Time) (WriteRequest, error) {
 	var writeReq WriteRequest
 	var criticalErr error
 
@@ -994,7 +995,7 @@ func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []Compre
 	// For very large batches (>10000), allHeaders remains nil and headers are allocated individually
 
 	// Pre-allocate entry numbers
-	entryNumbers := s.allocateEntryNumbers(numEntries, config)
+	entryNumbers := s.allocateEntryNumbers(numEntries)
 
 	// Build write request
 	if compressedEntries != nil {
@@ -1012,7 +1013,7 @@ func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []Compre
 }
 
 // allocateEntryNumbers reserves entry numbers for the batch
-func (s *Shard) allocateEntryNumbers(count int, config *CometConfig) []int64 {
+func (s *Shard) allocateEntryNumbers(count int) []int64 {
 	entryNumbers := make([]int64, count)
 
 	// Always use state for entry number allocation to ensure persistence
@@ -1174,7 +1175,7 @@ func (s *Shard) buildWriteRequest(writeReq *WriteRequest, compressedEntries []Co
 }
 
 // performWrite performs the actual I/O operation
-func (s *Shard) performWrite(writeReq WriteRequest, config *CometConfig, clientMetrics *ClientMetrics) error {
+func (s *Shard) performWrite(writeReq WriteRequest, config *CometConfig) error {
 	if IsDebug() && s.logger != nil {
 		s.logger.Debug("performWrite: entry", "shard", s.shardID, "buffers", len(writeReq.WriteBuffers))
 	}
@@ -1337,7 +1338,7 @@ func (s *Shard) trackWriteMetrics(startTime time.Time, entries [][]byte, compres
 }
 
 // performPostWriteOperations handles checkpointing and rotation
-func (s *Shard) performPostWriteOperations(config *CometConfig, clientMetrics *ClientMetrics, entryCount int) error {
+func (s *Shard) performPostWriteOperations(config *CometConfig, clientMetrics *ClientMetrics) error {
 	s.mu.RLock()
 	shouldCheckpoint := s.shouldCheckpoint(config)
 	shouldRotate := s.shouldRotateFile(config)
@@ -1582,9 +1583,8 @@ func (s *Shard) cloneIndex() *ShardIndex {
 	for k := range clone.ConsumerOffsets {
 		delete(clone.ConsumerOffsets, k)
 	}
-	for k, v := range s.index.ConsumerOffsets {
-		clone.ConsumerOffsets[k] = v
-	}
+
+	maps.Copy(clone.ConsumerOffsets, s.index.ConsumerOffsets)
 
 	// Resize files slice if needed
 	if cap(clone.Files) < len(s.index.Files) {
@@ -1732,7 +1732,7 @@ func (s *Shard) openDataFileForAppend(shardDir string) error {
 }
 
 // openDataFileWithConfig opens or creates the current data file
-func (s *Shard) openDataFileWithConfig(shardDir string, config *CometConfig) error {
+func (s *Shard) openDataFileWithConfig(shardDir string) error {
 	if IsDebug() && s.logger != nil {
 		s.logger.Debug("openDataFileWithConfig: entry", "shard", s.shardID, "files", len(s.index.Files))
 	}
@@ -2502,7 +2502,7 @@ func AllShardStreams(prefix, version string, shardCount uint32) []string {
 const defaultShardCount = uint32(16)
 
 // GetShardStats returns detailed statistics for a specific shard
-func (c *Client) GetShardStats(shardID uint32) (map[string]interface{}, error) {
+func (c *Client) GetShardStats(shardID uint32) (map[string]any, error) {
 	c.mu.RLock()
 	shard, exists := c.shards[shardID]
 	c.mu.RUnlock()
@@ -2511,7 +2511,7 @@ func (c *Client) GetShardStats(shardID uint32) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("shard %d not found", shardID)
 	}
 
-	stats := make(map[string]interface{})
+	stats := make(map[string]any)
 
 	// Reader count
 	stats["readers"] = atomic.LoadInt64(&shard.readerCount)
@@ -2525,9 +2525,9 @@ func (c *Client) GetShardStats(shardID uint32) (map[string]interface{}, error) {
 	stats["binary_index_nodes"] = len(shard.index.BinaryIndex.Nodes)
 
 	// File details
-	files := make([]map[string]interface{}, len(shard.index.Files))
+	files := make([]map[string]any, len(shard.index.Files))
 	for i, f := range shard.index.Files {
-		files[i] = map[string]interface{}{
+		files[i] = map[string]any{
 			"path":        f.Path,
 			"size":        f.EndOffset - f.StartOffset,
 			"entries":     f.Entries,
@@ -2539,10 +2539,10 @@ func (c *Client) GetShardStats(shardID uint32) (map[string]interface{}, error) {
 	stats["file_details"] = files
 
 	// Consumer group details
-	groups := make(map[string]interface{})
+	groups := make(map[string]any)
 	for group, offset := range shard.index.ConsumerOffsets {
 		lag := shard.index.CurrentEntryNumber - offset
-		groups[group] = map[string]interface{}{
+		groups[group] = map[string]any{
 			"offset": offset,
 			"lag":    lag,
 		}
@@ -2552,7 +2552,7 @@ func (c *Client) GetShardStats(shardID uint32) (map[string]interface{}, error) {
 
 	// Add state metrics if available
 	if state := shard.state; state != nil {
-		stateMetrics := make(map[string]interface{})
+		stateMetrics := make(map[string]any)
 
 		// Basic metrics
 		stateMetrics["total_writes"] = atomic.LoadUint64(&state.TotalWrites)

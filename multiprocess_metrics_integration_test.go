@@ -279,7 +279,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			// This ensures we don't panic when accessing any metric
 			metrics := []struct {
 				name  string
-				value interface{}
+				value any
 			}{
 				{"Version", atomic.LoadUint64(&state.Version)},
 				{"WriteOffset", atomic.LoadUint64(&state.WriteOffset)},

@@ -378,7 +378,7 @@ func TestMetricsCompleteness(t *testing.T) {
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
 	// Access ALL 66 metrics to ensure they don't panic
-	metrics := map[string]interface{}{
+	metrics := map[string]any{
 		"Version":              atomic.LoadUint64(&state.Version),
 		"WriteOffset":          atomic.LoadUint64(&state.WriteOffset),
 		"LastEntryNumber":      atomic.LoadInt64(&state.LastEntryNumber),

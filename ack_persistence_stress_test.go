@@ -205,7 +205,7 @@ finished:
 
 	// Count unique messages processed
 	uniqueCount := 0
-	processedMessages.Range(func(key, value interface{}) bool {
+	processedMessages.Range(func(key, value any) bool {
 		uniqueCount++
 		return true
 	})

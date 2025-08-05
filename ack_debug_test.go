@@ -182,7 +182,7 @@ func TestACKDebug(t *testing.T) {
 
 	// Count duplicates per consumer
 	duplicates := make(map[int]int)
-	processedCount.Range(func(key, value interface{}) bool {
+	processedCount.Range(func(key, value any) bool {
 		k := key.(string)
 		count := value.(int32)
 		var consumerID int

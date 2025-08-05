@@ -9,7 +9,7 @@ import (
 func TestStructAlignment(t *testing.T) {
 	tests := []struct {
 		name string
-		obj  interface{}
+		obj  any
 	}{
 		// Core structs
 		{"MessageID", MessageID{}},

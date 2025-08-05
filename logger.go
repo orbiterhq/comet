@@ -22,22 +22,22 @@ const (
 // It's designed to be simple and easy to adapt to various logging libraries.
 type Logger interface {
 	// Debug logs a debug message with optional key-value pairs
-	Debug(msg string, keysAndValues ...interface{})
+	Debug(msg string, keysAndValues ...any)
 
 	// Info logs an informational message with optional key-value pairs
-	Info(msg string, keysAndValues ...interface{})
+	Info(msg string, keysAndValues ...any)
 
 	// Warn logs a warning message with optional key-value pairs
-	Warn(msg string, keysAndValues ...interface{})
+	Warn(msg string, keysAndValues ...any)
 
 	// Error logs an error message with optional key-value pairs
-	Error(msg string, keysAndValues ...interface{})
+	Error(msg string, keysAndValues ...any)
 
 	// WithContext returns a logger with the given context
 	WithContext(ctx context.Context) Logger
 
 	// WithFields returns a logger with the given fields attached
-	WithFields(keysAndValues ...interface{}) Logger
+	WithFields(keysAndValues ...any) Logger
 }
 
 // NoOpLogger is a logger that discards all log messages
@@ -45,12 +45,12 @@ type NoOpLogger struct{}
 
 var _ Logger = NoOpLogger{}
 
-func (NoOpLogger) Debug(msg string, keysAndValues ...interface{})   {}
-func (NoOpLogger) Info(msg string, keysAndValues ...interface{})    {}
-func (NoOpLogger) Warn(msg string, keysAndValues ...interface{})    {}
-func (NoOpLogger) Error(msg string, keysAndValues ...interface{})   {}
-func (n NoOpLogger) WithContext(ctx context.Context) Logger         { return n }
-func (n NoOpLogger) WithFields(keysAndValues ...interface{}) Logger { return n }
+func (NoOpLogger) Debug(msg string, keysAndValues ...any)   {}
+func (NoOpLogger) Info(msg string, keysAndValues ...any)    {}
+func (NoOpLogger) Warn(msg string, keysAndValues ...any)    {}
+func (NoOpLogger) Error(msg string, keysAndValues ...any)   {}
+func (n NoOpLogger) WithContext(ctx context.Context) Logger { return n }
+func (n NoOpLogger) WithFields(keysAndValues ...any) Logger { return n }
 
 // StdLogger is a simple logger that writes to stdout/stderr
 type StdLogger struct {
@@ -69,7 +69,7 @@ func NewStdLogger(level LogLevel) *StdLogger {
 	}
 }
 
-func (s *StdLogger) log(level LogLevel, levelStr, msg string, keysAndValues ...interface{}) {
+func (s *StdLogger) log(level LogLevel, levelStr, msg string, keysAndValues ...any) {
 	if level < s.level {
 		return
 	}
@@ -99,19 +99,19 @@ func (s *StdLogger) log(level LogLevel, levelStr, msg string, keysAndValues ...i
 	fmt.Fprintln(s.writer, output)
 }
 
-func (s *StdLogger) Debug(msg string, keysAndValues ...interface{}) {
+func (s *StdLogger) Debug(msg string, keysAndValues ...any) {
 	s.log(LogLevelDebug, "DEBUG", msg, keysAndValues...)
 }
 
-func (s *StdLogger) Info(msg string, keysAndValues ...interface{}) {
+func (s *StdLogger) Info(msg string, keysAndValues ...any) {
 	s.log(LogLevelInfo, "INFO", msg, keysAndValues...)
 }
 
-func (s *StdLogger) Warn(msg string, keysAndValues ...interface{}) {
+func (s *StdLogger) Warn(msg string, keysAndValues ...any) {
 	s.log(LogLevelWarn, "WARN", msg, keysAndValues...)
 }
 
-func (s *StdLogger) Error(msg string, keysAndValues ...interface{}) {
+func (s *StdLogger) Error(msg string, keysAndValues ...any) {
 	s.log(LogLevelError, "ERROR", msg, keysAndValues...)
 }
 
@@ -120,7 +120,7 @@ func (s *StdLogger) WithContext(ctx context.Context) Logger {
 	return s
 }
 
-func (s *StdLogger) WithFields(keysAndValues ...interface{}) Logger {
+func (s *StdLogger) WithFields(keysAndValues ...any) Logger {
 	newLogger := &StdLogger{
 		level:  s.level,
 		writer: s.writer,
@@ -141,19 +141,19 @@ func NewSlogAdapter(logger *slog.Logger) *SlogAdapter {
 	return &SlogAdapter{logger: logger}
 }
 
-func (s *SlogAdapter) Debug(msg string, keysAndValues ...interface{}) {
+func (s *SlogAdapter) Debug(msg string, keysAndValues ...any) {
 	s.logger.Debug(msg, keysAndValues...)
 }
 
-func (s *SlogAdapter) Info(msg string, keysAndValues ...interface{}) {
+func (s *SlogAdapter) Info(msg string, keysAndValues ...any) {
 	s.logger.Info(msg, keysAndValues...)
 }
 
-func (s *SlogAdapter) Warn(msg string, keysAndValues ...interface{}) {
+func (s *SlogAdapter) Warn(msg string, keysAndValues ...any) {
 	s.logger.Warn(msg, keysAndValues...)
 }
 
-func (s *SlogAdapter) Error(msg string, keysAndValues ...interface{}) {
+func (s *SlogAdapter) Error(msg string, keysAndValues ...any) {
 	s.logger.Error(msg, keysAndValues...)
 }
 
@@ -163,7 +163,7 @@ func (s *SlogAdapter) WithContext(ctx context.Context) Logger {
 	return s
 }
 
-func (s *SlogAdapter) WithFields(keysAndValues ...interface{}) Logger {
+func (s *SlogAdapter) WithFields(keysAndValues ...any) Logger {
 	// Create a new logger with additional fields
 	args := make([]any, 0, len(keysAndValues))
 	args = append(args, keysAndValues...)

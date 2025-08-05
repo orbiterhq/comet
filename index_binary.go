@@ -232,7 +232,7 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 	}
 
 	// Read consumer offsets
-	for i := uint32(0); i < consumerCount; i++ {
+	for range consumerCount {
 		if offset >= len(data) {
 			return nil, io.ErrUnexpectedEOF
 		}
@@ -261,7 +261,7 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 
 	// Read binary index nodes
 	index.BinaryIndex.Nodes = make([]EntryIndexNode, 0, nodeCount)
-	for i := uint32(0); i < nodeCount; i++ {
+	for range nodeCount {
 		if offset+20 > len(data) {
 			return nil, io.ErrUnexpectedEOF
 		}

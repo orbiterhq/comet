@@ -208,7 +208,7 @@ func TestMessageLoss(t *testing.T) {
 
 	// Count unique messages
 	uniqueCount := 0
-	uniqueMessages.Range(func(key, value interface{}) bool {
+	uniqueMessages.Range(func(key, value any) bool {
 		uniqueCount++
 		return true
 	})
@@ -223,7 +223,7 @@ func TestMessageLoss(t *testing.T) {
 
 		// Find which messages were lost
 		seen := make(map[string]bool)
-		uniqueMessages.Range(func(key, value interface{}) bool {
+		uniqueMessages.Range(func(key, value any) bool {
 			seen[key.(string)] = true
 			return true
 		})

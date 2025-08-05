@@ -199,7 +199,7 @@ func NewReader(shardID uint32, index *ShardIndex, config ...ReaderConfig) (*Read
 	// In smart mapping mode, just map the most recent file to get started
 	if len(r.fileInfos) > 0 {
 		lastIndex := len(r.fileInfos) - 1
-		mapped, err := r.mapFile(lastIndex, r.fileInfos[lastIndex])
+		mapped, err := r.mapFile(r.fileInfos[lastIndex])
 		if err == nil {
 			r.mappedFiles[lastIndex] = mapped
 			// Note: Can't update ReaderMappedFiles here as state isn't set yet
@@ -229,7 +229,7 @@ func (r *Reader) SetState(state *CometState) {
 }
 
 // mapFile maps a single file into memory
-func (r *Reader) mapFile(fileIndex int, info FileInfo) (*MappedFile, error) {
+func (r *Reader) mapFile(info FileInfo) (*MappedFile, error) {
 	file, err := os.Open(info.Path)
 	if err != nil {
 		return nil, err
@@ -442,7 +442,7 @@ func (r *Reader) ensureFileMapped(fileIndex int) error {
 		return fmt.Errorf("file index %d out of range", fileIndex)
 	}
 
-	mapped, err := r.mapFile(fileIndex, r.fileInfos[fileIndex])
+	mapped, err := r.mapFile(r.fileInfos[fileIndex])
 	if err != nil {
 		return err
 	}
@@ -573,7 +573,7 @@ func (r *Reader) UpdateFiles(newFiles *[]FileInfo) error {
 		// Try to map the most recent file
 		lastIndex := len(*newFiles) - 1
 		if _, exists := r.mappedFiles[lastIndex]; !exists {
-			if mapped, err := r.mapFile(lastIndex, (*newFiles)[lastIndex]); err == nil {
+			if mapped, err := r.mapFile((*newFiles)[lastIndex]); err == nil {
 				r.mappedFiles[lastIndex] = mapped
 			}
 		}

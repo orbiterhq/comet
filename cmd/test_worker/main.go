@@ -83,7 +83,7 @@ func runWriter(dir, id string, duration time.Duration) {
 			// Write a batch of entries
 			batch := make([][]byte, 10)
 			for i := 0; i < 10; i++ {
-				entry := map[string]interface{}{
+				entry := map[string]any{
 					"writer_id": id,
 					"sequence":  count + i,
 					"timestamp": time.Now().UnixNano(),
@@ -140,7 +140,7 @@ func runReader(dir, id string, duration time.Duration) {
 
 			// Verify data integrity
 			for _, msg := range messages {
-				var data map[string]interface{}
+				var data map[string]any
 				if err := json.Unmarshal(msg.Data, &data); err != nil {
 					log.Printf("Reader %s: corrupted message: %v", id, err)
 				}
@@ -188,7 +188,7 @@ func runBenchmark(dir, id string, duration time.Duration) {
 	// Prepare batch
 	batch := make([][]byte, 100)
 	for i := 0; i < 100; i++ {
-		entry := map[string]interface{}{
+		entry := map[string]any{
 			"writer_id": id,
 			"sequence":  i,
 			"timestamp": time.Now().UnixNano(),

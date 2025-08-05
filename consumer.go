@@ -832,13 +832,12 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			if strings.Contains(err.Error(), "not found in any file") {
 				continue
 			}
-			if err != nil {
-				// Track read error in CometState
-				if state := shard.state; state != nil {
-					atomic.AddUint64(&state.ReadErrors, 1)
-				}
-				return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
+			// Track read error in CometState
+			if state := shard.state; state != nil {
+				atomic.AddUint64(&state.ReadErrors, 1)
 			}
+			return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
+
 		}
 
 		message := StreamMessage{
@@ -1044,10 +1043,7 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	shard.mu.Lock()
 	if entryNumber < 0 {
 		// Negative means from end
-		entryNumber = shard.index.CurrentEntryNumber + entryNumber
-		if entryNumber < 0 {
-			entryNumber = 0
-		}
+		entryNumber = max(shard.index.CurrentEntryNumber+entryNumber, 0)
 	}
 
 	shard.index.ConsumerOffsets[c.group] = entryNumber
@@ -1176,9 +1172,7 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 
 	// Since processes own their shards exclusively, they own all consumer groups
 	// Copy all consumer offsets
-	for group, offset := range shard.index.ConsumerOffsets {
-		stats.ConsumerOffsets[group] = offset
-	}
+	maps.Copy(stats.ConsumerOffsets, shard.index.ConsumerOffsets)
 
 	// Calculate totals from files
 	for _, file := range shard.index.Files {

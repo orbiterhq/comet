@@ -99,7 +99,7 @@ func TestInitializeMmapWriterRecovery(t *testing.T) {
 	}
 
 	// Now recover by reopening the data file
-	err = shard.openDataFileWithConfig(filepath.Join(dir, "shard-0000"), &config)
+	err = shard.openDataFileWithConfig(filepath.Join(dir, "shard-0000"))
 	shard.mu.Unlock()
 
 	if err != nil {
