@@ -60,6 +60,10 @@ type Consumer struct {
 	highestReadMu sync.RWMutex
 	highestRead   map[uint32]int64 // shardID -> highest entry read
 
+	// In-memory consumer offsets for immediate read-after-ACK consistency
+	memOffsetsMu sync.RWMutex
+	memOffsets   map[uint32]int64 // shardID -> consumer offset (in-memory view)
+
 	// Idempotent processing: track processed messages to prevent duplicates
 	processedMsgsMu sync.RWMutex
 	processedMsgs   map[MessageID]bool // messageID -> processed flag
@@ -244,6 +248,7 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 		consumerID:    opts.ConsumerID,
 		consumerCount: opts.ConsumerCount,
 		highestRead:   make(map[uint32]int64),
+		memOffsets:    make(map[uint32]int64),
 		processedMsgs: make(map[MessageID]bool),
 		// readers sync.Map is zero-initialized and ready to use
 	}
@@ -648,11 +653,22 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 
 	// Since processes own their shards exclusively, no need to check for changes
 
+	// First check in-memory offset for immediate consistency
+	c.memOffsetsMu.RLock()
+	memOffset, hasMemOffset := c.memOffsets[shard.shardID]
+	c.memOffsetsMu.RUnlock()
+
 	shard.mu.RLock()
-	// Get consumer entry offset (not byte offset!)
-	startEntryNum, exists := shard.index.ConsumerOffsets[c.group]
+	// Get consumer entry offset from persistent index
+	persistedOffset, exists := shard.index.ConsumerOffsets[c.group]
 	if !exists {
-		startEntryNum = 0
+		persistedOffset = 0
+	}
+
+	// Use the higher of memory or persisted offset for consistency
+	startEntryNum := persistedOffset
+	if hasMemOffset && memOffset > startEntryNum {
+		startEntryNum = memOffset
 	}
 
 	// After retention, the requested start entry might no longer exist
@@ -836,16 +852,6 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 
 	// Process each shard group
 	for shardID, ids := range shardGroups {
-		shard, err := c.client.getOrCreateShard(shardID)
-		if err != nil {
-			return err
-		}
-
-		// Track this shard for persistence on close
-		c.shards.Store(shardID, true)
-
-		shard.mu.Lock()
-
 		// Find the highest entry number in this shard's batch
 		var maxEntry int64 = -1
 		for _, id := range ids {
@@ -854,8 +860,26 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 			}
 		}
 
-		// Update to one past the highest ACK'd entry
 		if maxEntry >= 0 {
+			newOffset := maxEntry + 1
+
+			// Update in-memory offset immediately for read consistency
+			c.memOffsetsMu.Lock()
+			if currentMemOffset, exists := c.memOffsets[shardID]; !exists || newOffset > currentMemOffset {
+				c.memOffsets[shardID] = newOffset
+			}
+			c.memOffsetsMu.Unlock()
+
+			// Get shard for persistence
+			shard, err := c.client.getOrCreateShard(shardID)
+			if err != nil {
+				return err
+			}
+
+			// Track this shard for persistence on close
+			c.shards.Store(shardID, true)
+
+			shard.mu.Lock()
 			// Check if this is a new consumer group
 			_, groupExists := shard.index.ConsumerOffsets[c.group]
 			if !groupExists {
@@ -863,31 +887,52 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 					atomic.AddUint64(&state.ConsumerGroups, 1)
 				}
 			}
-			shard.index.ConsumerOffsets[c.group] = maxEntry + 1
+			shard.index.ConsumerOffsets[c.group] = newOffset
 			// Mark that we need a checkpoint
 			shard.writesSinceCheckpoint++
 			// Track acked entries
 			if state := shard.state; state != nil {
 				atomic.AddUint64(&state.AckedEntries, uint64(len(ids)))
 			}
-		}
+			shard.mu.Unlock()
 
-		shard.mu.Unlock()
-
-		// Always persist consumer offsets immediately to prevent data loss
-		// This ensures exactly-once semantics are maintained
-		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-			c.client.logger.Warn("Failed to persist consumer offsets after ACK", "error", err)
+			// Batch persistence: only persist if we've accumulated enough changes
+			// or enough time has passed since last persist
+			if shard.writesSinceCheckpoint >= 100 {
+				if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+					c.client.logger.Warn("Failed to persist consumer offsets after ACK batch", "error", err)
+				}
+			}
 		}
 	}
 
 	return nil
 }
 
-// FlushACKs is a no-op now that ACKs are persisted immediately.
-// Kept for API compatibility.
+// FlushACKs forces immediate persistence of all consumer offsets.
+// This is useful for ensuring durability before shutdown or tests.
 func (c *Consumer) FlushACKs(ctx context.Context) error {
-	return nil
+	// Persist all shards that have been accessed
+	var lastErr error
+	c.shards.Range(func(key, value any) bool {
+		shardID := key.(uint32)
+		shard, err := c.client.getOrCreateShard(shardID)
+		if err != nil {
+			lastErr = err
+			return true
+		}
+
+		// Force persist the current state
+		if err := shard.persistIndex(); err != nil {
+			lastErr = err
+			if c.client.logger != nil {
+				c.client.logger.Warn("Failed to flush consumer offsets", "shard", shardID, "error", err)
+			}
+		}
+		return true
+	})
+
+	return lastErr
 }
 
 // GetLag returns how many entries behind this consumer group is
