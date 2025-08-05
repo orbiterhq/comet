@@ -27,11 +27,17 @@ func TestConsumerProcessedMessagesCleanup(t *testing.T) {
 	})
 	defer consumer.Close()
 
-	// Write many messages
+	// Write many messages in batches for efficiency
 	const numMessages = 10000
-	for i := 0; i < numMessages; i++ {
-		data := []byte(fmt.Sprintf("message-%d", i))
-		if _, err := client.Append(ctx, stream, [][]byte{data}); err != nil {
+	const batchSize = 100
+
+	for i := 0; i < numMessages; i += batchSize {
+		batch := make([][]byte, 0, batchSize)
+		for j := 0; j < batchSize && i+j < numMessages; j++ {
+			data := []byte(fmt.Sprintf("message-%d", i+j))
+			batch = append(batch, data)
+		}
+		if _, err := client.Append(ctx, stream, batch); err != nil {
 			t.Fatal(err)
 		}
 	}

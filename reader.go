@@ -653,7 +653,7 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 			}
 
 			// For non-first entries, we need to scan from the beginning
-			// This is inefficient but correct for now
+			// This should rarely happen if the binary index is properly maintained
 			return r.readEntryByScanning(fileIndex, relativeEntryNum)
 		}
 	}

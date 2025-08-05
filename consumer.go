@@ -263,7 +263,7 @@ func (c *Consumer) Close() error {
 	if err := c.flushPendingAcks(ctx); err != nil && c.client.logger != nil {
 		c.client.logger.Warn("Failed to flush pending ACKs on close", "error", err)
 	}
-	
+
 	// Close all cached readers
 	c.readers.Range(func(key, value any) bool {
 		if reader, ok := value.(*Reader); ok {
