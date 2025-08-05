@@ -77,7 +77,8 @@ type StorageConfig struct {
 	MaxFileSize       int64 `json:"max_file_size"`      // Maximum size per file before rotation
 	CheckpointTime    int   `json:"checkpoint_time_ms"` // Checkpoint every N milliseconds
 	CheckpointEntries int   `json:"checkpoint_entries"` // Checkpoint every N entries (default: 1000)
-	FlushInterval     int   `json:"flush_interval_ms"`  // Flush buffered writes every N milliseconds (0 = checkpoint interval)
+	FlushInterval     int   `json:"flush_interval_ms"`  // Flush to OS cache every N ms (memory management, not durability)
+	FlushEntries      int   `json:"flush_entries"`      // Flush to OS cache every N entries (memory management, not durability)
 }
 
 // ConcurrencyConfig controls multi-process behavior
@@ -163,8 +164,9 @@ func DefaultCometConfig() CometConfig {
 		// Storage - optimized for 256MB files
 		Storage: StorageConfig{
 			MaxFileSize:       maxFileSize,
-			CheckpointTime:    2000, // Checkpoint every 2 seconds
-			CheckpointEntries: 1000, // Checkpoint every 1000 entries
+			CheckpointTime:    2000,   // Checkpoint every 2 seconds
+			CheckpointEntries: 1000,   // Checkpoint every 1000 entries
+			FlushEntries:      50000, // Flush every 50k entries (~5MB) - optimal for large batches
 		},
 
 		// Concurrency - single-process mode by default
@@ -215,6 +217,7 @@ func HighThroughputConfig() CometConfig {
 	cfg := DefaultCometConfig()
 	cfg.Storage.CheckpointTime = 10000            // Less frequent checkpoints
 	cfg.Storage.CheckpointEntries = 10000         // Checkpoint every 10k entries to avoid frequent syncs
+	cfg.Storage.FlushEntries = 100000             // Flush every 100k entries for large batch throughput
 	cfg.Compression.MinCompressSize = 1024 * 1024 // Only compress very large entries
 	cfg.Indexing.BoundaryInterval = 1000          // Less frequent index entries
 	// Reader config is set to defaults in DefaultReaderConfig()
@@ -232,6 +235,10 @@ func validateConfig(cfg *CometConfig) error {
 	if cfg.Storage.CheckpointEntries <= 0 {
 		cfg.Storage.CheckpointEntries = 1000 // 1000 entries default
 	}
+	if cfg.Storage.FlushEntries < 0 {
+		cfg.Storage.FlushEntries = 50000 // 50k entries default
+	}
+	// FlushEntries of 0 means no entry-based flushing (rely on buffer size)
 	if cfg.Compression.MinCompressSize < 0 {
 		cfg.Compression.MinCompressSize = 4096 // 4KB default
 	}
@@ -925,6 +932,7 @@ type WriteRequest struct {
 	CurrentWriteOffset int64       // Snapshot of write offset at request time (8 bytes)
 	WriteBuffers       [][]byte    // Buffers to write (24 bytes)
 	IDs                []MessageID // Message IDs for the batch (24 bytes)
+	ShouldFlush        bool        // Whether to flush after this write (1 byte)
 }
 
 // appendEntries adds raw entry bytes to the shard with I/O outside locks
@@ -935,7 +943,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	compressedEntries := s.preCompressEntries(entries, config)
 
 	// Prepare write request while holding lock
-	writeReq, criticalErr := s.prepareWriteRequest(entries, compressedEntries, startTime)
+	writeReq, criticalErr := s.prepareWriteRequest(entries, compressedEntries, startTime, config)
 	if criticalErr != nil {
 		// Track failure metrics
 		if state := s.state; state != nil {
@@ -970,7 +978,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 }
 
 // prepareWriteRequest builds the write request under lock
-func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []CompressedEntry, startTime time.Time) (WriteRequest, error) {
+func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []CompressedEntry, startTime time.Time, config *CometConfig) (WriteRequest, error) {
 	var writeReq WriteRequest
 	var criticalErr error
 
@@ -986,13 +994,9 @@ func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []Compre
 	// Build write buffers from pre-compressed data (minimal work under lock)
 	writeReq.WriteBuffers = make([][]byte, 0, numEntries*2) // headers + data
 
-	// Allocate header buffer based on batch size
-	var allHeaders []byte
-	if numEntries <= 10000 {
-		// For batches up to 10000, allocate all headers at once
-		allHeaders = make([]byte, numEntries*headerSize)
-	}
-	// For very large batches (>10000), allHeaders remains nil and headers are allocated individually
+	// Allocate header buffer for all entries at once
+	// Go's runtime will handle large allocations efficiently
+	allHeaders := make([]byte, numEntries*headerSize)
 
 	// Pre-allocate entry numbers
 	entryNumbers := s.allocateEntryNumbers(numEntries)
@@ -1008,6 +1012,12 @@ func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []Compre
 
 	// Capture current write offset for performWrite to use (avoids race condition)
 	writeReq.CurrentWriteOffset = s.index.CurrentWriteOffset
+	
+	// Determine if we should flush after this write based on entry count from config
+	flushThreshold := int64(config.Storage.FlushEntries)
+	if flushThreshold > 0 {
+		writeReq.ShouldFlush = (s.index.CurrentEntryNumber % flushThreshold) + int64(numEntries) >= flushThreshold
+	}
 
 	return writeReq, criticalErr
 }
@@ -1019,8 +1029,10 @@ func (s *Shard) allocateEntryNumbers(count int) []int64 {
 	// Always use state for entry number allocation to ensure persistence
 	state := s.state
 	if state != nil {
+		// Use batched allocation - single atomic operation instead of count operations
+		firstEntry := state.AllocateEntryNumbers(count)
 		for i := range entryNumbers {
-			entryNumbers[i] = state.IncrementLastEntryNumber()
+			entryNumbers[i] = firstEntry + int64(i)
 		}
 	} else {
 		// Fallback if state not available (shouldn't happen in normal operation)
@@ -1043,15 +1055,9 @@ func (s *Shard) buildWriteRequestDirect(writeReq *WriteRequest, entries [][]byte
 	totalBytes := uint64(0)
 
 	for i, data := range entries {
-		var header []byte
-		if allHeaders != nil {
-			// Use pre-allocated header buffer
-			headerStart := i * headerSize
-			header = allHeaders[headerStart : headerStart+headerSize]
-		} else {
-			// Allocate header individually for very large batches
-			header = make([]byte, headerSize)
-		}
+		// Use pre-allocated header buffer
+		headerStart := i * headerSize
+		header := allHeaders[headerStart : headerStart+headerSize]
 		binary.LittleEndian.PutUint32(header[0:4], uint32(len(data)))
 		binary.LittleEndian.PutUint64(header[4:12], uint64(now))
 
@@ -1108,15 +1114,9 @@ func (s *Shard) buildWriteRequest(writeReq *WriteRequest, compressedEntries []Co
 	writeOffset := s.index.CurrentWriteOffset
 
 	for i, compressedEntry := range compressedEntries {
-		var header []byte
-		if allHeaders != nil {
-			// Use pre-allocated header buffer
-			headerStart := i * headerSize
-			header = allHeaders[headerStart : headerStart+headerSize]
-		} else {
-			// Allocate header individually for very large batches
-			header = make([]byte, headerSize)
-		}
+		// Use pre-allocated header buffer
+		headerStart := i * headerSize
+		header := allHeaders[headerStart : headerStart+headerSize]
 		binary.LittleEndian.PutUint32(header[0:4], uint32(len(compressedEntry.Data)))
 		binary.LittleEndian.PutUint64(header[4:12], uint64(now))
 
@@ -1234,6 +1234,12 @@ func (s *Shard) performWrite(writeReq WriteRequest, config *CometConfig) error {
 			}
 		}
 	}
+	
+	// Flush if requested (based on entry count threshold)
+	if writeErr == nil && writeReq.ShouldFlush && s.writer != nil {
+		writeErr = s.writer.Flush()
+	}
+	
 	s.writeMu.Unlock()
 
 	return writeErr

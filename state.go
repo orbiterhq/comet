@@ -148,6 +148,13 @@ func (s *CometState) IncrementLastEntryNumber() int64 {
 	return atomic.AddInt64(&s.LastEntryNumber, 1)
 }
 
+// AllocateEntryNumbers atomically reserves a batch of entry numbers
+func (s *CometState) AllocateEntryNumbers(count int) int64 {
+	// Reserve 'count' entry numbers and return the first one
+	// This does a single atomic operation instead of count operations
+	return atomic.AddInt64(&s.LastEntryNumber, int64(count)) - int64(count) + 1
+}
+
 func (s *CometState) GetLastIndexUpdate() int64 {
 	return atomic.LoadInt64(&s.LastIndexUpdate)
 }
