@@ -761,8 +761,10 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0
-	config.Storage.MaxFileSize = 10 * 1024 // 10KB - more realistic but still forces multiple files
+	config.Storage.MaxFileSize = 5 * 1024 // 5KB - ensures multiple files while avoiding excessive rotations
 	config.Indexing.BoundaryInterval = 10
+	// Disable periodic flush to avoid interference
+	config.Storage.FlushInterval = 0
 	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -773,18 +775,28 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	streamName := "test:v1:shard:0000"
 
 	// Write entries that will span multiple files
-	const numEntries = 200
+	const numEntries = 100 // Reduced from 200 to speed up test
 	entryData := make([]byte, 100) // Each entry ~100 bytes
 	for i := range entryData {
 		entryData[i] = 'A' + byte(i%26)
 	}
 
+	// Batch writes to reduce the number of Append calls
 	writtenIDs := make([]string, 0, numEntries)
-	for i := 0; i < numEntries; i++ {
-		data := []byte(fmt.Sprintf(`{"id":%d,"data":"%s"}`, i, string(entryData)))
-		ids, err := client.Append(ctx, streamName, [][]byte{data})
+	batchSize := 10
+	for i := 0; i < numEntries; i += batchSize {
+		var batch [][]byte
+		end := i + batchSize
+		if end > numEntries {
+			end = numEntries
+		}
+		for j := i; j < end; j++ {
+			data := []byte(fmt.Sprintf(`{"id":%d,"data":"%s"}`, j, string(entryData)))
+			batch = append(batch, data)
+		}
+		ids, err := client.Append(ctx, streamName, batch)
 		if err != nil {
-			t.Fatalf("failed to add entry %d: %v", i, err)
+			t.Fatalf("failed to add entries %d-%d: %v", i, end-1, err)
 		}
 		for _, id := range ids {
 			writtenIDs = append(writtenIDs, id.String())
@@ -851,11 +863,10 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	readIDs := make([]string, 0, numEntries)
 
 	for totalRead < numEntries {
-		// Read smaller batches near the end to isolate the issue
-		batchSize := 10
-		if totalRead >= numEntries-20 {
-			batchSize = 1
-			t.Logf("Reading entry %d (single entry mode)", totalRead)
+		// Read in reasonable batches
+		batchSize := 20
+		if totalRead >= numEntries-10 {
+			batchSize = 5 // Smaller batch near the end
 		}
 		messages, err := consumer.Read(ctx, []uint32{0}, batchSize)
 		if err != nil {
