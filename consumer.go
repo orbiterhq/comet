@@ -275,25 +275,16 @@ func (c *Consumer) Close() error {
 
 	// Persist any pending consumer offsets before closing
 	// This is critical to prevent ACK loss when consumer restarts
-	// In multiprocess mode, we need to ensure all pending checkpoints complete
-	if c.client.config.Concurrency.IsMultiProcess() {
-		// Wait for any pending async checkpoints to complete
-		c.shards.Range(func(key, value any) bool {
-			shardID := key.(uint32)
-			if shard, err := c.client.getOrCreateShard(shardID); err == nil {
-				// Wait for the wait group which tracks async operations
-				shard.wg.Wait()
-			}
-			return true
-		})
-	}
+	// Note: We don't wait for shard background operations (like periodic flush)
+	// since those are managed by the client, not the consumer
 
 	// Now persist any remaining changes synchronously
 	c.shards.Range(func(key, value any) bool {
 		shardID := key.(uint32)
 		if shard, err := c.client.getOrCreateShard(shardID); err == nil {
+			// Clone index while holding lock
 			shard.mu.Lock()
-
+			
 			// Always persist on close, regardless of writesSinceCheckpoint
 			// This ensures any recent ACKs are saved
 			if IsDebug() && c.client.logger != nil {
@@ -303,13 +294,20 @@ func (c *Consumer) Close() error {
 					"offset", shard.index.ConsumerOffsets[c.group],
 					"writesSinceCheckpoint", shard.writesSinceCheckpoint)
 			}
+			
+			// Clone the index to avoid holding lock during persist
+			indexCopy := shard.cloneIndex()
+			shard.mu.Unlock()
 
-			if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+			// Persist without holding the lock
+			shard.indexMu.Lock()
+			err := shard.saveBinaryIndex(indexCopy)
+			shard.indexMu.Unlock()
+			
+			if err != nil && c.client.logger != nil {
 				c.client.logger.Warn("Failed to persist consumer offsets on close",
 					"error", err, "shard", shardID, "group", c.group)
 			}
-
-			shard.mu.Unlock()
 		}
 		return true
 	})
@@ -894,13 +892,13 @@ func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 			}
 		}
 
+		shard.mu.Unlock()
+
 		// Always persist consumer offsets immediately to prevent data loss
-		// The index lock in persistIndex() prevents contention in multiprocess mode
+		// Do this after releasing the shard lock to prevent deadlocks
 		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
 			c.client.logger.Warn("Failed to persist consumer offsets after batch ACK", "error", err)
 		}
-
-		shard.mu.Unlock()
 	}
 
 	return nil

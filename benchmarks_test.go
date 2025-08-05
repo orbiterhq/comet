@@ -19,6 +19,11 @@ import (
 // Write Benchmarks
 // ============================================================================
 
+// ShardStreamName generates a stream name for the given prefix, version, and shard ID
+func ShardStreamName(prefix, version string, shardID uint32) string {
+	return fmt.Sprintf("%s:%s:shard:%04d", prefix, version, shardID)
+}
+
 // BenchmarkWrite_SingleEntry measures single entry write performance
 func BenchmarkWrite_SingleEntry(b *testing.B) {
 	dir := b.TempDir()
@@ -1026,7 +1031,7 @@ func BenchmarkBinarySearchableIndex_DirectOperation(b *testing.B) {
 	// Benchmark lookups
 	for i := 0; i < b.N; i++ {
 		entryNum := int64(i % (numNodes * 100))
-		_, _ = bi.FindEntry(entryNum)
+		_, _ = bi.FindEntryPosition(entryNum)
 	}
 
 	b.ReportMetric(float64(numNodes), "index_nodes")

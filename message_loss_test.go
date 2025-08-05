@@ -38,6 +38,11 @@ func TestMessageLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	
+	// Ensure data is flushed before closing
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
 	client.Close()
 
 	// Test 1: Single consumer should read all messages

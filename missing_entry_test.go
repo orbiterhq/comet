@@ -38,6 +38,11 @@ func TestMissingEntry_FirstWrite(t *testing.T) {
 			t.Logf("Write %d: Got ID %d", i, ids[0].EntryNumber)
 		}
 	}
+	
+	// Ensure data is flushed before scanning
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	// Now scan and see what we can read
 	var readIDs []int64

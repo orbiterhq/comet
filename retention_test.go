@@ -49,7 +49,12 @@ func TestRetention_Basic(t *testing.T) {
 		t.Log("CometState not initialized (single-process mode)")
 	}
 	oldFile := shard.index.CurrentFile
-	err = shard.rotateFile(&client.metrics, &config)
+	shard.mu.Unlock()
+
+	// rotateFile() acquires its own lock, so we can't hold it
+	err = shard.rotateFile(&config)
+
+	shard.mu.Lock()
 	newFile := shard.index.CurrentFile
 	shard.mu.Unlock()
 	if err != nil {
@@ -160,7 +165,7 @@ func TestRetention_DeleteFiles(t *testing.T) {
 	// Force rotation
 	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
-	err = shard.rotateFile(&client.metrics, &config)
+	err = shard.rotateFile(&config)
 	shard.mu.Unlock()
 	if err != nil {
 		t.Fatalf("failed to rotate: %v", err)
@@ -319,6 +324,7 @@ func TestRetentionStats_NewestData(t *testing.T) {
 		t.Fatalf("failed to write more data: %v", err)
 	}
 
+	client.Sync(ctx)
 	stats2 := client.GetRetentionStats()
 
 	// NewestData should have advanced

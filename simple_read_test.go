@@ -41,6 +41,11 @@ func TestSimpleRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("Append result: %+v", result)
+	
+	// Ensure data is flushed before closing
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
 	client.Close()
 
 	// Try to read with exact stream

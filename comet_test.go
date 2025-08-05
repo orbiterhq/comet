@@ -757,11 +757,11 @@ func TestClient_LoggingOptimization(t *testing.T) {
 
 	// All entries should be skipped (too small for compression)
 	expectedTotal := uint64(400) // 100 iterations * 4 entries
-	if stats.TotalEntries != expectedTotal {
+	if stats.TotalEntries != int64(expectedTotal) {
 		t.Errorf("expected %d total entries, got %d", expectedTotal, stats.TotalEntries)
 	}
 
-	if stats.SkippedCompression != expectedTotal {
+	if stats.SkippedCompression != int64(expectedTotal) {
 		t.Errorf("expected %d skipped compressions, got %d", expectedTotal, stats.SkippedCompression)
 	}
 
@@ -791,6 +791,9 @@ func TestHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	
+	// Sleep longer to ensure uptime is measurable (at least 1 second)
+	time.Sleep(1100 * time.Millisecond)
 
 	// Test initial health - no data written
 	health := client.Health()
@@ -833,33 +836,31 @@ func TestHealth(t *testing.T) {
 	}
 
 	// Simulate errors by incrementing error counter
-	client.metrics.ErrorCount.Add(10)
-	client.metrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
+	client.metrics.WriteErrors.Add(10)
+	client.metrics.LastErrorNano.Store(time.Now().UnixNano())
 
 	// Check health with recent errors
 	health = client.Health()
-	if health.Status != "degraded" {
-		t.Errorf("Expected degraded status with recent errors, got %s", health.Status)
+	if health.Status != "unhealthy" {
+		t.Errorf("Expected unhealthy status with recent errors, got %s", health.Status)
 	}
-	if !strings.Contains(health.Details, "Recent errors detected") {
+	if !strings.Contains(health.Details, "Recent error") {
 		t.Errorf("Expected error details, got %s", health.Details)
 	}
 
-	// Test high error rate
-	client.metrics.TotalEntries.Store(100)
-	client.metrics.ErrorCount.Store(5) // 5% error rate
-
-	health = client.Health()
-	if health.Healthy {
-		t.Error("Expected unhealthy with high error rate")
+	// Test that writes are marked as not OK after errors
+	if health.WritesOK {
+		t.Error("Expected WritesOK to be false after write errors")
 	}
-	if !strings.Contains(health.Details, "High error rate") {
-		t.Errorf("Expected high error rate details, got %s", health.Details)
+	
+	// ErrorCount should match WriteErrors
+	if health.ErrorCount != 10 {
+		t.Errorf("Expected error count 10, got %d", health.ErrorCount)
 	}
 
 	// Test uptime
-	if !strings.Contains(health.Uptime, "s") {
-		t.Errorf("Expected uptime to contain seconds, got %s", health.Uptime)
+	if health.Uptime <= 0 {
+		t.Errorf("Expected positive uptime, got %d", health.Uptime)
 	}
 }
 

@@ -29,22 +29,22 @@ func TestAllInternalMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	client.Sync(ctx)
 	shard, _ := client.getOrCreateShard(0)
-	state := shard.state
 	// Test Version
-	version := atomic.LoadUint64(&state.Version)
+	version := atomic.LoadUint64(&shard.state.Version)
 	if version != CometStateVersion1 {
 		t.Errorf("Version = %d, want %d", version, CometStateVersion1)
 	}
 
 	// Test LastEntryNumber
-	lastEntryNumber := atomic.LoadInt64(&state.LastEntryNumber)
+	lastEntryNumber := atomic.LoadInt64(&shard.state.LastEntryNumber)
 	if lastEntryNumber < 0 {
 		t.Errorf("LastEntryNumber = %d, want >= 0", lastEntryNumber)
 	}
 
 	// Test ActiveFileIndex
-	activeFileIndex := atomic.LoadUint64(&state.ActiveFileIndex)
+	activeFileIndex := atomic.LoadUint64(&shard.state.ActiveFileIndex)
 	shard.mu.RLock()
 	expectedIndex := uint64(len(shard.index.Files) - 1)
 	shard.mu.RUnlock()
@@ -53,13 +53,13 @@ func TestAllInternalMetrics(t *testing.T) {
 	}
 
 	// Test FileSize
-	fileSize := atomic.LoadUint64(&state.FileSize)
+	fileSize := atomic.LoadUint64(&shard.state.FileSize)
 	if fileSize == 0 {
 		t.Error("FileSize = 0, want > 0")
 	}
 
 	// Test LastFileSequence
-	lastFileSeq := atomic.LoadUint64(&state.LastFileSequence)
+	lastFileSeq := atomic.LoadUint64(&shard.state.LastFileSequence)
 	// Note: LastFileSequence starts at 0 for the first file
 	t.Logf("LastFileSequence: %d (starts at 0 for first file)", lastFileSeq)
 

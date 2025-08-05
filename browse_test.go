@@ -44,6 +44,11 @@ func TestListRecent(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Ensure data is flushed before reading
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Test listing recent messages
 	t.Run("ListRecent10", func(t *testing.T) {
 		messages, err := client.ListRecent(ctx, streamName, 10)
@@ -129,6 +134,11 @@ func TestScanAll(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// Ensure data is flushed before reading
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// Test scanning all entries
@@ -253,6 +263,11 @@ func TestBrowseMultipleShards(t *testing.T) {
 		}
 	}
 
+	// Ensure data is flushed before reading
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Test ListRecent on each shard independently
 	for _, shard := range shards {
 		t.Run(fmt.Sprintf("ListRecent_%s", shard), func(t *testing.T) {
@@ -301,11 +316,16 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 				case <-stopWriting:
 					return
 				default:
-					count := writeCount.Add(1)
-					data := []byte(fmt.Sprintf(`{"writer": %d, "seq": %d}`, writerID, count))
-					_, err := client.Append(ctx, streamName, [][]byte{data})
+					seq := writeCount.Load()
+					data := []byte(fmt.Sprintf(`{"writer": %d, "seq": %d}`, writerID, seq))
+					ids, err := client.Append(ctx, streamName, [][]byte{data})
 					if err != nil {
 						t.Logf("Writer %d error: %v", writerID, err)
+					} else {
+						writeCount.Add(1)
+						if len(ids) != 1 {
+							t.Logf("Writer %d: expected 1 ID, got %d", writerID, len(ids))
+						}
 					}
 					time.Sleep(10 * time.Millisecond)
 				}
@@ -313,11 +333,16 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 
-	// Let writers run
-	time.Sleep(200 * time.Millisecond)
+	// Give writers time to write some data
+	time.Sleep(50 * time.Millisecond)
 
 	// Browse while writing
 	t.Run("ListRecentDuringWrites", func(t *testing.T) {
+		// Sync to ensure all writes are visible
+		if err := client.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+
 		messages, err := client.ListRecent(ctx, streamName, 10)
 		if err != nil {
 			t.Fatal(err)
@@ -340,8 +365,33 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 	close(stopWriting)
 	wg.Wait()
 
+	// Sync to ensure all writes are visible
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	totalWrites := writeCount.Load()
 	t.Logf("Total writes: %d", totalWrites)
+
+	// Debug: check how many entries are in the shard
+	length, err := client.Len(ctx, streamName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("Shard length: %d", length)
+	
+	// Also check via direct shard access
+	shard, err := client.getOrCreateShard(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shard.mu.RLock()
+	var directCount int64
+	for _, f := range shard.index.Files {
+		directCount += f.Entries
+	}
+	t.Logf("Direct shard count: %d entries in %d files", directCount, len(shard.index.Files))
+	shard.mu.RUnlock()
 
 	// Verify we can read all entries
 	var scanCount int64
@@ -356,6 +406,10 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 
 	if scanCount != totalWrites {
 		t.Errorf("Scanned %d entries, but wrote %d", scanCount, totalWrites)
+		// Try to understand the discrepancy
+		if scanCount < totalWrites {
+			t.Logf("Missing %d entries - they might be in unflushed buffers", totalWrites - scanCount)
+		}
 	}
 }
 
@@ -378,6 +432,11 @@ func TestBrowseDoesNotAffectConsumers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// Sync to ensure data is visible
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// Create consumer and read some messages

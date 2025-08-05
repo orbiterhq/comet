@@ -144,7 +144,12 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 	// Since processes own their shards exclusively, no retention lock needed
 	// Only the process that owns this shard will run retention on it
 
-	shard.mu.RLock()
+	// Try to acquire read lock, but don't block if there's contention
+	// This prevents deadlock with file rotation operations
+	if !shard.mu.TryRLock() {
+		// Skip this shard in this cleanup cycle to avoid blocking
+		return 0
+	}
 	files := make([]FileInfo, len(shard.index.Files))
 	copy(files, shard.index.Files)
 	currentFile := shard.index.CurrentFile
@@ -349,8 +354,8 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 		shard.index.BinaryIndex.Nodes = newNodes
 	}
 
-	// Persist the updated index while still holding the lock
-	shard.persistIndex()
+	// Clone the index for persisting
+	indexCopy := shard.cloneIndex()
 
 	// CRITICAL: Update mmap state timestamp to signal other processes that index changed
 	// This ensures other processes will reload their stale indexes before reading
@@ -360,6 +365,14 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 
 	// Now we can release the lock - all index modifications are complete
 	shard.mu.Unlock()
+
+	// Persist the index after releasing the lock
+	shard.indexMu.Lock()
+	err := shard.saveBinaryIndex(indexCopy)
+	shard.indexMu.Unlock()
+	if err != nil && c.logger != nil {
+		c.logger.Warn("Failed to persist index after retention cleanup", "error", err, "shard", shard.shardID)
+	}
 
 	// STEP 2: Now delete the physical files - readers can no longer find them in the index
 	deletedCount := 0

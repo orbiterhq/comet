@@ -102,11 +102,11 @@ func TestReadMetrics(t *testing.T) {
 	shard, _ := client.getOrCreateShard(0)
 
 	// Force persist index to make sure file info is saved
-	shard.mu.Lock()
 	if err := shard.persistIndex(); err != nil {
 		t.Logf("Warning: failed to persist index: %v", err)
 	}
 	// Reload to verify what was persisted
+	shard.mu.Lock()
 	shard.loadIndex()
 	shard.mu.Unlock()
 
@@ -231,6 +231,11 @@ func TestConsumerGroupMetrics(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// Sync before creating consumers
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	shard, _ := client.getOrCreateShard(0)
@@ -621,17 +626,12 @@ func TestIndexMetrics(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	// Force a checkpoint
-	client.Sync(ctx)
-
-	// Small delay to ensure async persistence completes
-	time.Sleep(50 * time.Millisecond)
-
 	// Force another sync to ensure binary index nodes are persisted
 	client.Sync(ctx)
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
+
 	// Check index metrics
 	lastIndexUpdate := atomic.LoadInt64(&state.LastIndexUpdate)
 	indexPersistCount := atomic.LoadUint64(&state.IndexPersistCount)
@@ -688,21 +688,31 @@ func TestWriteErrorMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	client.Sync(ctx)
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	// Force an error by closing the data file
+	// Force an error by closing the data file and making the directory read-only
 	shard.mu.Lock()
+	shardDir := filepath.Dir(shard.indexPath)
 	if shard.dataFile != nil {
 		shard.dataFile.Close()
 		shard.dataFile = nil
+		shard.writer = nil // Also clear the writer
 	}
 	shard.mu.Unlock()
+	
+	// Make the shard directory read-only to force write errors
+	if err := os.Chmod(shardDir, 0555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(shardDir, 0755) // Restore permissions
 
 	// Try to write - this should fail
 	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("should fail")})
 	if err == nil {
 		t.Fatal("Expected write to fail after closing data file")
 	}
+	client.Sync(ctx)
 
 	// Check error metrics
 	errorCount := atomic.LoadUint64(&state.ErrorCount)

@@ -37,6 +37,11 @@ func TestReaderBasicUsage(t *testing.T) {
 		}
 	}
 
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Get the shard
 	shard, err := client.getOrCreateShard(0)
 	if err != nil {
@@ -103,6 +108,11 @@ func TestReaderMemoryBounds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// Get the shard
@@ -175,6 +185,11 @@ func TestReaderCompressedData(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Get shard and test Reader can decompress
 	shard, err := client.getOrCreateShard(0)
 	if err != nil {
@@ -222,6 +237,11 @@ func TestReaderErrorHandling(t *testing.T) {
 	streamName := "test:v1:shard:0000"
 	_, err = client.Append(ctx, streamName, [][]byte{[]byte("test data")})
 	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -273,6 +293,10 @@ func TestReaderConcurrentAccess(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	shard, err := client.getOrCreateShard(0)
@@ -364,6 +388,11 @@ func TestReaderClose(t *testing.T) {
 
 	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -479,6 +508,12 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 			}
 		}(i)
 	}
+
+	// Give writers a head start to ensure some data is written
+	time.Sleep(100 * time.Millisecond)
+	
+	// Sync to ensure initial writes are visible
+	client.Sync(context.Background())
 
 	// Start readers that continuously read and validate data
 	readerWg := &sync.WaitGroup{}
@@ -600,6 +635,11 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 		}
 	}
 
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	consumer := NewConsumer(client, ConsumerOptions{Group: "test"})
 	defer consumer.Close()
 
@@ -668,6 +708,11 @@ func TestReaderMemoryPressure(t *testing.T) {
 		}
 	}
 
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Create multiple consumers reading from different shards concurrently
 	var wg sync.WaitGroup
 	for shard := uint32(0); shard < 4; shard++ {
@@ -733,6 +778,11 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 		}
 	}
 
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	consumer := NewConsumer(client, ConsumerOptions{Group: "delayed"})
 	defer consumer.Close()
 
@@ -764,6 +814,10 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 
 		// Force some file operations to potentially trigger remapping
 		client.Append(ctx, "test:v1:shard:0002", [][]byte{[]byte("trigger-remap")})
+
+		if err := client.Sync(ctx); err != nil {
+			t.Fatalf("Failed to flush: %v", err)
+		}
 
 		// Now access the delayed data - should not segfault
 		for _, dm := range delayedMessages {
@@ -817,6 +871,12 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to write: %v", err)
 		}
+	}
+
+	// Sync to ensure all data is written before reading
+	err = client.Sync(ctx)
+	if err != nil {
+		t.Fatalf("Failed to sync: %v", err)
 	}
 
 	// Read concurrently from multiple consumers

@@ -2313,7 +2313,7 @@ func TestRetryLogicVerification(t *testing.T) {
 	shard.mu.Lock()
 
 	// This should work (normal case)
-	err = shard.loadIndexWithRetry()
+	err = shard.loadIndexWithRecovery()
 	if err != nil {
 		shard.mu.Unlock()
 		t.Fatalf("loadIndexWithRetry failed on valid index: %v", err)

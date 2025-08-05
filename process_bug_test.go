@@ -132,6 +132,8 @@ func TestProcessOffsetPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	client.Sync(ctx)
+
 	consumer := NewConsumer(client, ConsumerOptions{Group: "offset-test"})
 	defer consumer.Close()
 

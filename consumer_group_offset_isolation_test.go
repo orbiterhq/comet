@@ -30,6 +30,12 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	
+	// Sync to ensure data is written before closing
+	err = client.Sync(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	client.Close()
 
 	// STEP 1: Consumer group-A processes first 3 messages

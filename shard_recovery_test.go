@@ -39,6 +39,7 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	client.Sync(ctx)
 	if len(ids) != 1 {
 		t.Fatalf("Expected 1 ID, got %d", len(ids))
 	}
@@ -215,6 +216,8 @@ func TestShardDirectoryDeletionWithFileRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	client.Sync(ctx)
+
 	if len(ids) != 1 {
 		t.Fatalf("Expected 1 ID, got %d", len(ids))
 	}
@@ -246,6 +249,7 @@ func TestShardDirectoryDeletionWithFileRotation(t *testing.T) {
 	t.Logf("Writing large data to trigger rotation and recovery...")
 	rotationIDs, writeErr := client.Append(ctx, streamName, [][]byte{largeData})
 
+	client.Sync(ctx)
 	// The rotation should either succeed (if recovery worked) or fail and then succeed on retry
 	if writeErr != nil {
 		t.Logf("Write failed during rotation as expected: %v", writeErr)
@@ -256,6 +260,7 @@ func TestShardDirectoryDeletionWithFileRotation(t *testing.T) {
 		if writeErr != nil {
 			t.Fatalf("Write should have succeeded after recovery, got: %v", writeErr)
 		}
+		client.Sync(ctx)
 	}
 
 	if len(rotationIDs) != 1 {
@@ -354,8 +359,19 @@ func TestLoadIndexWithRecovery(t *testing.T) {
 		t.Fatalf("loadIndexWithRecovery should succeed: %v", err)
 	}
 
+	// Debug: Check if loadIndex was called
+	t.Logf("After loadIndexWithRecovery, checking directory: %s", shardDir)
+
 	// Verify the directory was created
 	if _, err := os.Stat(shardDir); os.IsNotExist(err) {
 		t.Error("Directory should have been created")
+		// Let's check what exists
+		parentDir := filepath.Dir(shardDir)
+		if entries, readErr := os.ReadDir(parentDir); readErr == nil {
+			t.Logf("Parent directory contents:")
+			for _, e := range entries {
+				t.Logf("  - %s", e.Name())
+			}
+		}
 	}
 }

@@ -64,9 +64,8 @@ func TestRetentionRaceCondition(t *testing.T) {
 
 		// Force rotation very frequently to create many small files
 		if (i+1)%2 == 0 {
-			shard.mu.Lock()
-			err = shard.rotateFile(&client.metrics, &config)
-			shard.mu.Unlock()
+			// rotateFile() acquires its own lock, so we can't hold it
+			err = shard.rotateFile(&config)
 			if err != nil {
 				t.Fatalf("failed to rotate file: %v", err)
 			}
@@ -94,8 +93,8 @@ func TestRetentionRaceCondition(t *testing.T) {
 			filesMarked++
 		}
 	}
-	shard.persistIndex()
 	shard.mu.Unlock()
+	shard.persistIndex()
 
 	t.Logf("Marked %d files as old", filesMarked)
 
@@ -181,7 +180,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 			t.Logf("Index references %d deleted files, triggering index reload", missingFiles)
 			// Force the shard to reload its index to get consistent state
 			shard2.mu.Lock()
-			shard2.loadIndexWithRetry()
+			shard2.loadIndexWithRecovery()
 			shard2.mu.Unlock()
 
 			// Recount after reload

@@ -107,6 +107,10 @@ func TestProcessExclusiveShardOwnership(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to write from process 0: %v", err)
 		}
+		// Sync to ensure data is visible
+		if err := client0.Sync(ctx); err != nil {
+			t.Fatalf("failed to sync process 0: %v", err)
+		}
 		client0.Close()
 
 		// Write data with process 1
@@ -122,6 +126,10 @@ func TestProcessExclusiveShardOwnership(t *testing.T) {
 		_, err = client1.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("from process 1")})
 		if err != nil {
 			t.Fatalf("failed to write from process 1: %v", err)
+		}
+		// Sync to ensure data is visible
+		if err := client1.Sync(ctx); err != nil {
+			t.Fatalf("failed to sync process 1: %v", err)
 		}
 
 		// Now process 1 should be able to read from shard 0 (owned by process 0)

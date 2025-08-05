@@ -33,6 +33,11 @@ func TestConsumerReadNoInterference(t *testing.T) {
 		}
 	}
 
+	// Sync to ensure data is visible
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Verify initial state - should have 20 entries
 	count, err := client.Len(ctx, streamName)
 	if err != nil {
@@ -121,6 +126,11 @@ func TestConsumerReadMultiProcessMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// Sync to ensure data is visible
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// Verify initial count

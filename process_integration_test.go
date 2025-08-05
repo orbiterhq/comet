@@ -70,6 +70,11 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			// Sync to ensure data is visible to consumers
+			if err := client.Sync(ctx); err != nil {
+				t.Fatal(err)
+			}
+
 			// Verify all messages written
 			length, err := client.Len(ctx, tt.streamName)
 			if err != nil {
@@ -191,6 +196,11 @@ func TestProcessWithDynamicDataAddition(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Sync to ensure initial data is visible
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	consumer := NewConsumer(client, ConsumerOptions{Group: "dynamic-group"})
 	defer consumer.Close()
 
@@ -223,6 +233,10 @@ func TestProcessWithDynamicDataAddition(t *testing.T) {
 				_, err := client.Append(context.Background(), stream, additionalMessages)
 				if err != nil {
 					t.Errorf("Failed to add dynamic data: %v", err)
+				}
+				// Sync to ensure dynamic data is visible
+				if err := client.Sync(context.Background()); err != nil {
+					t.Errorf("Failed to sync dynamic data: %v", err)
 				}
 				t.Logf("Added %d dynamic messages", additionalCount)
 			}()

@@ -38,6 +38,11 @@ func TestProcessMultiProcessMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Sync to ensure data is visible
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Process with wildcards (like user was doing)
 	consumer := NewConsumer(client, ConsumerOptions{Group: "multi-test"})
 	defer consumer.Close()
@@ -182,6 +187,12 @@ func TestProcessLongRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	
+	// Sync to ensure data is visible to consumers
+	err = client.Sync(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	consumer := NewConsumer(client, ConsumerOptions{Group: "long-test"})
 	defer consumer.Close()
@@ -206,6 +217,7 @@ func TestProcessLongRunning(t *testing.T) {
 					newMessages = append(newMessages, []byte(fmt.Sprintf("additional-%d", i)))
 				}
 				client.Append(context.Background(), stream, newMessages)
+				client.Sync(context.Background()) // Ensure additional messages are visible
 				t.Logf("Added %d additional messages", additionalMessages)
 			}()
 		}

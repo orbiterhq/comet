@@ -134,6 +134,12 @@ func TestProcessACKPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	
+	// Sync to ensure data is visible
+	if err := client1.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	
 	client1.Close()
 
 	// Process first 10 messages

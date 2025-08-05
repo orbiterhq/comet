@@ -53,6 +53,11 @@ func TestSingleProcessACKPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Sync to ensure data is visible for reading
+	if err := client1.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Create consumer and ACK messages
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "test-group"})
 	msgs, err := consumer1.Read(ctx, []uint32{0}, 3)
@@ -120,6 +125,11 @@ func TestAckRangeValidation(t *testing.T) {
 		[]byte("msg-9"),
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sync to ensure data is visible
+	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
 

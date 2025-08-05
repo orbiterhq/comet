@@ -81,8 +81,8 @@ func TestMultiProcessRetention(t *testing.T) {
 			filesMarked++
 		}
 	}
-	shard.persistIndex()
 	shard.mu.Unlock()
+	shard.persistIndex()
 
 	t.Logf("Marked %d files as old", filesMarked)
 
@@ -169,11 +169,11 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	client.Sync(ctx)
 	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
-	shard.persistIndex()
 	initialFiles := len(shard.index.Files)
 	initialEntries := shard.index.CurrentEntryNumber
-	t.Logf("Initial state: %d files, %d entries", initialFiles, initialEntries)
 	shard.mu.Unlock()
+	shard.persistIndex()
+	t.Logf("Initial state: %d files, %d entries", initialFiles, initialEntries)
 
 	client.Close()
 

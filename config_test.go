@@ -10,8 +10,8 @@ func TestHighCompressionConfig(t *testing.T) {
 	config := HighCompressionConfig()
 
 	// Verify compression settings
-	if config.Compression.MinCompressSize != 256 {
-		t.Errorf("Expected MinCompressSize 256, got %d", config.Compression.MinCompressSize)
+	if config.Compression.MinCompressSize != 512 {
+		t.Errorf("Expected MinCompressSize 512, got %d", config.Compression.MinCompressSize)
 	}
 
 	// The config inherits other settings from DefaultCometConfig
@@ -25,11 +25,11 @@ func TestHighThroughputConfig(t *testing.T) {
 	config := HighThroughputConfig()
 
 	// Verify throughput optimizations
-	if config.Compression.MinCompressSize != 10240 {
-		t.Errorf("Expected MinCompressSize 10240, got %d", config.Compression.MinCompressSize)
+	if config.Compression.MinCompressSize != 1024*1024 {
+		t.Errorf("Expected MinCompressSize 1048576, got %d", config.Compression.MinCompressSize)
 	}
-	if config.Storage.CheckpointTime != 5000 {
-		t.Errorf("Expected checkpoint time 5000ms, got %d", config.Storage.CheckpointTime)
+	if config.Storage.CheckpointTime != 10000 {
+		t.Errorf("Expected checkpoint time 10000ms, got %d", config.Storage.CheckpointTime)
 	}
 }
 

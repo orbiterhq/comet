@@ -380,8 +380,8 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 				atomic.LoadUint64(&shard1.state.TotalWrites))
 		}
 
-		shard1.persistIndex()
 		shard1.mu.Unlock()
+		shard1.persistIndex()
 
 		t.Logf("Writer completed: wrote %d entries", len(ids))
 	})

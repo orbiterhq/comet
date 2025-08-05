@@ -201,6 +201,8 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			client.Sync(ctx)
+
 			// Get the shard
 			shard, err := client.getOrCreateShard(0)
 			if err != nil {
@@ -229,6 +231,11 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 			_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after deletion")})
 			if err != nil {
 				t.Fatalf("Write after directory deletion failed: %v", err)
+			}
+
+			// Sync to ensure data is written to disk
+			if err := client2.Sync(ctx); err != nil {
+				t.Fatal(err)
 			}
 
 			// Verify the shard directory was recreated
