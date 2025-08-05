@@ -72,6 +72,11 @@ type Consumer struct {
 	consumerID    int
 	consumerCount int
 
+	// Background ACK flushing
+	flushTicker *time.Ticker
+	flushDone   chan struct{}
+	flushWg     sync.WaitGroup
+
 	// Strings last
 	group string
 }
@@ -242,7 +247,7 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 	// No need to register/track active groups
 	// client.registerConsumerGroup(group)
 
-	return &Consumer{
+	consumer := &Consumer{
 		client:        client,
 		group:         group,
 		consumerID:    opts.ConsumerID,
@@ -250,12 +255,44 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 		highestRead:   make(map[uint32]int64),
 		memOffsets:    make(map[uint32]int64),
 		processedMsgs: make(map[MessageID]bool),
+		flushDone:     make(chan struct{}),
 		// readers sync.Map is zero-initialized and ready to use
+	}
+
+	// Start background ACK flusher for durability
+	consumer.flushTicker = time.NewTicker(100 * time.Millisecond)
+	consumer.flushWg.Add(1)
+	go consumer.backgroundFlush()
+
+	return consumer
+}
+
+// backgroundFlush periodically persists consumer offsets for durability
+func (c *Consumer) backgroundFlush() {
+	defer c.flushWg.Done()
+	for {
+		select {
+		case <-c.flushTicker.C:
+			// Flush any pending ACKs
+			ctx := context.Background()
+			if err := c.FlushACKs(ctx); err != nil && c.client.logger != nil {
+				c.client.logger.Warn("Background ACK flush failed", "error", err)
+			}
+		case <-c.flushDone:
+			return
+		}
 	}
 }
 
 // Close closes the consumer and releases all resources
 func (c *Consumer) Close() error {
+	// Stop background flusher first to prevent races
+	if c.flushTicker != nil {
+		c.flushTicker.Stop()
+		close(c.flushDone)
+		// Wait for background goroutine to exit
+		c.flushWg.Wait()
+	}
 
 	// Close all cached readers
 	c.readers.Range(func(key, value any) bool {
@@ -896,13 +933,9 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 			}
 			shard.mu.Unlock()
 
-			// Batch persistence: only persist if we've accumulated enough changes
-			// or enough time has passed since last persist
-			if shard.writesSinceCheckpoint >= 100 {
-				if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-					c.client.logger.Warn("Failed to persist consumer offsets after ACK batch", "error", err)
-				}
-			}
+			// Don't persist on every ACK - let the background flusher handle it
+			// This preserves read-after-write consistency via in-memory offsets
+			// while improving performance by batching disk writes
 		}
 	}
 
@@ -987,6 +1020,11 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	// Mark that we need a checkpoint
 	shard.writesSinceCheckpoint++
 	shard.mu.Unlock()
+
+	// Update in-memory offset as well
+	c.memOffsetsMu.Lock()
+	c.memOffsets[shardID] = entryNumber
+	c.memOffsetsMu.Unlock()
 
 	// Clear processed messages cache when offset is reset
 	// This allows messages to be re-processed after a reset
