@@ -95,7 +95,9 @@ func BenchmarkWrite_SmallBatch(b *testing.B) {
 // BenchmarkWrite_LargeBatch measures large batch performance (100 entries)
 func BenchmarkWrite_LargeBatch(b *testing.B) {
 	dir := b.TempDir()
-	client, err := NewClient(dir)
+	// Use HighThroughputConfig for large batches to avoid checkpoint on every batch
+	config := HighThroughputConfig()
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -133,7 +135,9 @@ func BenchmarkWrite_LargeBatch(b *testing.B) {
 // BenchmarkWrite_HugeBatch measures very large batch performance (1000 entries)
 func BenchmarkWrite_HugeBatch(b *testing.B) {
 	dir := b.TempDir()
-	client, err := NewClient(dir)
+	// Use HighThroughputConfig to avoid triggering checkpoint on 1000 entry batch
+	config := HighThroughputConfig()
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -174,7 +178,9 @@ func BenchmarkWrite_HugeBatch(b *testing.B) {
 // BenchmarkWrite_MegaBatch measures extremely large batch performance (10000 entries)
 func BenchmarkWrite_MegaBatch(b *testing.B) {
 	dir := b.TempDir()
-	client, err := NewClient(dir)
+	// Use HighThroughputConfig to handle 10k entry batch efficiently
+	config := HighThroughputConfig()
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -329,6 +335,10 @@ func BenchmarkWrite_CompressionComparison(b *testing.B) {
 			dir := b.TempDir()
 			config := DefaultCometConfig()
 			config.Compression.MinCompressSize = scenario.compressionSize
+			// For batch100, increase checkpoint threshold to avoid triggering
+			if scenario.batchSize >= 100 {
+				config.Storage.CheckpointEntries = 10000
+			}
 
 			client, err := NewClient(dir, config)
 			if err != nil {
@@ -562,7 +572,9 @@ func BenchmarkWrite_ConcurrentReadWrite(b *testing.B) {
 // BenchmarkConsumer_SequentialRead measures consumer sequential read performance
 func BenchmarkConsumer_SequentialRead(b *testing.B) {
 	dir := b.TempDir()
-	client, err := NewClient(dir)
+	// Use HighThroughputConfig since we're writing 1000 entries in setup
+	config := HighThroughputConfig()
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
