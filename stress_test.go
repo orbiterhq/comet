@@ -153,8 +153,8 @@ func testEmptyBatchACK(t *testing.T) {
 
 func testDuplicateACK(t *testing.T) {
 	dir := t.TempDir()
-	config := DeprecatedMultiProcessConfig(0, 2)
-	stream := "dup:v1:shard:0000"
+	config := DefaultCometConfig()
+	stream := "dup:v1:shard:0001"
 
 	// Write message
 	client, err := NewClient(dir, config)
@@ -178,7 +178,9 @@ func testDuplicateACK(t *testing.T) {
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "dup-test"})
 	defer consumer.Close()
 
-	msgs, err := consumer.Read(context.Background(), []uint32{1}, 1)
+	// Parse shard ID from stream name
+	shardID, _ := parseShardFromStream(stream)
+	msgs, err := consumer.Read(context.Background(), []uint32{shardID}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +222,8 @@ func testDuplicateACK(t *testing.T) {
 
 func testOutOfOrderACK(t *testing.T) {
 	dir := t.TempDir()
-	config := DeprecatedMultiProcessConfig(0, 2)
-	stream := "order:v1:shard:0000"
+	config := DefaultCometConfig()
+	stream := "order:v1:shard:0001"
 
 	// Write messages
 	client, err := NewClient(dir, config)
@@ -250,7 +252,9 @@ func testOutOfOrderACK(t *testing.T) {
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "order-test"})
 	defer consumer.Close()
 
-	msgs, err := consumer.Read(context.Background(), []uint32{1}, 10)
+	// Parse shard ID from stream name
+	shardID, _ := parseShardFromStream(stream)
+	msgs, err := consumer.Read(context.Background(), []uint32{shardID}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,9 +348,9 @@ func testRapidACKUnACK(t *testing.T) {
 
 func testACKDuringRotation(t *testing.T) {
 	dir := t.TempDir()
-	config := DeprecatedMultiProcessConfig(0, 2)
+	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 1024 // Very small files to force rotation
-	stream := "rotation:v1:shard:0000"
+	stream := "rotation:v1:shard:0001"
 
 	client, err := NewClient(dir, config)
 	if err != nil {
@@ -371,7 +375,9 @@ func testACKDuringRotation(t *testing.T) {
 		}
 
 		// Immediately read and ACK
-		msgs, err := consumer.Read(ctx, []uint32{0}, 1)
+		// Parse shard ID from stream name
+		shardID, _ := parseShardFromStream(stream)
+		msgs, err := consumer.Read(ctx, []uint32{shardID}, 1)
 		if err != nil {
 			t.Fatal(err)
 		}

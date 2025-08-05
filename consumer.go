@@ -869,7 +869,14 @@ func (c *Consumer) flushPendingAcks(ctx context.Context) error {
 	// Take a copy and clear pending ACKs
 	toFlush := make([]MessageID, len(c.pendingAcks))
 	copy(toFlush, c.pendingAcks)
-	c.pendingAcks = c.pendingAcks[:0] // Clear slice but keep capacity
+	
+	// Reset slice and release capacity if it's grown too large
+	if cap(c.pendingAcks) > 1000 {
+		c.pendingAcks = make([]MessageID, 0, 100) // Reset with reasonable capacity
+	} else {
+		c.pendingAcks = c.pendingAcks[:0] // Clear slice but keep capacity
+	}
+	
 	c.lastAckFlush = time.Now()
 	c.pendingAcksMu.Unlock()
 
