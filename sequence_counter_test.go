@@ -77,7 +77,7 @@ func TestSequenceCounterFileNaming(t *testing.T) {
 				}
 
 				t.Logf("First file name: %s", baseName)
-				
+
 				// Check if it's a sequence number (should be small) vs timestamp (large)
 				var seqNum uint64
 				seqNum, _ = parseUint64(numStr)
@@ -112,18 +112,18 @@ func TestSequenceCounterFileNaming(t *testing.T) {
 				numStr2 = strings.TrimSuffix(numStr2, ".comet")
 
 				t.Logf("Second file name: %s", baseName2)
-				
+
 				// Parse both sequence numbers
 				seq1, _ := parseUint64(strings.TrimSuffix(strings.TrimPrefix(baseName, "log-"), ".comet"))
 				seq2, _ := parseUint64(numStr2)
-				
+
 				// Second should be greater than first
 				if seq2 <= seq1 {
 					t.Errorf("Second file sequence (%d) should be greater than first (%d)", seq2, seq1)
 				}
-				
+
 				// Should be sequential
-				if seq2 != seq1 + 1 {
+				if seq2 != seq1+1 {
 					t.Errorf("Files should have sequential numbers: first=%d, second=%d", seq1, seq2)
 				}
 
@@ -200,7 +200,7 @@ func TestSequenceCounterVsTimestamp(t *testing.T) {
 		if int64(seqNum) >= timeBefore && int64(seqNum) <= timeAfter {
 			t.Errorf("File %s appears to use timestamp (%d) instead of sequence counter", baseName, seqNum)
 		}
-		
+
 		t.Logf("File %d: %s (sequence: %d)", i, baseName, seqNum)
 	}
 }

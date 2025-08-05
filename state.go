@@ -108,16 +108,7 @@ type CometState struct {
 	ProtectedByConsumers uint64   // 568-575: Files kept for consumers
 	_pad8                [64]byte // 576-639: Full line padding
 
-	// ======== Cache Lines 10-11 (640-767): Multi-process coordination ========
-	ProcessCount         uint64   // 640-647: Active processes
-	LastProcessHeartbeat int64    // 648-655: Latest heartbeat
-	ContentionCount      uint64   // 656-663: Lock contentions
-	LockWaitNanos        int64    // 664-671: Time waiting for locks
-	MMAPRemapCount       uint64   // 672-679: File remappings
-	FalseShareCount      uint64   // 680-687: Detected false sharing
-	_pad9                [80]byte // 688-767: Padding
-
-	// ======== Cache Lines 12 (768-831): Reader cache metrics ========
+	// ======== Cache Lines 10 (768-831): Reader cache metrics ========
 	ReaderFileMaps    uint64   // 768-775: Files mapped into memory
 	ReaderFileUnmaps  uint64   // 776-783: Files unmapped from memory
 	ReaderCacheBytes  uint64   // 784-791: Current cache memory usage

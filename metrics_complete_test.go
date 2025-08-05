@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -361,76 +360,6 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 	t.Logf("  Protected by consumers: %d", protectedByConsumers)
 }
 
-// TestMultiProcessDetailedMetrics tests detailed multi-process metrics
-func TestMultiProcessDetailedMetrics(t *testing.T) {
-	dir := t.TempDir()
-	config := DeprecatedMultiProcessConfig(0, 2)
-
-	// Create first client
-	client1, err := NewClient(dir, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client1.Close()
-
-	ctx := context.Background()
-
-	// Write with first client
-	_, err = client1.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("process1")})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	shard1, _ := client1.getOrCreateShard(0)
-
-	// Update process count and heartbeat
-	atomic.AddUint64(&shard1.state.ProcessCount, 1)
-	atomic.StoreInt64(&shard1.state.LastProcessHeartbeat, time.Now().UnixNano())
-
-	// Create second client
-	client2, err := NewClient(dir, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client2.Close()
-
-	// Simulate some contention
-	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(2) // Add 2 for each iteration (one for each goroutine)
-		go func() {
-			defer wg.Done()
-			client1.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("concurrent1")})
-		}()
-		go func() {
-			defer wg.Done()
-			client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("concurrent2")})
-		}()
-	}
-
-	// Wait for all goroutines to complete
-	wg.Wait()
-
-	// Check multi-process metrics
-	processCount := atomic.LoadUint64(&shard1.state.ProcessCount)
-	lastHeartbeat := atomic.LoadInt64(&shard1.state.LastProcessHeartbeat)
-	contentionCount := atomic.LoadUint64(&shard1.state.ContentionCount)
-	lockWaitNanos := atomic.LoadInt64(&shard1.state.LockWaitNanos)
-	falseShareCount := atomic.LoadUint64(&shard1.state.FalseShareCount)
-
-	t.Logf("Detailed multi-process metrics:")
-	t.Logf("  Process count: %d", processCount)
-	t.Logf("  Last heartbeat: %v", time.Unix(0, lastHeartbeat))
-	t.Logf("  Contention count: %d", contentionCount)
-	t.Logf("  Lock wait time: %d ns", lockWaitNanos)
-	t.Logf("  False share count: %d", falseShareCount)
-
-	// Verify all are accessible
-	if processCount > 0 {
-		t.Log("Process tracking is working")
-	}
-}
-
 // TestMetricsCompleteness verifies all 70 metrics are accessible
 func TestMetricsCompleteness(t *testing.T) {
 	dir := t.TempDir()
@@ -518,12 +447,6 @@ func TestMetricsCompleteness(t *testing.T) {
 		"OldestEntryNanos":     atomic.LoadInt64(&state.OldestEntryNanos),
 		"RetentionErrors":      atomic.LoadUint64(&state.RetentionErrors),
 		"ProtectedByConsumers": atomic.LoadUint64(&state.ProtectedByConsumers),
-		"ProcessCount":         atomic.LoadUint64(&state.ProcessCount),
-		"LastProcessHeartbeat": atomic.LoadInt64(&state.LastProcessHeartbeat),
-		"ContentionCount":      atomic.LoadUint64(&state.ContentionCount),
-		"LockWaitNanos":        atomic.LoadInt64(&state.LockWaitNanos),
-		"MMAPRemapCount":       atomic.LoadUint64(&state.MMAPRemapCount),
-		"FalseShareCount":      atomic.LoadUint64(&state.FalseShareCount),
 	}
 
 	// Count how many metrics we accessed

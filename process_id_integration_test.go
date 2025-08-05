@@ -39,7 +39,7 @@ func TestGetProcessID_MultiProcess(t *testing.T) {
 	shmFile := t.TempDir() + "/worker-slots-integration"
 	numProcesses := 4
 	maxSlots := runtime.NumCPU()
-	
+
 	// In CI environments, we might have fewer CPU cores than processes
 	expectedSlots := numProcesses
 	if maxSlots < numProcesses {
@@ -194,7 +194,7 @@ func verifyUniqueSlotAssignment(t *testing.T, shmFile string, expectedSlots int)
 	}
 
 	t.Logf("Successfully assigned %d unique process slots out of %d expected slots", occupiedSlots, expectedSlots)
-	
+
 	// Verify we got the expected number of slots
 	if occupiedSlots != expectedSlots {
 		t.Errorf("Expected %d occupied slots, got %d", expectedSlots, occupiedSlots)

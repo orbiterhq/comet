@@ -52,17 +52,17 @@ Unlike other embedded solutions, Comet enables **true multi-process coordination
 
 ## How Does Comet Compare?
 
-| Feature              | Comet                      | Kafka               | Redis Streams      | RocksDB            | Proof                                       |
-| -------------------- | -------------------------- | ------------------- | ------------------ | ------------------ | ------------------------------------------- |
-| **Write Latency**    | 1.7μs (33μs multi-process) | 1-5ms               | 50-100μs           | 50-200μs           | [Benchmarks](benchmarks_test.go)            |
-| **Multi-Process**    | ✅ Real OS processes       | ✅ Distributed      | ❌ Single process  | ⚠️ Mutex locks      | [Tests](multiprocess_test.go) |
-| **Resource Bounds**  | ✅ Time & size limits      | ⚠️ JVM heap          | ⚠️ Memory only      | ⚠️ Manual compact   | [Retention](retention.go)                   |
-| **Crash Recovery**   | ✅ Automatic               | ✅ Replicas         | ⚠️ AOF/RDB          | ✅ WAL             | [Recovery](state_recovery.go)               |
-| **Zero Copy Reads**  | ✅ mmap                    | ❌ Network          | ❌ Serialization   | ❌ Deserialization | [Reader](reader.go)                         |
-| **Storage Overhead** | ~12 bytes/entry            | ~50 bytes/entry     | ~20 bytes/entry    | ~30 bytes/entry    | [Format](ARCHITECTURE.md#wire-format)       |
-| **Sharding**         | ✅ Built-in                | ✅ Partitions       | ❌ Manual          | ❌ Manual          | [Client](client.go)                         |
-| **Compression**      | ✅ Optional zstd           | ✅ Multiple codecs  | ❌ None            | ✅ Multiple        | [Config](comet.go)                          |
-| **Embedded**         | ✅ Native                  | ❌ Requires cluster | ❌ Requires server | ✅ Native          | -                                           |
+| Feature              | Comet                      | Kafka               | Redis Streams      | RocksDB            | Proof                                 |
+| -------------------- | -------------------------- | ------------------- | ------------------ | ------------------ | ------------------------------------- |
+| **Write Latency**    | 1.7μs (33μs multi-process) | 1-5ms               | 50-100μs           | 50-200μs           | [Benchmarks](benchmarks_test.go)      |
+| **Multi-Process**    | ✅ Real OS processes       | ✅ Distributed      | ❌ Single process  | ⚠️ Mutex locks      | [Tests](multiprocess_test.go)         |
+| **Resource Bounds**  | ✅ Time & size limits      | ⚠️ JVM heap          | ⚠️ Memory only      | ⚠️ Manual compact   | [Retention](retention.go)             |
+| **Crash Recovery**   | ✅ Automatic               | ✅ Replicas         | ⚠️ AOF/RDB          | ✅ WAL             | [Recovery](state_recovery.go)         |
+| **Zero Copy Reads**  | ✅ mmap                    | ❌ Network          | ❌ Serialization   | ❌ Deserialization | [Reader](reader.go)                   |
+| **Storage Overhead** | ~12 bytes/entry            | ~50 bytes/entry     | ~20 bytes/entry    | ~30 bytes/entry    | [Format](ARCHITECTURE.md#wire-format) |
+| **Sharding**         | ✅ Built-in                | ✅ Partitions       | ❌ Manual          | ❌ Manual          | [Client](client.go)                   |
+| **Compression**      | ✅ Optional zstd           | ✅ Multiple codecs  | ❌ None            | ✅ Multiple        | [Config](comet.go)                    |
+| **Embedded**         | ✅ Native                  | ❌ Requires cluster | ❌ Requires server | ✅ Native          | -                                     |
 
 ## Quick Start
 
@@ -297,6 +297,7 @@ err = consumer.Process(ctx, handler,
 ## Performance notes
 
 **Durability Note**: Comet uses periodic checkpoints (default: every 1000 writes or 1 second) to persist metadata to disk. Between checkpoints, writes are acknowledged after being written to the OS page cache. This provides excellent performance while maintaining durability through:
+
 - OS page cache (typically synced within 30 seconds)
 - Explicit fsync on file rotation
 - Crash recovery that rebuilds state from data files

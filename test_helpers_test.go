@@ -12,12 +12,12 @@ func cleanupClient(t *testing.T, client *Client) {
 	if client == nil {
 		return
 	}
-	
+
 	// Close the client
 	if err := client.Close(); err != nil {
 		t.Logf("Warning: error closing client: %v", err)
 	}
-	
+
 	// Give background goroutines time to finish
 	// This is particularly important for the consumer's ACK flush goroutine
 	time.Sleep(10 * time.Millisecond)
@@ -29,12 +29,12 @@ func cleanupConsumer(t *testing.T, consumer *Consumer) {
 	if consumer == nil {
 		return
 	}
-	
+
 	// Close the consumer (this waits for the background flush goroutine)
 	if err := consumer.Close(); err != nil {
 		t.Logf("Warning: error closing consumer: %v", err)
 	}
-	
+
 	// Extra safety - give any remaining goroutines time to finish
 	time.Sleep(10 * time.Millisecond)
 }
@@ -42,20 +42,20 @@ func cleanupConsumer(t *testing.T, consumer *Consumer) {
 // withCleanup runs a test with automatic client/consumer cleanup
 func withCleanup(t *testing.T, f func(t *testing.T)) {
 	t.Helper()
-	
+
 	// Record initial goroutine count
 	initialGoroutines := runtime.NumGoroutine()
-	
+
 	// Run the test
 	f(t)
-	
+
 	// Give goroutines time to finish
 	time.Sleep(50 * time.Millisecond)
-	
+
 	// Check for goroutine leaks
 	finalGoroutines := runtime.NumGoroutine()
 	if finalGoroutines > initialGoroutines+2 { // Allow some tolerance
-		t.Logf("Warning: possible goroutine leak. Started with %d, ended with %d goroutines", 
+		t.Logf("Warning: possible goroutine leak. Started with %d, ended with %d goroutines",
 			initialGoroutines, finalGoroutines)
 	}
 }
