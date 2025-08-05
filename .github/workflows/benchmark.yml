@@ -36,10 +36,19 @@ jobs:
       - name: Run benchmarks (PR)
         run: |
           echo "Running benchmarks on PR branch..."
+          # First check if tests compile
+          echo "Checking if tests compile..."
+          go test -c ./... || { echo "Compilation failed"; exit 1; }
+          
           # benchtime=100ms: Run each benchmark for 100ms (enough for thousands of iterations)
           # count=3: Run each benchmark 3 times for statistical validity (required by benchstat)
           # 2>&1: Capture both stdout and stderr to see any errors
-          go test -bench="BenchmarkWrite_|BenchmarkConsumer_" -benchmem -benchtime=100ms -count=3 -run=^$ -timeout=5m > new.bench 2>&1
+          echo "Running benchmarks..."
+          if ! go test -bench="BenchmarkWrite_|BenchmarkConsumer_" -benchmem -benchtime=100ms -count=3 -run=^$ -timeout=5m > new.bench 2>&1; then
+            echo "Benchmark failed! Output:"
+            cat new.bench
+            exit 1
+          fi
           echo "Benchmark results:"
           cat new.bench
       - name: Checkout base branch

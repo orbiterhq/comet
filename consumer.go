@@ -339,6 +339,40 @@ func (c *Consumer) markMessageProcessed(messageID MessageID) {
 	c.processedMsgsMu.Lock()
 	defer c.processedMsgsMu.Unlock()
 	c.processedMsgs[messageID] = true
+	
+	// Cleanup old entries periodically to prevent unbounded growth
+	// Clean up every 1000 messages to amortize the cost
+	if len(c.processedMsgs) > 1000 && len(c.processedMsgs)%1000 == 0 {
+		c.cleanupProcessedMessages()
+	}
+}
+
+// cleanupProcessedMessages removes entries for messages that are below the current consumer offset
+// Must be called with processedMsgsMu held
+func (c *Consumer) cleanupProcessedMessages() {
+	// Get current consumer offsets for all shards
+	shardOffsets := make(map[uint32]int64)
+	
+	c.client.mu.RLock()
+	for shardID, shard := range c.client.shards {
+		shard.mu.RLock()
+		if offset, exists := shard.index.ConsumerOffsets[c.group]; exists {
+			shardOffsets[shardID] = offset
+		}
+		shard.mu.RUnlock()
+	}
+	c.client.mu.RUnlock()
+	
+	// Remove messages that are below the consumer offset
+	for msgID := range c.processedMsgs {
+		if offset, exists := shardOffsets[msgID.ShardID]; exists {
+			// Remove if this message is below the consumer offset
+			// We keep a buffer of 100 to handle edge cases with concurrent processing
+			if msgID.EntryNumber < offset-100 {
+				delete(c.processedMsgs, msgID)
+			}
+		}
+	}
 }
 
 // FilterDuplicates removes already-processed messages from a batch, returning only new messages
@@ -902,6 +936,14 @@ func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 			c.client.logger.Warn("Failed to persist consumer offsets after batch ACK", "error", err)
 		}
 	}
+
+	// Periodically clean up the processedMsgs map after batch ACKs
+	// This is a good time to do it since we just updated offsets
+	c.processedMsgsMu.Lock()
+	if len(c.processedMsgs) > 5000 {
+		c.cleanupProcessedMessages()
+	}
+	c.processedMsgsMu.Unlock()
 
 	return nil
 }
