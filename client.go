@@ -793,6 +793,21 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		}
 	}
 
+	// Initialize file metrics by calculating size of all existing files
+	if state := shard.state; state != nil && len(shard.index.Files) > 0 {
+		var totalBytes int64
+		for _, fileInfo := range shard.index.Files {
+			totalBytes += fileInfo.EndOffset - fileInfo.StartOffset
+		}
+		atomic.StoreUint64(&state.TotalFileBytes, uint64(totalBytes))
+		atomic.StoreUint64(&state.CurrentFiles, uint64(len(shard.index.Files)))
+
+		// If FilesCreated is 0 but we have files, initialize it
+		if atomic.LoadUint64(&state.FilesCreated) == 0 {
+			atomic.StoreUint64(&state.FilesCreated, uint64(len(shard.index.Files)))
+		}
+	}
+
 	// Open or create current data file
 	if err := shard.openDataFileWithConfig(shardDir, &c.config); err != nil {
 		return nil, err
@@ -1025,6 +1040,15 @@ func (s *Shard) buildWriteRequest(writeReq *WriteRequest, compressedEntries []Co
 		s.index.CurrentEntryNumber = entryNumbers[len(entryNumbers)-1] + 1
 		s.index.CurrentWriteOffset = writeOffset
 		s.writesSinceCheckpoint += len(compressedEntries)
+
+		// Update total file bytes metric
+		if state := s.state; state != nil {
+			var totalBytes int64
+			for _, fileInfo := range s.index.Files {
+				totalBytes += fileInfo.EndOffset - fileInfo.StartOffset
+			}
+			atomic.StoreUint64(&state.TotalFileBytes, uint64(totalBytes))
+		}
 	}
 
 	// Update current file's entry count and end offset
@@ -1355,7 +1379,13 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	if state := s.state; state != nil {
 		atomic.AddUint64(&state.FilesCreated, 1)
 		atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
-		atomic.StoreUint64(&state.TotalFileBytes, uint64(currentWriteOffset))
+
+		// Calculate total file size across all files
+		var totalBytes int64
+		for _, fileInfo := range s.index.Files {
+			totalBytes += fileInfo.EndOffset - fileInfo.StartOffset
+		}
+		atomic.StoreUint64(&state.TotalFileBytes, uint64(totalBytes))
 	}
 
 	// Release write lock ASAP

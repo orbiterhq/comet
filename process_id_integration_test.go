@@ -139,7 +139,7 @@ func runProcessIDWorker(t *testing.T, workerIDStr string) {
 	}
 
 	// Hold the slot briefly to test concurrent access
-	time.Sleep(2 * time.Second)
+	time.Sleep(200 * time.Millisecond)
 
 	t.Logf("Worker %d completed successfully with process ID %d", workerID, processID)
 }
@@ -318,7 +318,7 @@ func TestGetProcessID_FailureRecovery(t *testing.T) {
 	}
 
 	// Give it time to acquire a slot
-	time.Sleep(2 * time.Second)
+	time.Sleep(200 * time.Millisecond)
 
 	// Kill the process without cleanup
 	if err := cmd1.Process.Kill(); err != nil {
