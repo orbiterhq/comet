@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -288,7 +289,10 @@ func (c *Consumer) backgroundFlush() {
 			// Flush any pending ACKs
 			ctx := context.Background()
 			if err := c.FlushACKs(ctx); err != nil && c.client.logger != nil {
-				c.client.logger.Warn("Background ACK flush failed", "error", err)
+				// Only log if it's not a "directory not found" error (common in tests)
+				if !os.IsNotExist(err) && !strings.Contains(err.Error(), "no such file or directory") {
+					c.client.logger.Warn("Background ACK flush failed", "error", err)
+				}
 			}
 		case <-done:
 			return
@@ -981,7 +985,10 @@ func (c *Consumer) FlushACKs(ctx context.Context) error {
 		if err := shard.persistIndex(); err != nil {
 			lastErr = err
 			if c.client.logger != nil {
-				c.client.logger.Warn("Failed to flush consumer offsets", "shard", shardID, "error", err)
+				// Only log if it's not a "directory not found" error (common in tests)
+				if !os.IsNotExist(err) && !strings.Contains(err.Error(), "no such file or directory") {
+					c.client.logger.Warn("Failed to flush consumer offsets", "shard", shardID, "error", err)
+				}
 			}
 		}
 		return true
