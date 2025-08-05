@@ -862,6 +862,26 @@ type CompressedEntry struct {
 
 // preCompressEntries compresses entries outside of any locks to reduce contention
 func (s *Shard) preCompressEntries(entries [][]byte, config *CometConfig) []CompressedEntry {
+	// Fast path: check if any entry needs compression
+	needsCompression := false
+	if s.compressor != nil {
+		for _, data := range entries {
+			if len(data) >= config.Compression.MinCompressSize {
+				needsCompression = true
+				break
+			}
+		}
+	}
+
+	// If no compression needed, track skipped compressions and return nil to avoid allocation
+	if !needsCompression {
+		if state := s.state; state != nil {
+			atomic.AddUint64(&state.SkippedCompression, uint64(len(entries)))
+		}
+		return nil
+	}
+
+	// Slow path: at least one entry needs compression
 	compressed := make([]CompressedEntry, len(entries))
 
 	for i, data := range entries {
@@ -914,7 +934,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 	compressedEntries := s.preCompressEntries(entries, config)
 
 	// Prepare write request while holding lock
-	writeReq, criticalErr := s.prepareWriteRequest(compressedEntries, startTime, config, clientMetrics)
+	writeReq, criticalErr := s.prepareWriteRequest(entries, compressedEntries, startTime, config, clientMetrics)
 	if criticalErr != nil {
 		// Track failure metrics
 		if state := s.state; state != nil {
@@ -949,7 +969,7 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 }
 
 // prepareWriteRequest builds the write request under lock
-func (s *Shard) prepareWriteRequest(compressedEntries []CompressedEntry, startTime time.Time, config *CometConfig, clientMetrics *ClientMetrics) (WriteRequest, error) {
+func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []CompressedEntry, startTime time.Time, config *CometConfig, clientMetrics *ClientMetrics) (WriteRequest, error) {
 	var writeReq WriteRequest
 	var criticalErr error
 
@@ -958,21 +978,32 @@ func (s *Shard) prepareWriteRequest(compressedEntries []CompressedEntry, startTi
 
 	// Since processes own their shards exclusively, no need to check for changes
 
-	writeReq.IDs = make([]MessageID, len(compressedEntries))
+	numEntries := len(entries)
+	writeReq.IDs = make([]MessageID, numEntries)
 	now := startTime.UnixNano()
 
 	// Build write buffers from pre-compressed data (minimal work under lock)
-	writeReq.WriteBuffers = make([][]byte, 0, len(compressedEntries)*2) // headers + data
+	writeReq.WriteBuffers = make([][]byte, 0, numEntries*2) // headers + data
 
-	// Allocate header buffer for this specific request (no sharing)
-	requiredSize := len(compressedEntries) * headerSize
-	allHeaders := make([]byte, requiredSize)
+	// Allocate header buffer based on batch size
+	var allHeaders []byte
+	if numEntries <= 10000 {
+		// For batches up to 10000, allocate all headers at once
+		allHeaders = make([]byte, numEntries*headerSize)
+	}
+	// For very large batches (>10000), allHeaders remains nil and headers are allocated individually
 
 	// Pre-allocate entry numbers
-	entryNumbers := s.allocateEntryNumbers(len(compressedEntries), config)
+	entryNumbers := s.allocateEntryNumbers(numEntries, config)
 
-	// Build write request (unified for both single and multi-process modes)
-	s.buildWriteRequest(&writeReq, compressedEntries, entryNumbers, now, allHeaders)
+	// Build write request
+	if compressedEntries != nil {
+		// Use compressed entries
+		s.buildWriteRequest(&writeReq, compressedEntries, entryNumbers, now, allHeaders)
+	} else {
+		// No compression needed - build from original entries
+		s.buildWriteRequestDirect(&writeReq, entries, entryNumbers, now, allHeaders)
+	}
 
 	// Capture current write offset for performWrite to use (avoids race condition)
 	writeReq.CurrentWriteOffset = s.index.CurrentWriteOffset
@@ -1005,15 +1036,86 @@ func (s *Shard) allocateEntryNumbers(count int, config *CometConfig) []int64 {
 	return entryNumbers
 }
 
+// buildWriteRequestDirect builds the write request directly from uncompressed entries
+func (s *Shard) buildWriteRequestDirect(writeReq *WriteRequest, entries [][]byte, entryNumbers []int64, now int64, allHeaders []byte) {
+	writeOffset := s.index.CurrentWriteOffset
+	totalBytes := uint64(0)
+
+	for i, data := range entries {
+		var header []byte
+		if allHeaders != nil {
+			// Use pre-allocated header buffer
+			headerStart := i * headerSize
+			header = allHeaders[headerStart : headerStart+headerSize]
+		} else {
+			// Allocate header individually for very large batches
+			header = make([]byte, headerSize)
+		}
+		binary.LittleEndian.PutUint32(header[0:4], uint32(len(data)))
+		binary.LittleEndian.PutUint64(header[4:12], uint64(now))
+
+		// Add to vectored write batch
+		writeReq.WriteBuffers = append(writeReq.WriteBuffers, header, data)
+
+		// Track entry in binary index
+		entryNumber := entryNumbers[i]
+		entrySize := int64(headerSize + len(data))
+		totalBytes += uint64(len(data))
+
+		// Calculate position - simple since we use buffered writes
+		fileIndex := len(s.index.Files) - 1
+		byteOffset := writeOffset
+		position := EntryPosition{FileIndex: fileIndex, ByteOffset: byteOffset}
+
+		// Update binary index
+		if entryNumber%int64(s.index.BoundaryInterval) == 0 || entryNumber == 0 {
+			s.index.BinaryIndex.AddIndexNode(entryNumber, position)
+		}
+
+		// Generate ID for this entry
+		writeReq.IDs[i] = MessageID{EntryNumber: entryNumber, ShardID: s.shardID}
+
+		// Update tracking
+		writeOffset += entrySize
+	}
+
+	// Update metrics
+	if state := s.state; state != nil {
+		atomic.AddUint64(&state.TotalBytes, totalBytes)
+		atomic.StoreUint64(&state.WriteOffset, uint64(writeOffset))
+		atomic.StoreUint64(&state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
+	}
+
+	// Update index state
+	if len(entryNumbers) > 0 {
+		s.index.CurrentEntryNumber = entryNumbers[len(entryNumbers)-1] + 1
+		s.index.CurrentWriteOffset = writeOffset
+		s.writesSinceCheckpoint += len(entries)
+
+		// Update total file bytes metric
+		fileIndex := len(s.index.Files) - 1
+		if fileIndex >= 0 {
+			s.index.Files[fileIndex].Entries += int64(len(entries))
+			s.index.Files[fileIndex].EndOffset = writeOffset
+		}
+	}
+}
+
 // buildWriteRequest builds the write request (unified for both modes)
 func (s *Shard) buildWriteRequest(writeReq *WriteRequest, compressedEntries []CompressedEntry, entryNumbers []int64, now int64, allHeaders []byte) {
 
 	writeOffset := s.index.CurrentWriteOffset
 
 	for i, compressedEntry := range compressedEntries {
-		// Use slice of pre-allocated header buffer
-		headerStart := i * headerSize
-		header := allHeaders[headerStart : headerStart+headerSize]
+		var header []byte
+		if allHeaders != nil {
+			// Use pre-allocated header buffer
+			headerStart := i * headerSize
+			header = allHeaders[headerStart : headerStart+headerSize]
+		} else {
+			// Allocate header individually for very large batches
+			header = make([]byte, headerSize)
+		}
 		binary.LittleEndian.PutUint32(header[0:4], uint32(len(compressedEntry.Data)))
 		binary.LittleEndian.PutUint64(header[4:12], uint64(now))
 

@@ -1,0 +1,5 @@
+Write_SingleEntry-4                                        9.000 ± ∞ ¹    6.000 ± ∞ ¹        ~ (p=0.100 n=3) ²
+Write_SmallBatch-4                                         8.000 ± ∞ ¹    6.000 ± ∞ ¹        ~ (p=0.100 n=3) ²
+Write_LargeBatch-4                                         8.000 ± ∞ ¹    6.000 ± ∞ ¹        ~ (p=0.100 n=3) ²
+Write_HugeBatch-4                                          8.000 ± ∞ ¹    8.000 ± ∞ ¹        ~ (p=0.100 n=3) ²
+Write_MegaBatch-4                                          9.000 ± ∞ ¹   30.000 ± ∞ ¹        ~ (p=0.100 n=3) ²
