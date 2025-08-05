@@ -9,6 +9,7 @@ import (
 // TestConsumerProcessedMessagesCleanup verifies that the processedMsgs map doesn't grow unbounded
 func TestConsumerProcessedMessagesCleanup(t *testing.T) {
 	config := DefaultCometConfig()
+	config.Concurrency.ProcessCount = 0 // Ensure single-process mode
 	client, err := NewClient(t.TempDir(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -38,7 +39,8 @@ func TestConsumerProcessedMessagesCleanup(t *testing.T) {
 	// Process messages in batches
 	totalProcessed := 0
 	for totalProcessed < numMessages {
-		messages, err := consumer.Read(ctx, []uint32{0}, 100)
+		shardID, _ := parseShardFromStream(stream)
+		messages, err := consumer.Read(ctx, []uint32{shardID}, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -89,6 +91,7 @@ func TestConsumerProcessedMessagesCleanup(t *testing.T) {
 // TestConsumerProcessedMessagesWithReprocess verifies cleanup works correctly with reprocessing
 func TestConsumerProcessedMessagesWithReprocess(t *testing.T) {
 	config := DefaultCometConfig()
+	config.Concurrency.ProcessCount = 0 // Ensure single-process mode
 	client, err := NewClient(t.TempDir(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -98,13 +101,25 @@ func TestConsumerProcessedMessagesWithReprocess(t *testing.T) {
 	ctx := context.Background()
 	stream := "test:v1:shard:0000"
 
-	// Write messages
+	// Write messages in batches for efficiency
 	const numMessages = 100
+	batch := make([][]byte, 0, 10)
 	for i := 0; i < numMessages; i++ {
 		data := []byte(fmt.Sprintf("message-%d", i))
-		if _, err := client.Append(ctx, stream, [][]byte{data}); err != nil {
-			t.Fatal(err)
+		batch = append(batch, data)
+
+		// Write in batches of 10
+		if len(batch) == 10 || i == numMessages-1 {
+			if _, err := client.Append(ctx, stream, batch); err != nil {
+				t.Fatal(err)
+			}
+			batch = batch[:0]
 		}
+	}
+
+	// Ensure data is synced
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// Create first consumer and process half the messages
@@ -115,7 +130,8 @@ func TestConsumerProcessedMessagesWithReprocess(t *testing.T) {
 	})
 
 	// Read and ACK first 50 messages
-	messages, err := consumer1.Read(ctx, []uint32{0}, 50)
+	shardID, _ := parseShardFromStream(stream)
+	messages, err := consumer1.Read(ctx, []uint32{shardID}, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +162,7 @@ func TestConsumerProcessedMessagesWithReprocess(t *testing.T) {
 	defer consumer2.Close()
 
 	// Read remaining messages
-	messages, err = consumer2.Read(ctx, []uint32{0}, 100)
+	messages, err = consumer2.Read(ctx, []uint32{shardID}, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
