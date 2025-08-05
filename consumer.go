@@ -73,9 +73,9 @@ type Consumer struct {
 	consumerCount int
 
 	// Background ACK flushing
-	flushTicker *time.Ticker
-	flushDone   chan struct{}
-	flushWg     sync.WaitGroup
+	flushMu   sync.Mutex
+	flushDone chan struct{}
+	flushWg   sync.WaitGroup
 
 	// Strings last
 	group string
@@ -260,7 +260,6 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 	}
 
 	// Start background ACK flusher for durability
-	consumer.flushTicker = time.NewTicker(100 * time.Millisecond)
 	consumer.flushWg.Add(1)
 	go consumer.backgroundFlush()
 
@@ -270,15 +269,28 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 // backgroundFlush periodically persists consumer offsets for durability
 func (c *Consumer) backgroundFlush() {
 	defer c.flushWg.Done()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
+		// Check if we should exit
+		c.flushMu.Lock()
+		done := c.flushDone
+		c.flushMu.Unlock()
+
+		if done == nil {
+			return
+		}
+
 		select {
-		case <-c.flushTicker.C:
+		case <-ticker.C:
 			// Flush any pending ACKs
 			ctx := context.Background()
 			if err := c.FlushACKs(ctx); err != nil && c.client.logger != nil {
 				c.client.logger.Warn("Background ACK flush failed", "error", err)
 			}
-		case <-c.flushDone:
+		case <-done:
 			return
 		}
 	}
@@ -287,12 +299,21 @@ func (c *Consumer) backgroundFlush() {
 // Close closes the consumer and releases all resources
 func (c *Consumer) Close() error {
 	// Stop background flusher first to prevent races
-	if c.flushTicker != nil {
-		c.flushTicker.Stop()
-		close(c.flushDone)
-		// Wait for background goroutine to exit
-		c.flushWg.Wait()
+	c.flushMu.Lock()
+	if c.flushDone != nil {
+		// Only close channel if it hasn't been closed already
+		select {
+		case <-c.flushDone:
+			// Already closed
+		default:
+			close(c.flushDone)
+			c.flushDone = nil // Prevent double close
+		}
 	}
+	c.flushMu.Unlock()
+
+	// Wait for background goroutine to exit
+	c.flushWg.Wait()
 
 	// Close all cached readers
 	c.readers.Range(func(key, value any) bool {
