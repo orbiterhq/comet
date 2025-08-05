@@ -29,10 +29,6 @@ run = [
   "deadcode -test ./... | grep -v -E 'unreachable func: (High|Multi|Parse|With)' || true",
 ]
 
-[tasks."lint:state"]
-description = "Check for direct s.state access (should use atomic helpers)"
-run = ["go run ./tools/statelint/main.go -dir ."]
-
 [tasks.test]
 description = "Run tests with race detection"
 run = ["go test -v ./... -race -shuffle=on -timeout=1m -count=2"]

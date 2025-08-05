@@ -254,6 +254,7 @@ go test -tags=integration -run=TestGetProcessID -v
 ```
 
 The integration tests spawn actual OS processes to verify:
+
 - Unique process ID assignment
 - Process restart scenarios
 - Failure recovery (dead process slot reclamation)

@@ -284,7 +284,7 @@ func (c *Consumer) Close() error {
 		if shard, err := c.client.getOrCreateShard(shardID); err == nil {
 			// Clone index while holding lock
 			shard.mu.Lock()
-			
+
 			// Always persist on close, regardless of writesSinceCheckpoint
 			// This ensures any recent ACKs are saved
 			if IsDebug() && c.client.logger != nil {
@@ -294,7 +294,7 @@ func (c *Consumer) Close() error {
 					"offset", shard.index.ConsumerOffsets[c.group],
 					"writesSinceCheckpoint", shard.writesSinceCheckpoint)
 			}
-			
+
 			// Clone the index to avoid holding lock during persist
 			indexCopy := shard.cloneIndex()
 			shard.mu.Unlock()
@@ -303,7 +303,7 @@ func (c *Consumer) Close() error {
 			shard.indexMu.Lock()
 			err := shard.saveBinaryIndex(indexCopy)
 			shard.indexMu.Unlock()
-			
+
 			if err != nil && c.client.logger != nil {
 				c.client.logger.Warn("Failed to persist consumer offsets on close",
 					"error", err, "shard", shardID, "group", c.group)
@@ -489,7 +489,6 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 				continue
 			}
 		}
-
 
 		// Process batch with retries
 		var processErr error

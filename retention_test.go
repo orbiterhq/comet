@@ -15,7 +15,7 @@ func TestRetention_Basic(t *testing.T) {
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0 // Allow deletion of all old files
-	config.Storage.MaxFileSize = 1024 // Small file size to force rotation
+	config.Storage.MaxFileSize = 1024   // Small file size to force rotation
 
 	client, err := NewClient(dir, config)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestRetention_Basic(t *testing.T) {
 
 	// Wait a bit for async file close to complete
 	time.Sleep(100 * time.Millisecond)
-	
+
 	// Force retention cleanup
 	client.ForceRetentionCleanup()
 

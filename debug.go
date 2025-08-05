@@ -17,7 +17,6 @@ func init() {
 	}
 }
 
-
 // SetDebug allows runtime control of debug mode
 func SetDebug(enabled bool) {
 	if enabled {

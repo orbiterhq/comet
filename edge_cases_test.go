@@ -775,7 +775,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	streamName := "test:v1:shard:0000"
 
 	// Write entries that will span multiple files
-	const numEntries = 200 // Back to original value
+	const numEntries = 200         // Back to original value
 	entryData := make([]byte, 100) // Each entry ~100 bytes
 	for i := range entryData {
 		entryData[i] = 'A' + byte(i%26)

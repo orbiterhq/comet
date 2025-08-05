@@ -47,23 +47,30 @@ func TestMessageLoss(t *testing.T) {
 
 	// Test 1: Single consumer should read all messages
 	t.Logf("\n=== Test 1: Single Consumer ===")
-	client1, _ := NewClient(dir, config)
+	client1, err := NewClient(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client1.Close()
+	
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "test-single"})
+	defer consumer1.Close()
 
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel1()
 
 	var read1 []string
-	consumer1.Process(ctx1, func(ctx context.Context, msgs []StreamMessage) error {
+	err = consumer1.Process(ctx1, func(ctx context.Context, msgs []StreamMessage) error {
 		for _, msg := range msgs {
 			read1 = append(read1, string(msg.Data))
 			t.Logf("Single consumer read: %s (offset=%d)", string(msg.Data), msg.ID.EntryNumber)
 		}
 		return nil
 	}, WithStream("loss:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
-
-	consumer1.Close()
-	client1.Close()
+	
+	if err != nil && err != context.DeadlineExceeded {
+		t.Fatalf("Process error: %v", err)
+	}
 
 	t.Logf("Single consumer read %d messages", len(read1))
 	if len(read1) != 100 {
@@ -80,24 +87,32 @@ func TestMessageLoss(t *testing.T) {
 		go func(consumerID int) {
 			defer wg.Done()
 
-			client, _ := NewClient(dir, config)
+			client, err := NewClient(dir, config)
+			if err != nil {
+				t.Errorf("Consumer %d failed to create client: %v", consumerID, err)
+				return
+			}
+			defer client.Close()
+			
 			consumer := NewConsumer(client, ConsumerOptions{
 				Group: fmt.Sprintf("test-group-%d", consumerID),
 			})
+			defer consumer.Close()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 
-			consumer.Process(ctx, func(ctx context.Context, msgs []StreamMessage) error {
+			err = consumer.Process(ctx, func(ctx context.Context, msgs []StreamMessage) error {
 				for _, msg := range msgs {
 					messagesPerConsumer[consumerID] = append(messagesPerConsumer[consumerID], string(msg.Data))
 					t.Logf("Consumer %d read: %s (offset=%d)", consumerID, string(msg.Data), msg.ID.EntryNumber)
 				}
 				return nil
 			}, WithStream("loss:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
-
-			consumer.Close()
-			client.Close()
+			
+			if err != nil && err != context.DeadlineExceeded {
+				t.Errorf("Consumer %d process error: %v", consumerID, err)
+			}
 
 			t.Logf("Consumer %d finished, read %d messages", consumerID, len(messagesPerConsumer[consumerID]))
 		}(i)
@@ -132,13 +147,24 @@ func TestMessageLoss(t *testing.T) {
 		go func(consumerID int) {
 			defer wg.Done()
 
-			client, _ := NewClient(dir, config)
+			client, err := NewClient(dir, config)
+			if err != nil {
+				t.Errorf("Consumer %d failed to create client: %v", consumerID, err)
+				return
+			}
+			defer client.Close()
+			
 			consumer := NewConsumer(client, ConsumerOptions{
 				Group: "shared-group",
 			})
+			defer consumer.Close()
 
 			// Check offset before reading
-			shard, _ := client.getOrCreateShard(0)
+			shard, err := client.getOrCreateShard(0)
+			if err != nil {
+				t.Errorf("Consumer %d failed to get shard: %v", consumerID, err)
+				return
+			}
 			shard.mu.RLock()
 			startOffset := shard.index.ConsumerOffsets["shared-group"]
 			shard.mu.RUnlock()
@@ -148,7 +174,7 @@ func TestMessageLoss(t *testing.T) {
 			defer cancel()
 
 			localRead := 0
-			consumer.Process(ctx, func(ctx context.Context, msgs []StreamMessage) error {
+			err = consumer.Process(ctx, func(ctx context.Context, msgs []StreamMessage) error {
 				for _, msg := range msgs {
 					msgStr := string(msg.Data)
 					localRead++
@@ -163,14 +189,15 @@ func TestMessageLoss(t *testing.T) {
 				}
 				return nil
 			}, WithStream("loss:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
+			
+			if err != nil && err != context.DeadlineExceeded {
+				t.Errorf("Consumer %d process error: %v", consumerID, err)
+			}
 
 			// Check offset after reading
 			shard.mu.RLock()
 			endOffset := shard.index.ConsumerOffsets["shared-group"]
 			shard.mu.RUnlock()
-
-			consumer.Close()
-			client.Close()
 
 			t.Logf("Consumer %d finished: read %d messages, offset moved from %d to %d",
 				consumerID, localRead, startOffset, endOffset)

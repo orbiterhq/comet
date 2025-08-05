@@ -144,7 +144,7 @@ func TestRetentionConsumerProtection(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.MaxAge = 50 * time.Millisecond
 	config.Retention.CleanupInterval = 25 * time.Millisecond
-	config.Retention.MinFilesToKeep = 0 // Allow deletion of all old files
+	config.Retention.MinFilesToKeep = 0       // Allow deletion of all old files
 	config.Retention.ProtectUnconsumed = true // Enable consumer protection
 	config.Storage.MaxFileSize = 512
 

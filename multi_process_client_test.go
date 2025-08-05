@@ -99,7 +99,7 @@ func TestNewMultiProcessClient_FailureCleanup(t *testing.T) {
 
 	// First, create a config that will work for process ID acquisition
 	config := MultiProcessConfig(shmFile)
-	
+
 	// Try to create client with invalid data directory (read-only)
 	invalidDir := "/proc/invalid" // This should fail on most systems
 	client, err := NewMultiProcessClient(invalidDir, config)

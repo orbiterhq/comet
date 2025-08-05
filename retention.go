@@ -202,7 +202,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 		if c.config.Retention.MaxAge > 0 && age > c.config.Retention.MaxAge {
 			shouldDelete = true
 			if c.logger != nil {
-				c.logger.Debug("File marked for deletion by age", 
+				c.logger.Debug("File marked for deletion by age",
 					"file", filepath.Base(file.Path), "age", age, "maxAge", c.config.Retention.MaxAge)
 			}
 		}
@@ -221,7 +221,7 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 			if i == 0 || i == len(files)-1 {
 				shouldDelete = false
 				if c.logger != nil {
-					c.logger.Debug("Skipping file deletion due to active readers", 
+					c.logger.Debug("Skipping file deletion due to active readers",
 						"file", file.Path, "readerCount", readerCount, "fileIndex", i)
 				}
 			}
@@ -245,8 +245,8 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 		if shouldDelete && remainingFiles <= c.config.Retention.MinFilesToKeep {
 			shouldDelete = false
 			if c.logger != nil {
-				c.logger.Debug("File protected by MinFilesToKeep", 
-					"file", filepath.Base(file.Path), "remainingFiles", remainingFiles, 
+				c.logger.Debug("File protected by MinFilesToKeep",
+					"file", filepath.Base(file.Path), "remainingFiles", remainingFiles,
 					"minFilesToKeep", c.config.Retention.MinFilesToKeep)
 			}
 		}

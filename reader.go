@@ -32,17 +32,17 @@ func (a *AtomicSlice) Store(data []byte) {
 
 // ReaderConfig configures the bounded reader behavior
 type ReaderConfig struct {
-	MaxMappedFiles    int   // Maximum number of files to keep mapped (default: 10)
-	MaxMemoryBytes    int64 // Maximum memory to use for mapping (default: 1GB)
-	CleanupIntervalMs int   // How often to run cleanup in milliseconds (default: 5000)
+	MaxMappedFiles  int   // Maximum number of files to keep mapped (default: 10)
+	MaxMemoryBytes  int64 // Maximum memory to use for mapping (default: 1GB)
+	CleanupInterval int   // How often to run cleanup in milliseconds (default: 5000)
 }
 
 // DefaultReaderConfig returns the default configuration for Reader
 func DefaultReaderConfig() ReaderConfig {
 	return ReaderConfig{
-		MaxMappedFiles:    10,                     // Reasonable default
-		MaxMemoryBytes:    2 * 1024 * 1024 * 1024, // 2GB default (fixed: was 2MB)
-		CleanupIntervalMs: 5000,                   // 5 second cleanup
+		MaxMappedFiles:  10,                     // Reasonable default
+		MaxMemoryBytes:  2 * 1024 * 1024 * 1024, // 2GB default (fixed: was 2MB)
+		CleanupInterval: 5000,                   // 5 second cleanup
 	}
 }
 
@@ -71,8 +71,6 @@ func ReaderConfigForStorage(maxFileSize int64) ReaderConfig {
 	optimalMaxFiles := filesInMemory * 2
 	if optimalMaxFiles < 10 {
 		cfg.MaxMappedFiles = 10 // Minimum for good performance
-	} else if optimalMaxFiles > 100 {
-		cfg.MaxMappedFiles = 100 // Cap to avoid too many file descriptors
 	} else {
 		cfg.MaxMappedFiles = int(optimalMaxFiles)
 	}

@@ -174,9 +174,6 @@ func DefaultCometConfig() CometConfig {
 			Level:       "info",
 			EnableDebug: false,
 		},
-
-		// Reader defaults
-		Reader: DefaultReaderConfig(),
 	}
 
 	return cfg
@@ -244,8 +241,8 @@ func validateConfig(cfg *CometConfig) error {
 	if cfg.Reader.MaxMemoryBytes <= 0 {
 		cfg.Reader.MaxMemoryBytes = 2 * 1024 * 1024 * 1024
 	}
-	if cfg.Reader.CleanupIntervalMs <= 0 {
-		cfg.Reader.CleanupIntervalMs = 5000
+	if cfg.Reader.CleanupInterval <= 0 {
+		cfg.Reader.CleanupInterval = 5000
 	}
 
 	return nil
@@ -333,12 +330,12 @@ func MultiProcessConfig(sharedMemoryFile ...string) CometConfig {
 
 	// Create multi-process config
 	config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
-	
+
 	// Set the shared memory file
 	if len(sharedMemoryFile) > 0 && sharedMemoryFile[0] != "" {
 		config.Concurrency.SHMFile = sharedMemoryFile[0]
 	}
-	
+
 	return config
 }
 
@@ -497,6 +494,9 @@ func NewClient(dataDir string, config ...CometConfig) (*Client, error) {
 	cfg := DefaultCometConfig()
 	if len(config) > 0 {
 		cfg = config[0]
+	}
+	if cfg.Reader.MaxMemoryBytes == 0 && cfg.Reader.CleanupInterval == 0 && cfg.Reader.MaxMappedFiles == 0 {
+		cfg.Reader = ReaderConfigForStorage(cfg.Storage.MaxFileSize)
 	}
 	// Validate configuration
 	if err := validateConfig(&cfg); err != nil {
@@ -940,23 +940,6 @@ func (s *Shard) prepareWriteRequest(compressedEntries []CompressedEntry, startTi
 	return writeReq, criticalErr
 }
 
-// captureInitialState saves the current state for potential rollback
-func (s *Shard) captureInitialState() struct {
-	entryNumber           int64
-	writeOffset           int64
-	writesSinceCheckpoint int
-} {
-	return struct {
-		entryNumber           int64
-		writeOffset           int64
-		writesSinceCheckpoint int
-	}{
-		entryNumber:           s.index.CurrentEntryNumber,
-		writeOffset:           s.index.CurrentWriteOffset,
-		writesSinceCheckpoint: s.writesSinceCheckpoint,
-	}
-}
-
 // allocateEntryNumbers reserves entry numbers for the batch
 func (s *Shard) allocateEntryNumbers(count int, config *CometConfig) []int64 {
 	entryNumbers := make([]int64, count)
@@ -1277,40 +1260,6 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 	}
 }
 
-// scheduleAsyncCheckpoint schedules an asynchronous checkpoint
-func (s *Shard) scheduleAsyncCheckpoint(clientMetrics *ClientMetrics, config *CometConfig) {
-	// Clone index while holding lock
-	indexCopy := s.cloneIndex()
-	s.writesSinceCheckpoint = 0
-	s.lastCheckpoint = time.Now()
-
-	// Persist index in background to avoid blocking writes
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-
-		// For multi-process safety, use the separate index lock
-		// Serialize index writes to prevent file corruption
-		s.indexMu.Lock()
-		err := s.saveBinaryIndex(indexCopy)
-		s.indexMu.Unlock()
-
-		if err != nil {
-			if clientMetrics != nil {
-				clientMetrics.IndexPersistErrors.Add(1)
-				clientMetrics.ErrorCount.Add(1)
-			}
-			if s.logger != nil {
-				s.logger.Error("Failed to persist index",
-					"error", err,
-					"shard", s.shardID)
-			}
-		} else if clientMetrics != nil {
-			clientMetrics.CheckpointsWritten.Add(1)
-		}
-	}()
-}
-
 // rotateFile creates a new data file when size limit is reached
 func (s *Shard) rotateFile(config *CometConfig) error {
 	// Quick check without lock
@@ -1325,12 +1274,12 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 
 	// Prepare new file BEFORE taking locks
 	shardDir := filepath.Dir(s.indexPath)
-	
+
 	// Ensure shard directory exists (in case it was deleted)
 	if err := os.MkdirAll(shardDir, 0755); err != nil {
 		return fmt.Errorf("failed to create shard directory: %w", err)
 	}
-	
+
 	// Add small sleep to ensure unique timestamp
 	time.Sleep(time.Nanosecond)
 	newFilePath := filepath.Join(shardDir, fmt.Sprintf("log-%d.comet", time.Now().UnixNano()))
@@ -1342,7 +1291,7 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	// Take locks for the critical section
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	s.writeMu.Lock()
 
 	// Double-check rotation is still needed
@@ -2858,15 +2807,6 @@ func (s *Shard) loadIndexWithRecovery() error {
 func (s *Shard) initCometState() error {
 	// Always use mmap state for consistency and entry number persistence
 	return s.initCometStateMmap()
-}
-
-// initCometStateInMemory initializes in-memory state for single-process mode
-func (s *Shard) initCometStateInMemory() error {
-	s.state = &CometState{
-		Version:         CometStateVersion1,
-		LastEntryNumber: -1, // -1 indicates no entries written yet
-	}
-	return nil
 }
 
 // initCometStateMmap initializes memory-mapped state for multi-process mode
