@@ -35,7 +35,7 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 	streamName := "events:v1:shard:0000"
 
 	// Create initial data with multiple files
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 512 // Small files to create multiple
 
 	client, err := NewClientWithConfig(dir, config)
@@ -70,9 +70,7 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 	}
 
 	// Force persistence and close
-	shard.mu.Lock()
 	shard.persistIndex()
-	shard.mu.Unlock()
 	client.Sync(ctx)
 	client.Close()
 

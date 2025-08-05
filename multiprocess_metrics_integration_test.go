@@ -40,7 +40,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 	}
 
 	// Initialize the data directory
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 100 // Enable compression
 	config.Retention.MaxAge = 500 * time.Millisecond
 	config.Retention.MinFilesToKeep = 2
@@ -334,7 +334,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 // runMetricsWorker runs different worker roles to generate metrics
 func runMetricsWorker(t *testing.T, role string) {
 	dir := os.Getenv("COMET_METRICS_DIR")
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 100
 	config.Retention.MaxAge = 500 * time.Millisecond
 	config.Retention.MinFilesToKeep = 2

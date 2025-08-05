@@ -12,7 +12,7 @@ import (
 // TestSimpleRead tests basic read functionality
 func TestSimpleRead(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Enable debug
 	SetDebug(true)
@@ -41,7 +41,7 @@ func TestSimpleRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("Append result: %+v", result)
-	
+
 	// Ensure data is flushed before closing
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)

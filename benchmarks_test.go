@@ -1864,7 +1864,7 @@ func BenchmarkMultiWriter_NoLocking(b *testing.B) {
 // BenchmarkMultiProcessMode_MmapWriter benchmarks the memory-mapped writer performance
 func BenchmarkMultiProcessMode_MmapWriter(b *testing.B) {
 	dir := b.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create client which will use mmap writer in multi-process mode
 	client, err := NewClientWithConfig(dir, config)
@@ -1917,7 +1917,7 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 
 	b.Run("MultiProcess_AsyncCheckpoint", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig(0, 2)
+		config := DeprecatedMultiProcessConfig(0, 2)
 
 		// Temporarily disable mmap writer to test async checkpoint only
 		client, err := NewClientWithConfig(dir, config)
@@ -1942,7 +1942,7 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 
 	b.Run("MultiProcess_MmapWriter", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig(0, 2)
+		config := DeprecatedMultiProcessConfig(0, 2)
 
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
@@ -1970,7 +1970,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("SingleEntry", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig(0, 2)
+		config := DeprecatedMultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -1994,7 +1994,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("SmallBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig(0, 2)
+		config := DeprecatedMultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2024,7 +2024,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("LargeBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig(0, 2)
+		config := DeprecatedMultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2054,7 +2054,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("HugeBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig(0, 2)
+		config := DeprecatedMultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2084,7 +2084,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("MegaBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig(0, 2)
+		config := DeprecatedMultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2151,7 +2151,7 @@ func BenchmarkThroughputComparison(b *testing.B) {
 
 	b.Run("MultiProcess_Batch1000", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig(0, 2)
+		config := DeprecatedMultiProcessConfig(0, 2)
 		client, err := NewClientWithConfig(dir, config)
 		if err != nil {
 			b.Fatal(err)
@@ -2222,7 +2222,7 @@ func BenchmarkMultiProcess(b *testing.B) {
 			wg.Wait()
 
 			// Read final stats
-			config := MultiProcessConfig(0, numProcs)
+			config := DeprecatedMultiProcessConfig(0, numProcs)
 			client, err := NewClientWithConfig(dir, config)
 			if err != nil {
 				b.Fatal(err)
@@ -2249,7 +2249,7 @@ func runBenchmarkWorker(b *testing.B) {
 	fmt.Fprintf(os.Stderr, "Worker %d starting (total procs: %d, n: %d)\n", workerID, totalProcs, n)
 
 	// Each worker needs its own process ID and total process count
-	config := MultiProcessConfig(workerID, totalProcs)
+	config := DeprecatedMultiProcessConfig(workerID, totalProcs)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Worker %d failed to create client: %v\n", workerID, err)
@@ -2258,12 +2258,12 @@ func runBenchmarkWorker(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	
+
 	// In multi-process mode, each process writes to shards it owns
 	// Use multiple stream names to distribute across shards
 	streamNames := []string{
 		"bench:v1:user:0",
-		"bench:v1:user:1", 
+		"bench:v1:user:1",
 		"bench:v1:user:2",
 		"bench:v1:user:3",
 	}
@@ -2281,6 +2281,6 @@ func runBenchmarkWorker(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
-	
+
 	fmt.Fprintf(os.Stderr, "Worker %d completed %d iterations\n", workerID, n)
 }

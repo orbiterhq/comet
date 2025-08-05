@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -180,8 +181,8 @@ func DefaultCometConfig() CometConfig {
 	return cfg
 }
 
-// MultiProcessConfig creates a config for multi-process mode with N processes
-func MultiProcessConfig(processID, processCount int) CometConfig {
+// DeprecatedMultiProcessConfig creates a config for multi-process mode with N processes
+func DeprecatedMultiProcessConfig(processID, processCount int) CometConfig {
 	cfg := DefaultCometConfig()
 	cfg.Concurrency.ProcessID = processID
 	cfg.Concurrency.ProcessCount = processCount
@@ -319,18 +320,34 @@ type ClientMetrics struct {
 	RetentionSkipped atomic.Uint64
 }
 
+// MultiProcessConfig returns a configuration optimized for multi-process deployments.
+// It automatically acquires a unique process ID and configures the client for multi-process mode.
+// The process ID is automatically released when the client is closed.
+func MultiProcessConfig(sharedMemoryFile ...string) CometConfig {
+	// Acquire process ID
+	processID := GetProcessID(sharedMemoryFile...)
+	if processID < 0 {
+		panic("failed to acquire process ID - all slots may be taken")
+	}
+
+	// Create multi-process config
+	config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
+	return config
+}
+
 // Client implements a local file-based stream client with append-only storage
 type Client struct {
-	dataDir     string
-	config      CometConfig
-	logger      Logger
-	shards      map[uint32]*Shard
-	metrics     ClientMetrics
-	mu          sync.RWMutex
-	closed      bool
-	retentionWg sync.WaitGroup
-	stopCh      chan struct{}
-	startTime   time.Time
+	dataDir          string
+	config           CometConfig
+	logger           Logger
+	shards           map[uint32]*Shard
+	metrics          ClientMetrics
+	mu               sync.RWMutex
+	closed           bool
+	retentionWg      sync.WaitGroup
+	stopCh           chan struct{}
+	startTime        time.Time
+	sharedMemoryFile string // For automatic process ID cleanup
 }
 
 // isShardOwnedByProcess checks if this process owns a specific shard
@@ -431,8 +448,42 @@ type FileInfo struct {
 }
 
 // NewClient creates a new comet client for local file-based streaming with default config
-func NewClient(dataDir string) (*Client, error) {
+func NewClient(dataDir string, cfg ...CometConfig) (*Client, error) {
+	if len(cfg) > 0 {
+		return NewClientWithConfig(dataDir, cfg[0])
+	}
 	return NewClientWithConfig(dataDir, DefaultCometConfig())
+}
+
+// NewMultiProcessClient creates a new comet client with automatic multi-process coordination.
+// It uses the default shared memory file for process ID coordination.
+// The process ID is automatically released when the client is closed.
+//
+// Example usage:
+//
+//	client, err := comet.NewMultiProcessClient("./data")
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer client.Close() // Automatically releases process ID
+func NewMultiProcessClient(dataDir string, cfg ...CometConfig) (*Client, error) {
+	mpCfg := MultiProcessConfig()
+	config := mpCfg
+	if len(cfg) > 0 {
+		config = cfg[0]
+		config.Concurrency = mpCfg.Concurrency
+	}
+	client, err := NewClientWithConfig(dataDir, config)
+	if err != nil {
+		// Release process ID on failure
+		ReleaseProcessID()
+		return nil, err
+	}
+
+	// Mark that this client should auto-release the process ID
+	client.sharedMemoryFile = "" // Empty means use default file
+
+	return client, nil
 }
 
 // NewClientWithConfig creates a new comet client with custom configuration
@@ -665,7 +716,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	}
 
 	// Initialize unified state (memory-mapped in multi-process mode, in-memory otherwise)
-	if err := shard.initCometState(c.config.Concurrency.IsMultiProcess()); err != nil {
+	if err := shard.initCometState(); err != nil {
 		return nil, fmt.Errorf("failed to initialize unified state: %w", err)
 	}
 
@@ -743,7 +794,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		c.logger.Debug("Created new shard",
 			"shardID", shardID,
 			"path", shardDir,
-			"multiProcess", c.config.Concurrency.IsMultiProcess())
+		)
 	}
 
 	return shard, nil
@@ -1360,7 +1411,7 @@ func (s *Shard) updateMmapState() {
 		atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
 		// Update FileSize to the current file's end offset
 		currentFile := &s.index.Files[len(s.index.Files)-1]
-		atomic.StoreUint64(&state.FileSize, uint64(currentFile.EndOffset - currentFile.StartOffset))
+		atomic.StoreUint64(&state.FileSize, uint64(currentFile.EndOffset-currentFile.StartOffset))
 		atomic.StoreUint64(&state.ActiveFileIndex, uint64(len(s.index.Files)-1))
 	}
 
@@ -1637,13 +1688,13 @@ func (s *Shard) persistIndex() error {
 		}
 		return fmt.Errorf("failed to persist index: %w", err)
 	}
-	
+
 	// Update mmap timestamp to signal index change to other processes
 	if s.state != nil {
 		s.state.SetLastIndexUpdate(time.Now().UnixNano())
 		atomic.AddUint64(&s.state.IndexPersistCount, 1)
 	}
-	
+
 	return nil
 }
 
@@ -1949,6 +2000,14 @@ func (c *Client) Close() error {
 			shard.stateData = nil
 			shard.state = nil
 		}
+	}
+
+	// Release process ID if this client was created with NewMultiProcessClient
+	if c.sharedMemoryFile != "" {
+		ReleaseProcessID(c.sharedMemoryFile)
+	} else if c.config.Concurrency.IsMultiProcess() {
+		// Check if this might be an auto-managed process ID
+		ReleaseProcessID()
 	}
 
 	return nil
@@ -2543,11 +2602,11 @@ func (s *Shard) doRebuildIndex(config CometConfig, shardDir string) error {
 			// Adjust offsets to be global instead of file-relative
 			fileInfo.StartOffset = totalBytes
 			fileInfo.EndOffset = totalBytes + (fileInfo.EndOffset - 0) // EndOffset from scan is file size
-			
+
 			newIndex.Files = append(newIndex.Files, fileInfo)
 			totalEntries += fileInfo.Entries
 			totalBytes = fileInfo.EndOffset
-			
+
 			// Add binary index nodes for this file
 			for i := int64(0); i < fileInfo.Entries; i++ {
 				entryNum := fileInfo.StartEntry + i
@@ -2615,10 +2674,10 @@ func scanDataFile(filePath string, startEntry, startOffset int64, boundaryInterv
 	if err != nil {
 		return FileInfo{}, err
 	}
-	
+
 	// Debug logging
 	if IsDebug() {
-		fmt.Printf("scanDataFile: scanning %s (size=%d, startEntry=%d, startOffset=%d)\n", 
+		fmt.Printf("scanDataFile: scanning %s (size=%d, startEntry=%d, startOffset=%d)\n",
 			filePath, stat.Size(), startEntry, startOffset)
 	}
 
@@ -2679,7 +2738,7 @@ func (s *Shard) loadIndexWithRecovery() error {
 	if err := os.MkdirAll(shardDir, 0755); err != nil {
 		return fmt.Errorf("failed to create shard directory: %w", err)
 	}
-	
+
 	// First try to load normally
 	err := s.loadIndex()
 	if err == nil {
@@ -2736,7 +2795,7 @@ func (s *Shard) loadIndexWithRecovery() error {
 }
 
 // initCometState initializes the unified state structure
-func (s *Shard) initCometState(isMultiProcess bool) error {
+func (s *Shard) initCometState() error {
 	// Always use mmap state for consistency and entry number persistence
 	return s.initCometStateMmap()
 }

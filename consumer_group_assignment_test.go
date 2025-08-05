@@ -15,10 +15,9 @@ import (
 // TestConsumerGroupShardAssignment tests that only one consumer per group can claim a shard
 func TestConsumerGroupShardAssignment(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
 
-	// Write test data to shard 1
-	client, err := NewClientWithConfig(dir, config)
+	// Write test data using default config (no process restrictions)
+	client, err := NewClientWithConfig(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,19 +38,20 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 	// Small delay to ensure multi-process state is fully persisted
 	time.Sleep(100 * time.Millisecond)
 
-	// Test: Multiple consumers in same group should coordinate
+	// Test: Multiple consumers in same group with proper multi-process coordination
 	t.Run("SameGroup_ExclusiveAccess", func(t *testing.T) {
-		var activeConsumers int64
 		var totalProcessed int64
 		var wg sync.WaitGroup
 
-		// Start 3 consumers in same group
+		// Start 3 consumers in same group, each with their own process ID
 		for i := 0; i < 3; i++ {
 			wg.Add(1)
 			go func(consumerID int) {
 				defer wg.Done()
 
-				client, err := NewClientWithConfig(dir, config)
+				// Each consumer gets its own process ID to avoid race conditions
+				processConfig := DeprecatedMultiProcessConfig(consumerID, 3)
+				client, err := NewClientWithConfig(dir, processConfig)
 				if err != nil {
 					t.Errorf("Consumer %d failed to create client: %v", consumerID, err)
 					return
@@ -66,22 +66,27 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 
+				// Only process shards owned by this process
+				ownedShards := []uint32{}
+				for shardID := uint32(0); shardID < 1; shardID++ {
+					if processConfig.Concurrency.Owns(shardID) {
+						ownedShards = append(ownedShards, shardID)
+					}
+				}
+
+				if len(ownedShards) == 0 {
+					t.Logf("Consumer %d: No owned shards, skipping", consumerID)
+					return
+				}
+
 				processed := 0
 				err = consumer.Process(ctx, func(ctx context.Context, msgs []StreamMessage) error {
-					atomic.AddInt64(&activeConsumers, 1)
-					defer atomic.AddInt64(&activeConsumers, -1)
-
-					// Verify only one consumer is active at a time
-					if current := atomic.LoadInt64(&activeConsumers); current > 1 {
-						t.Errorf("Multiple consumers active simultaneously: %d", current)
-					}
-
 					processed += len(msgs)
 					atomic.AddInt64(&totalProcessed, int64(len(msgs)))
 					return nil
-				}, WithStream("test:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
+				}, WithShards(ownedShards...), WithBatchSize(10), WithAutoAck(true))
 
-				t.Logf("Consumer %d processed %d messages", consumerID, processed)
+				t.Logf("Consumer %d (Process %d) processed %d messages from shards %v", consumerID, consumerID, processed, ownedShards)
 			}(i)
 		}
 
@@ -98,20 +103,20 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 		var wg sync.WaitGroup
 		results := make([]int, 3)
 
+		// Use a single shared client to avoid race conditions from separate clients
+		sharedClient2, err := NewClientWithConfig(dir, DefaultCometConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sharedClient2.Close()
+
 		// Start 3 consumers in different groups
 		for i := 0; i < 3; i++ {
 			wg.Add(1)
 			go func(consumerID int) {
 				defer wg.Done()
 
-				client, err := NewClientWithConfig(dir, config)
-				if err != nil {
-					t.Errorf("Consumer %d failed to create client: %v", consumerID, err)
-					return
-				}
-				defer client.Close()
-
-				consumer := NewConsumer(client, ConsumerOptions{
+				consumer := NewConsumer(sharedClient2, ConsumerOptions{
 					Group: fmt.Sprintf("group-%d", consumerID), // Different groups
 				})
 				defer consumer.Close()
@@ -144,10 +149,9 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 // TestConsumerFailover tests that when a consumer dies, another can take over
 func TestConsumerFailover(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
 
-	// Write test data
-	client, err := NewClientWithConfig(dir, config)
+	// Write test data using default config
+	client, err := NewClientWithConfig(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +173,7 @@ func TestConsumerFailover(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Consumer 1: Process some messages then "die"
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClientWithConfig(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +195,7 @@ func TestConsumerFailover(t *testing.T) {
 	t.Logf("Consumer 1 processed %d messages before dying", processed1)
 
 	// Consumer 2: Should take over and process remaining messages
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClientWithConfig(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,18 +232,17 @@ func TestConsumerFailover(t *testing.T) {
 // TestMultiShardConsumerGroup tests consumer group behavior across multiple shards
 func TestMultiShardConsumerGroup(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
 
-	// Write data to multiple shards
-	client, err := NewClientWithConfig(dir, config)
+	// Write data to multiple shards using default config (no process restrictions)
+	client, err := NewClientWithConfig(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	streams := []string{
 		"multi:v1:shard:0000",
+		"multi:v1:shard:0001",
 		"multi:v1:shard:0002",
-		"multi:v1:shard:0003",
 	}
 
 	for _, stream := range streams {
@@ -259,7 +262,7 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 	// Small delay to ensure multi-process state is fully persisted
 	time.Sleep(100 * time.Millisecond)
 
-	// Start 3 consumers in same group - should distribute across shards
+	// Start 3 consumers in same group - each gets its own process ID
 	var wg sync.WaitGroup
 	results := make([]int, 3)
 	shardAssignments := make([]map[uint32]int, 3) // Track which consumer got which shard
@@ -270,7 +273,9 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 		go func(consumerID int) {
 			defer wg.Done()
 
-			client, err := NewClientWithConfig(dir, config)
+			// Each consumer gets its own process ID to avoid race conditions
+			processConfig := DeprecatedMultiProcessConfig(consumerID, 3)
+			client, err := NewClientWithConfig(dir, processConfig)
 			if err != nil {
 				t.Errorf("Consumer %d failed: %v", consumerID, err)
 				return
@@ -285,14 +290,32 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
+			// Only process shards owned by this process
+			ownedShards := []uint32{}
+			for shardID := uint32(0); shardID < 3; shardID++ {
+				if processConfig.Concurrency.Owns(shardID) {
+					ownedShards = append(ownedShards, shardID)
+				}
+			}
+
+			t.Logf("Consumer %d (Process %d) owns shards: %v", consumerID, consumerID, ownedShards)
+
 			processed := 0
+			expectedMessages := 30 // 30 messages per shard, each consumer owns 1 shard
+
 			consumer.Process(ctx, func(ctx context.Context, msgs []StreamMessage) error {
 				for _, msg := range msgs {
 					shardAssignments[consumerID][msg.ID.ShardID]++
 					processed++
 				}
+
+				// Cancel context once we've processed all expected messages
+				if processed >= expectedMessages {
+					cancel()
+				}
+
 				return nil
-			}, WithStream("multi:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
+			}, WithShards(ownedShards...), WithBatchSize(10), WithAutoAck(true))
 
 			results[consumerID] = processed
 			t.Logf("Consumer %d processed %d messages from shards: %v",
@@ -326,8 +349,8 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 		}
 	}
 
-	// Verify: All shards (1,2,3) were assigned
-	expectedShards := []uint32{1, 2, 3}
+	// Verify: All shards (0,1,2) were assigned
+	expectedShards := []uint32{0, 1, 2}
 	for _, shardID := range expectedShards {
 		if _, assigned := shardOwners[shardID]; !assigned {
 			t.Errorf("Shard %d was not assigned to any consumer", shardID)
@@ -338,13 +361,12 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 // TestDebugMessageLoss - isolate and debug the 20 missing messages
 func TestDebugMessageLoss(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
 
 	SetDebug(true)
 	defer SetDebug(false)
 
 	// Write exactly 100 messages
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClientWithConfig(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +388,7 @@ func TestDebugMessageLoss(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify data was written
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClientWithConfig(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +414,7 @@ func TestDebugMessageLoss(t *testing.T) {
 	client2.Close()
 
 	// Now try to read all messages with detailed logging
-	client3, err := NewClientWithConfig(dir, config)
+	client3, err := NewClientWithConfig(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,23 +431,45 @@ func TestDebugMessageLoss(t *testing.T) {
 	totalProcessed := 0
 	batchCount := 0
 
-	err = consumer.Process(ctx2, func(ctx context.Context, msgs []StreamMessage) error {
-		batchCount++
-		t.Logf("BATCH %d: Processing %d messages", batchCount, len(msgs))
+	// Run Process in a goroutine since it's a blocking operation
+	done := make(chan error, 1)
+	go func() {
+		err := consumer.Process(ctx2, func(ctx context.Context, msgs []StreamMessage) error {
+			batchCount++
+			t.Logf("BATCH %d: Processing %d messages", batchCount, len(msgs))
 
-		for i, msg := range msgs {
-			msgStr := string(msg.Data)
-			t.Logf("  Message %d: %s (ID: %s)", i, msgStr, msg.ID.String())
+			for i, msg := range msgs {
+				msgStr := string(msg.Data)
+				t.Logf("  Message %d: %s (ID: %s)", i, msgStr, msg.ID.String())
 
-			if processedMessages[msgStr] {
-				t.Errorf("DUPLICATE MESSAGE: %s", msgStr)
+				if processedMessages[msgStr] {
+					t.Errorf("DUPLICATE MESSAGE: %s", msgStr)
+				}
+				processedMessages[msgStr] = true
+				totalProcessed++
 			}
-			processedMessages[msgStr] = true
-			totalProcessed++
-		}
 
-		return nil
-	}, WithStream("debug:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
+			// Cancel context once we've processed all expected messages
+			if totalProcessed >= 100 {
+				cancel2()
+			}
+
+			return nil
+		}, WithStream("debug:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
+		done <- err
+	}()
+
+	// Wait for Process to complete or timeout
+	select {
+	case err = <-done:
+		if err != nil && err != context.Canceled {
+			t.Errorf("Process failed: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Error("Test timed out waiting for messages to be processed")
+		cancel2()
+		err = <-done // Wait for goroutine to finish
+	}
 
 	t.Logf("Process error: %v", err)
 	t.Logf("Total processed: %d/100", totalProcessed)

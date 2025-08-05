@@ -33,7 +33,7 @@ func TestMultiProcessRetention(t *testing.T) {
 	streamName := "events:v1:shard:0000"
 
 	// STEP 1: Process A creates files (using the unit test pattern that works)
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0
 	config.Storage.MaxFileSize = 512
@@ -147,7 +147,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	}
 
 	// Create initial data with the main process
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 1024 // Small files to create multiple
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

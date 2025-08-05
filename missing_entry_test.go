@@ -38,7 +38,7 @@ func TestMissingEntry_FirstWrite(t *testing.T) {
 			t.Logf("Write %d: Got ID %d", i, ids[0].EntryNumber)
 		}
 	}
-	
+
 	// Ensure data is flushed before scanning
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestMissingEntry_FirstWrite(t *testing.T) {
 func TestMissingEntry_StateVsIndex(t *testing.T) {
 	dir := t.TempDir()
 
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Log.EnableDebug = true
 
 	// First process writes

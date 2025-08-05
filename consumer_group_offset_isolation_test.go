@@ -9,7 +9,7 @@ import (
 // maintain isolated offsets and don't pollute each other
 func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	SetDebug(true)
 	defer SetDebug(false)
 
@@ -30,7 +30,7 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure data is written before closing
 	err = client.Sync(ctx)
 	if err != nil {

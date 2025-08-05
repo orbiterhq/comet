@@ -90,7 +90,6 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 	// The client should detect the missing directory and recreate it
 	newData := []byte("recovery data")
 	t.Logf("Writing data after directory deletion...")
-	t.Logf("Multi-process mode enabled: %v", config.Concurrency.IsMultiProcess())
 
 	var writeErr error
 	var newIDs []MessageID

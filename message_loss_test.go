@@ -14,7 +14,7 @@ import (
 // TestMessageLoss tests for message loss with multiple concurrent consumers
 func TestMessageLoss(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	stream := "loss:v1:shard:0000"
 
 	// Enable debug logging
@@ -38,7 +38,7 @@ func TestMessageLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Ensure data is flushed before closing
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)

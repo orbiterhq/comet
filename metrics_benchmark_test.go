@@ -23,7 +23,7 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 		},
 		{
 			name:   "WithMetrics",
-			config: MultiProcessConfig(0, 2), // This enables mmap state with metrics
+			config: DeprecatedMultiProcessConfig(0, 2), // This enables mmap state with metrics
 		},
 	}
 
@@ -77,7 +77,7 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 // BenchmarkLatencyMetrics specifically benchmarks the latency tracking overhead
 func BenchmarkLatencyMetrics(b *testing.B) {
 	dir := b.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -110,7 +110,7 @@ func BenchmarkLatencyMetrics(b *testing.B) {
 func BenchmarkCompressionMetrics(b *testing.B) {
 	ctx := context.Background()
 	dir := b.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 100 // Enable compression
 
 	client, err := NewClientWithConfig(dir, config)
@@ -154,7 +154,7 @@ func BenchmarkCompressionMetrics(b *testing.B) {
 func BenchmarkConcurrentMetrics(b *testing.B) {
 	ctx := context.Background()
 	dir := b.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -205,7 +205,7 @@ func BenchmarkConcurrentMetrics(b *testing.B) {
 func BenchmarkRetentionMetrics(b *testing.B) {
 	ctx := context.Background()
 	dir := b.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
 	config.Storage.MaxFileSize = 1024 // Small files to force rotation

@@ -75,25 +75,50 @@ func TestACKPersistenceStress(t *testing.T) {
 
 func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, processDelayMs, restartFreq int, sameGroup bool) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
-	stream := fmt.Sprintf("stress:v1:shard:0000")
-
-	// Step 1: Write all test messages
-	t.Logf("Writing %d messages", totalMessages)
-	client, err := NewClientWithConfig(dir, config)
-	if err != nil {
-		t.Fatal(err)
+	
+	// For multi-consumer same group tests, we need to distribute messages across multiple shards
+	// so each consumer can own different shards to avoid race conditions
+	streams := []string{}
+	if sameGroup && numConsumers > 1 {
+		// Create multiple shards for multi-consumer tests
+		for i := 0; i < numConsumers; i++ {
+			streams = append(streams, fmt.Sprintf("stress:v1:shard:%04d", i))
+		}
+	} else {
+		// Single shard for single consumer or different group tests
+		streams = []string{"stress:v1:shard:0000"}
 	}
 
-	var messages [][]byte
-	for i := 0; i < totalMessages; i++ {
-		messages = append(messages, []byte(fmt.Sprintf("stress-msg-%06d", i)))
+	// Step 1: Write all test messages
+	t.Logf("Writing %d messages across %d shards", totalMessages, len(streams))
+	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, stream, messages)
-	if err != nil {
-		t.Fatal(err)
+	messagesPerShard := totalMessages / len(streams)
+	remainingMessages := totalMessages % len(streams)
+	
+	messageNum := 0
+	for shardIdx, stream := range streams {
+		var messages [][]byte
+		
+		// Calculate how many messages for this shard (distribute remainder across first shards)
+		shardMessageCount := messagesPerShard
+		if shardIdx < remainingMessages {
+			shardMessageCount++
+		}
+		
+		for i := 0; i < shardMessageCount; i++ {
+			messages = append(messages, []byte(fmt.Sprintf("stress-msg-%06d", messageNum)))
+			messageNum++
+		}
+		
+		_, err = client.Append(ctx, stream, messages)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	client.Close()
 
@@ -111,8 +136,8 @@ func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, proc
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			runStressConsumer(t, dir, stream, id, batchSize, processDelayMs,
-				restartFreq, totalMessages, sameGroup, &processedMessages, &totalProcessed,
+			runStressConsumer(t, dir, streams, id, batchSize, processDelayMs,
+				restartFreq, totalMessages, sameGroup, numConsumers, &processedMessages, &totalProcessed,
 				&totalDuplicates, &totalRestarts, results)
 		}(consumerID)
 	}
@@ -220,8 +245,8 @@ finished:
 	t.Logf("✅ ACK persistence stress test PASSED")
 }
 
-func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSize,
-	processDelayMs, restartFreq, totalMessages int, sameGroup bool, processedMessages *sync.Map,
+func runStressConsumer(t *testing.T, dataDir string, streams []string, consumerID, batchSize,
+	processDelayMs, restartFreq, totalMessages int, sameGroup bool, numConsumers int, processedMessages *sync.Map,
 	totalProcessed, totalDuplicates, totalRestarts *int64, results chan<- stressResult) {
 
 	var localProcessed int64
@@ -235,8 +260,16 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 			break
 		}
 
-		// Create new client for each "restart"
-		config := MultiProcessConfig(0, 2)
+		// Create client with proper multi-process configuration for same group tests
+		var config CometConfig
+		if sameGroup && numConsumers > 1 {
+			// Each consumer gets its own process ID to avoid race conditions
+			config = MultiProcessConfig(consumerID, numConsumers)
+		} else {
+			// Use default config for single consumer or different group tests
+			config = DefaultCometConfig()
+		}
+		
 		client, err := NewClientWithConfig(dataDir, config)
 		if err != nil {
 			results <- stressResult{consumerID: consumerID, err: err}
@@ -291,12 +324,40 @@ func runStressConsumer(t *testing.T, dataDir, stream string, consumerID, batchSi
 			return nil
 		}
 
-		err = consumer.Process(ctx, processFunc,
-			WithStream("stress:v1:shard:*"),
-			WithBatchSize(batchSize),
-			WithAutoAck(true),
-			WithPollInterval(50*time.Millisecond),
-		)
+		// Determine which shards this consumer should process
+		if sameGroup && numConsumers > 1 {
+			// Only process shards owned by this process
+			ownedShards := []uint32{}
+			for shardID := uint32(0); shardID < uint32(len(streams)); shardID++ {
+				if config.Concurrency.Owns(shardID) {
+					ownedShards = append(ownedShards, shardID)
+				}
+			}
+			
+			if len(ownedShards) == 0 {
+				// No owned shards, close and exit
+				consumer.Close()
+				client.Close()
+				cancel()
+				break
+			}
+			
+			// Process owned shards using WithShards
+			err = consumer.Process(ctx, processFunc,
+				WithShards(ownedShards...),
+				WithBatchSize(batchSize),
+				WithAutoAck(true),
+				WithPollInterval(50*time.Millisecond),
+			)
+		} else {
+			// Process all shards
+			err = consumer.Process(ctx, processFunc,
+				WithStream("stress:v1:shard:*"),
+				WithBatchSize(batchSize),
+				WithAutoAck(true),
+				WithPollInterval(50*time.Millisecond),
+			)
+		}
 
 		consumer.Close()
 		client.Close()
@@ -342,7 +403,7 @@ func TestACKPersistenceRaceConditions(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DefaultCometConfig()
 	stream := "race:v1:shard:0000"
 	totalMessages := 1000
 
@@ -423,7 +484,7 @@ func TestACKRaceWorker(t *testing.T) {
 	_ = os.Getenv("COMET_RACE_STREAM") // stream not used in worker
 	workerID, _ := strconv.Atoi(workerIDStr)
 
-	config := MultiProcessConfig(0, 2)
+	config := DefaultCometConfig()
 	client, err := NewClientWithConfig(dataDir, config)
 	if err != nil {
 		t.Fatalf("Race worker %d failed to create client: %v", workerID, err)
@@ -476,7 +537,7 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DefaultCometConfig()
 
 	// Use small files to trigger more rotations
 	config.Storage.MaxFileSize = 1024 * 1024 // 1MB files

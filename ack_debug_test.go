@@ -14,29 +14,36 @@ import (
 // TestACKDebug tests ACK persistence with detailed logging
 func TestACKDebug(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
-	stream := "debug:v1:shard:0000"
 
 	// Enable debug logging
 	SetDebug(true)
 	defer SetDebug(false)
 
-	// Step 1: Write messages
-	t.Logf("=== Writing 20 messages ===")
-	client, err := NewClientWithConfig(dir, config)
-	if err != nil {
-		t.Fatal(err)
+	// Step 1: Write messages to multiple shards using default config
+	streams := []string{
+		"debug:v1:shard:0000",
+		"debug:v1:shard:0001",
 	}
 
-	var messages [][]byte
-	for i := 0; i < 20; i++ {
-		messages = append(messages, []byte(fmt.Sprintf("msg-%02d", i)))
+	t.Logf("=== Writing 20 messages across %d shards ===", len(streams))
+	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, stream, messages)
-	if err != nil {
-		t.Fatal(err)
+	messagesPerShard := 10 // 20 messages total, 10 per shard
+
+	for shardIdx, stream := range streams {
+		var messages [][]byte
+		for i := 0; i < messagesPerShard; i++ {
+			msgNum := shardIdx*messagesPerShard + i
+			messages = append(messages, []byte(fmt.Sprintf("msg-%02d", msgNum)))
+		}
+		_, err = client.Append(ctx, stream, messages)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	client.Close()
 
@@ -79,17 +86,21 @@ func TestACKDebug(t *testing.T) {
 		go func(cID int) {
 			defer wg.Done()
 
-			// Each consumer runs 3 short sessions
+			// Each consumer runs 3 short sessions with its own process ID
 			for sessionID := 0; sessionID < 3; sessionID++ {
-				// Open client
-				client, err := NewClientWithConfig(dir, config)
+				// Each consumer gets its own process ID to avoid race conditions
+				processConfig := DeprecatedMultiProcessConfig(cID, 2)
+				client, err := NewClientWithConfig(dir, processConfig)
 				if err != nil {
 					logEvent(cID, sessionID, "ERROR", fmt.Sprintf("Failed to create client: %v", err), -1)
 					return
 				}
 
+				// Determine which shard this consumer owns
+				ownedShard := uint32(cID) // Consumer 0 owns shard 0, Consumer 1 owns shard 1
+
 				// Check initial offset
-				shard, _ := client.getOrCreateShard(0)
+				shard, _ := client.getOrCreateShard(ownedShard)
 				shard.mu.RLock()
 				initialOffset := shard.index.ConsumerOffsets[fmt.Sprintf("consumer-%d", cID)]
 				shard.mu.RUnlock()
@@ -130,9 +141,9 @@ func TestACKDebug(t *testing.T) {
 					return nil
 				}
 
-				// Process messages
+				// Process messages only from owned shard
 				err = consumer.Process(ctx, processFunc,
-					WithStream("debug:v1:shard:*"),
+					WithShards(ownedShard),
 					WithBatchSize(3),
 					WithAutoAck(true),
 					WithPollInterval(50*time.Millisecond),
@@ -149,8 +160,8 @@ func TestACKDebug(t *testing.T) {
 				client.Close()
 
 				// Check persisted offset
-				client2, _ := NewClientWithConfig(dir, config)
-				shard2, _ := client2.getOrCreateShard(0)
+				client2, _ := NewClientWithConfig(dir, processConfig)
+				shard2, _ := client2.getOrCreateShard(ownedShard)
 				shard2.mu.RLock()
 				persistedOffset := shard2.index.ConsumerOffsets[fmt.Sprintf("consumer-%d", cID)]
 				shard2.mu.RUnlock()

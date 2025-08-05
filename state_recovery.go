@@ -133,8 +133,7 @@ func (s *Shard) recoverCorruptedState(reason string) error {
 	os.Rename(statePath, backupPath)
 
 	// Reinitialize state from scratch
-	multiProcessMode := s.statePath != ""
-	if err := s.initCometState(multiProcessMode); err != nil {
+	if err := s.initCometState(); err != nil {
 		return fmt.Errorf("failed to reinitialize state after corruption: %w", err)
 	}
 

@@ -13,7 +13,7 @@ import (
 // TestAllInternalMetrics tests all internal state metrics
 func TestAllInternalMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -74,7 +74,7 @@ func TestAllInternalMetrics(t *testing.T) {
 // TestCompressionEdgeCaseMetrics tests best/worst compression metrics
 func TestCompressionEdgeCaseMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 10 // Low threshold
 
 	client, err := NewClientWithConfig(dir, config)
@@ -122,7 +122,7 @@ func TestCompressionEdgeCaseMetrics(t *testing.T) {
 // TestCheckpointMetrics tests checkpoint-related metrics
 func TestCheckpointMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.CheckpointTime = 10 // Short interval
 
 	client, err := NewClientWithConfig(dir, config)
@@ -162,7 +162,7 @@ func TestCheckpointMetrics(t *testing.T) {
 // TestSyncLatencyMetrics tests sync latency tracking
 func TestSyncLatencyMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -196,7 +196,7 @@ func TestSyncLatencyMetrics(t *testing.T) {
 // TestRotationFailureMetrics tests failed rotation tracking
 func TestRotationFailureMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 100 // Small files
 
 	client, err := NewClientWithConfig(dir, config)
@@ -227,7 +227,7 @@ func TestRotationFailureMetrics(t *testing.T) {
 // TestIndexErrorMetrics tests index persistence error tracking
 func TestIndexErrorMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -257,7 +257,7 @@ func TestIndexErrorMetrics(t *testing.T) {
 // TestCorruptionMetrics tests corruption detection metrics
 func TestCorruptionMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -314,7 +314,7 @@ func TestCorruptionMetrics(t *testing.T) {
 // TestRetentionDetailedMetrics tests detailed retention metrics
 func TestRetentionDetailedMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Retention.MaxAge = 1 * time.Millisecond
 	config.Retention.CleanupInterval = 10 * time.Millisecond
 	config.Retention.ProtectUnconsumed = true
@@ -364,7 +364,7 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 // TestMultiProcessDetailedMetrics tests detailed multi-process metrics
 func TestMultiProcessDetailedMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create first client
 	client1, err := NewClientWithConfig(dir, config)
@@ -434,7 +434,7 @@ func TestMultiProcessDetailedMetrics(t *testing.T) {
 // TestMetricsCompleteness verifies all 70 metrics are accessible
 func TestMetricsCompleteness(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

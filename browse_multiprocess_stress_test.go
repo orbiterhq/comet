@@ -57,7 +57,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=30s")
+			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.timeout=30s")
 			cmd.Env = append(os.Environ(),
 				"COMET_BROWSE_STRESS_ROLE=hammer-writer",
 				fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
@@ -71,7 +71,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 				t.Logf("Writer %d failed to start: %v", id, err)
 				return
 			}
-			
+
 			err = cmd.Wait()
 			if err != nil {
 				t.Logf("Writer %d failed: %v", id, err)
@@ -85,7 +85,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			time.Sleep(200 * time.Millisecond) // Let writers start
-			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=30s")
+			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.timeout=30s")
 			cmd.Env = append(os.Environ(),
 				"COMET_BROWSE_STRESS_ROLE=aggressive-consumer",
 				fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
@@ -99,7 +99,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 				t.Logf("Consumer process %d failed to start: %v", id, err)
 				return
 			}
-			
+
 			err = cmd.Wait()
 			if err != nil {
 				t.Logf("Consumer process %d failed: %v", id, err)
@@ -113,7 +113,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			time.Sleep(400 * time.Millisecond) // Let writers and consumers start
-			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=30s")
+			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.timeout=30s")
 			cmd.Env = append(os.Environ(),
 				"COMET_BROWSE_STRESS_ROLE=browse-storm",
 				fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
@@ -126,7 +126,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 				t.Logf("Browser %d failed to start: %v", id, err)
 				return
 			}
-			
+
 			err = cmd.Wait()
 			if err != nil {
 				t.Logf("Browser %d failed: %v", id, err)
@@ -140,17 +140,22 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			time.Sleep(1 * time.Second) // Let others establish
-			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=30s")
+			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.timeout=30s")
 			cmd.Env = append(os.Environ(),
 				"COMET_BROWSE_STRESS_ROLE=chaos-actor",
 				fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
 				fmt.Sprintf("COMET_BROWSE_STRESS_DURATION=%s", duration),
 			)
-			output, err := cmd.CombinedOutput()
+			err := cmd.Start()
+			if err != nil {
+				t.Logf("Chaos actor failed to start: %v", err)
+				return
+			}
+
+			err = cmd.Wait()
 			if err != nil {
 				t.Logf("Chaos actor failed: %v", err)
 			}
-			t.Logf("Chaos: %s", string(output))
 		}()
 	}
 
@@ -161,17 +166,19 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		for {
 			select {
 			case <-validatorTicker.C:
-				cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=10s")
+				cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.timeout=10s")
 				cmd.Env = append(os.Environ(),
 					"COMET_BROWSE_STRESS_ROLE=validator",
 					fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
 					fmt.Sprintf("COMET_BROWSE_STRESS_NUM_SHARDS=%d", numShards),
 				)
-				output, err := cmd.CombinedOutput()
+				// Discard output to avoid blocking
+				cmd.Stdout = nil
+				cmd.Stderr = nil
+
+				err := cmd.Run()
 				if err != nil {
-					t.Logf("Validator error: %v\nOutput: %s", err, output)
-				} else {
-					t.Logf("Validator: %s", strings.TrimSpace(string(output)))
+					t.Logf("Validator error: %v", err)
 				}
 			case <-validatorDone:
 				return
@@ -186,17 +193,29 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 
 	// Final validation
 	t.Log("Running final validation...")
-	finalCmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=10s")
+	finalCmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.timeout=10s")
 	finalCmd.Env = append(os.Environ(),
 		"COMET_BROWSE_STRESS_ROLE=validator",
 		fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
 		fmt.Sprintf("COMET_BROWSE_STRESS_NUM_SHARDS=%d", numShards),
 	)
-	finalOutput, err := finalCmd.CombinedOutput()
+	// For final validation, we want the output
+	output, err := finalCmd.CombinedOutput()
 	if err != nil {
-		t.Errorf("Final validation failed: %v\nOutput: %s", err, finalOutput)
+		// Truncate output if too long
+		outputStr := string(output)
+		if len(outputStr) > 4096 {
+			outputStr = outputStr[:4096] + "...(truncated)"
+		}
+		t.Errorf("Final validation failed: %v\nOutput: %s", err, outputStr)
 	} else {
-		t.Logf("Final validation: %s", string(finalOutput))
+		// Show summary of validation
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "Validator:") && !strings.Contains(line, "===") {
+				t.Log(strings.TrimSpace(line))
+			}
+		}
 	}
 }
 
@@ -207,7 +226,10 @@ func runBrowseStressWorker(t *testing.T, role string) {
 		t.Fatal("COMET_BROWSE_STRESS_DIR not set")
 	}
 
-	config := MultiProcessConfig(0, 2)
+	// Suppress debug logging to reduce output
+	SetDebug(false)
+
+	config := DeprecatedMultiProcessConfig(0, 2)
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
@@ -262,7 +284,7 @@ func runBrowseStressWorker(t *testing.T, role string) {
 
 		fmt.Printf("Writer %s: writes=%d errors=%d rate=%.0f/sec\n",
 			workerID, totalWrites, errors, float64(totalWrites)/time.Since(start).Seconds())
-		
+
 		// Ensure final sync
 		client.Sync(ctx)
 

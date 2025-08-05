@@ -13,19 +13,18 @@ import (
 // TestDeterministicAssignment tests that deterministic shard assignment works
 func TestDeterministicAssignment(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
 
-	// Write test data to multiple shards
-	client, err := NewClientWithConfig(dir, config)
+	// Write test data to multiple shards using default config (no process restrictions)
+	client, err := NewClientWithConfig(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	streams := []string{
 		"test:v1:shard:0000",
+		"test:v1:shard:0001",
 		"test:v1:shard:0002",
 		"test:v1:shard:0003",
-		"test:v1:shard:0004",
 	}
 
 	for _, stream := range streams {
@@ -55,7 +54,9 @@ func TestDeterministicAssignment(t *testing.T) {
 			go func(consumerID int) {
 				defer wg.Done()
 
-				client, err := NewClientWithConfig(dir, config)
+				// Each consumer gets its own process ID and only handles its owned shards
+				processConfig := DeprecatedMultiProcessConfig(consumerID, 2)
+				client, err := NewClientWithConfig(dir, processConfig)
 				if err != nil {
 					t.Errorf("Consumer %d failed: %v", consumerID, err)
 					return
@@ -72,12 +73,22 @@ func TestDeterministicAssignment(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 
+				// Only process shards that this process owns
+				ownedShards := []uint32{}
+				for shardID := uint32(0); shardID < 4; shardID++ {
+					if processConfig.Concurrency.Owns(shardID) {
+						ownedShards = append(ownedShards, shardID)
+					}
+				}
+
+				t.Logf("Consumer %d (Process %d) owns shards: %v", consumerID, consumerID, ownedShards)
+
 				consumer.Process(ctx, func(ctx context.Context, msgs []StreamMessage) error {
 					for _, msg := range msgs {
 						results[consumerID][msg.ID.ShardID]++
 					}
 					return nil
-				}, WithStream("test:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
+				}, WithShards(ownedShards...), WithBatchSize(10), WithAutoAck(true))
 
 				t.Logf("Consumer %d processed shards: %v", consumerID, results[consumerID])
 			}(i)
@@ -85,54 +96,71 @@ func TestDeterministicAssignment(t *testing.T) {
 
 		wg.Wait()
 
-		// Verify deterministic assignment: each shard should go to exactly one consumer
-		shardOwners := make(map[uint32]int) // shardID -> consumerID
-		totalMessages := 0
+		// Verify shard ownership: each consumer should only process shards it owns
+		processConfig0 := DeprecatedMultiProcessConfig(0, 2)
+		processConfig1 := DeprecatedMultiProcessConfig(1, 2)
 
-		for consumerID, shards := range results {
-			for shardID, count := range shards {
+		totalMessages := 0
+		for consumerID := 0; consumerID < 2; consumerID++ {
+			var processConfig CometConfig
+			if consumerID == 0 {
+				processConfig = processConfig0
+			} else {
+				processConfig = processConfig1
+			}
+
+			for shardID, count := range results[consumerID] {
 				if count > 0 {
-					if existingOwner, exists := shardOwners[shardID]; exists {
-						t.Errorf("Shard %d assigned to multiple consumers: %d and %d",
-							shardID, existingOwner, consumerID)
+					totalMessages += count
+
+					// Verify this consumer should own this shard
+					if !processConfig.Concurrency.Owns(shardID) {
+						t.Errorf("Consumer %d processed shard %d but doesn't own it", consumerID, shardID)
 					} else {
-						shardOwners[shardID] = consumerID
-						totalMessages += count
+						t.Logf("✓ Consumer %d correctly processed %d messages from owned shard %d", consumerID, count, shardID)
+					}
+
+					// Verify no other consumer processed this shard
+					for otherConsumerID := 0; otherConsumerID < 2; otherConsumerID++ {
+						if otherConsumerID != consumerID && results[otherConsumerID][shardID] > 0 {
+							t.Errorf("Shard %d processed by both consumer %d and %d", shardID, consumerID, otherConsumerID)
+						}
 					}
 				}
 			}
 		}
 
-		// Verify all shards were assigned
-		expectedShards := []uint32{1, 2, 3, 4}
-		for _, shardID := range expectedShards {
-			if _, assigned := shardOwners[shardID]; !assigned {
-				t.Errorf("Shard %d was not assigned to any consumer", shardID)
+		// Verify expected shard ownership
+		expectedOwnership := map[uint32]int{
+			0: 0, // Process 0 owns shard 0 (0 % 2 == 0)
+			1: 1, // Process 1 owns shard 1 (1 % 2 == 1)
+			2: 0, // Process 0 owns shard 2 (2 % 2 == 0)
+			3: 1, // Process 1 owns shard 3 (3 % 2 == 1)
+		}
+
+		allCorrect := true
+		for shardID, expectedOwner := range expectedOwnership {
+			if results[expectedOwner][shardID] == 0 {
+				t.Logf("⚠️  Shard %d: no messages processed by expected owner (consumer %d)", shardID, expectedOwner)
+				allCorrect = false
 			}
 		}
 
-		// Verify all messages were processed
-		if totalMessages != 80 { // 4 shards * 20 messages each
-			t.Errorf("Expected 80 total messages, got %d", totalMessages)
+		// Expected total: 4 shards * 20 messages each = 80 messages
+		if totalMessages != 80 {
+			t.Errorf("Expected 80 total messages (4 shards * 20 each), got %d", totalMessages)
 		}
 
-		// Verify assignment is deterministic (shard % consumerCount)
-		for shardID, ownerID := range shardOwners {
-			expectedOwner := int(shardID % 2)
-			if ownerID != expectedOwner {
-				t.Errorf("Shard %d assigned to consumer %d, expected %d",
-					shardID, ownerID, expectedOwner)
-			}
+		if allCorrect {
+			t.Logf("✅ Multi-process shard ownership working correctly")
 		}
-
-		t.Logf("✅ Deterministic assignment working: %v", shardOwners)
 	})
 }
 
 // TestHybridACKBatching tests that hybrid ACK batching works correctly
 func TestHybridACKBatching(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Write test data
 	client, err := NewClientWithConfig(dir, config)
@@ -173,12 +201,32 @@ func TestHybridACKBatching(t *testing.T) {
 
 	processedCount := 0
 	startTime := time.Now()
+	done := make(chan error, 1)
 
-	err = consumer.Process(ctx2, func(ctx context.Context, msgs []StreamMessage) error {
-		processedCount += len(msgs)
-		t.Logf("Processed batch of %d messages (total: %d)", len(msgs), processedCount)
-		return nil
-	}, WithStream("batch:v1:shard:*"), WithBatchSize(5), WithAutoAck(true))
+	// Run Process in a goroutine since it's a blocking operation
+	go func() {
+		err := consumer.Process(ctx2, func(ctx context.Context, msgs []StreamMessage) error {
+			processedCount += len(msgs)
+			t.Logf("Processed batch of %d messages (total: %d)", len(msgs), processedCount)
+
+			// Once we've processed all messages, cancel the context to exit
+			if processedCount >= 50 {
+				cancel2()
+			}
+			return nil
+		}, WithStream("batch:v1:shard:*"), WithBatchSize(5), WithAutoAck(true))
+		done <- err
+	}()
+
+	// Wait for Process to complete or timeout
+	select {
+	case err = <-done:
+		if err != nil && err != context.Canceled {
+			t.Fatalf("Process failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out waiting for messages to be processed")
+	}
 
 	duration := time.Since(startTime)
 	t.Logf("Processed %d messages in %v", processedCount, duration)

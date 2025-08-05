@@ -29,7 +29,7 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 		},
 		{
 			name:        "MultiProcess_LargeBatches",
-			config:      func() CometConfig { return MultiProcessConfig(0, 2) },
+			config:      func() CometConfig { return DeprecatedMultiProcessConfig(0, 2) },
 			totalMsgs:   500,
 			batchSize:   100,
 			shardNumber: 166, // Use higher shard number like user had

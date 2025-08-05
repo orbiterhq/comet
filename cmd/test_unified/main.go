@@ -10,7 +10,7 @@ import (
 
 func main() {
 	// Create a config with multi-process mode to enable CometState
-	config := comet.MultiProcessConfig(0, 1)
+	config := comet.DeprecatedMultiProcessConfig(0, 1)
 
 	// Create client with temp directory
 	client, err := comet.NewClientWithConfig("/tmp/test_unified_state", config)

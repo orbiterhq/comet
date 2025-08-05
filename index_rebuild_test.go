@@ -36,19 +36,19 @@ func TestIndexRebuild(t *testing.T) {
 
 	// Force file rotation to create multiple files
 	shard, _ := client.getOrCreateShard(0)
-	
+
 	// Debug: check files before rotation
 	shard.mu.RLock()
 	filesBefore := len(shard.index.Files)
 	t.Logf("Files before rotation: %d", filesBefore)
 	shard.mu.RUnlock()
-	
+
 	// rotateFile() acquires its own lock, so we can't hold it
 	err = shard.rotateFile(&config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Debug: check files after rotation
 	shard.mu.RLock()
 	filesAfter := len(shard.index.Files)
@@ -88,7 +88,7 @@ func TestIndexRebuild(t *testing.T) {
 	if err := os.Remove(indexPath); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Debug: list data files
 	dataFiles, _ := filepath.Glob(filepath.Join(dir, "shard-0000", "log-*.comet"))
 	t.Logf("Data files before rebuild: %d", len(dataFiles))
@@ -386,7 +386,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	ctx := context.Background()
 
 	// Create initial client in multi-process mode and write data
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 2048 // Small files to force rotation
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {

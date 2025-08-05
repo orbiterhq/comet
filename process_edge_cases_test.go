@@ -11,7 +11,7 @@ import (
 // TestProcessMultiProcessMode tests Process() in multi-process mode
 func TestProcessMultiProcessMode(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2) // Use multi-process config
+	config := DeprecatedMultiProcessConfig(0, 2) // Use multi-process config
 
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
@@ -187,7 +187,7 @@ func TestProcessLongRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure data is visible to consumers
 	err = client.Sync(ctx)
 	if err != nil {

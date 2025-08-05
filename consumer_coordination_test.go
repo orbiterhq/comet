@@ -14,30 +14,44 @@ import (
 // TestConsumerCoordination tests message loss in high-contention scenarios
 func TestConsumerCoordination(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
-	stream := "coord:v1:shard:0000"
 
 	// Enable debug
 	SetDebug(true)
 	defer SetDebug(false)
 
-	// Write 1000 messages
+	// Write 1000 messages to multiple shards so each process can own different shards
 	messageCount := 1000
 	t.Logf("=== Writing %d messages ===", messageCount)
+
+	// Write to multiple shards so consumers can be distributed
+	config := DefaultCometConfig()
 	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	var messages [][]byte
-	for i := 0; i < messageCount; i++ {
-		messages = append(messages, []byte(fmt.Sprintf("msg-%04d", i)))
+	// Write messages to multiple shards (0000-0004) to distribute load
+	streams := []string{
+		"coord:v1:shard:0000",
+		"coord:v1:shard:0001",
+		"coord:v1:shard:0002",
+		"coord:v1:shard:0003",
+		"coord:v1:shard:0004",
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, stream, messages)
-	if err != nil {
-		t.Fatal(err)
+	messagesPerShard := messageCount / len(streams)
+
+	for shardIdx, stream := range streams {
+		var messages [][]byte
+		for i := 0; i < messagesPerShard; i++ {
+			msgNum := shardIdx*messagesPerShard + i
+			messages = append(messages, []byte(fmt.Sprintf("msg-%04d", msgNum)))
+		}
+		_, err = client.Append(ctx, stream, messages)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	client.Close()
 
@@ -59,7 +73,9 @@ func TestConsumerCoordination(t *testing.T) {
 			restarts := 0
 
 			for restarts < 10 { // Each consumer will restart 10 times
-				client, err := NewClientWithConfig(dir, config)
+				// Each consumer gets its own process ID to avoid race conditions
+				processConfig := DeprecatedMultiProcessConfig(consumerID, 5)
+				client, err := NewClientWithConfig(dir, processConfig)
 				if err != nil {
 					t.Logf("Consumer %d: Failed to create client: %v", consumerID, err)
 					return
@@ -69,8 +85,25 @@ func TestConsumerCoordination(t *testing.T) {
 					Group: "shared-group",
 				})
 
-				// Check starting offset
-				shard, _ := client.getOrCreateShard(0)
+				// Only process shards owned by this process
+				ownedShards := []uint32{}
+				for shardID := uint32(0); shardID < 5; shardID++ {
+					if processConfig.Concurrency.Owns(shardID) {
+						ownedShards = append(ownedShards, shardID)
+					}
+				}
+
+				if len(ownedShards) == 0 {
+					t.Logf("Consumer %d: No owned shards, skipping", consumerID)
+					consumer.Close()
+					client.Close()
+					break
+				}
+
+				t.Logf("Consumer %d (Process %d) owns shards: %v", consumerID, consumerID, ownedShards)
+
+				// Check starting offset for first owned shard
+				shard, _ := client.getOrCreateShard(ownedShards[0])
 				shard.mu.RLock()
 				startOffset := shard.index.ConsumerOffsets["shared-group"]
 				shard.mu.RUnlock()
@@ -102,9 +135,9 @@ func TestConsumerCoordination(t *testing.T) {
 					}
 
 					return nil
-				}, WithStream("coord:v1:shard:*"), WithBatchSize(20), WithAutoAck(true))
+				}, WithShards(ownedShards...), WithBatchSize(20), WithAutoAck(true))
 
-				// Check ending offset
+				// Check ending offset for first owned shard
 				shard.mu.RLock()
 				endOffset := shard.index.ConsumerOffsets["shared-group"]
 				shard.mu.RUnlock()
@@ -197,17 +230,22 @@ func TestConsumerCoordination(t *testing.T) {
 		}
 	}
 
-	// Check final offset
-	finalClient, _ := NewClientWithConfig(dir, config)
-	finalShard, _ := finalClient.getOrCreateShard(0)
-	finalShard.mu.RLock()
-	finalOffset := finalShard.index.ConsumerOffsets["shared-group"]
-	finalShard.mu.RUnlock()
+	// Check final offset across all shards
+	finalClient, _ := NewClientWithConfig(dir, DefaultCometConfig())
+	totalFinalOffset := int64(0)
+	for shardID := uint32(0); shardID < 5; shardID++ {
+		finalShard, _ := finalClient.getOrCreateShard(shardID)
+		finalShard.mu.RLock()
+		shardOffset := finalShard.index.ConsumerOffsets["shared-group"]
+		finalShard.mu.RUnlock()
+		totalFinalOffset += shardOffset
+		t.Logf("Shard %d final offset: %d", shardID, shardOffset)
+	}
 	finalClient.Close()
 
-	t.Logf("Final consumer group offset: %d", finalOffset)
+	t.Logf("Total final consumer group offset across all shards: %d", totalFinalOffset)
 
-	if finalOffset < int64(messageCount) && len(missingMessages) > 0 {
-		t.Logf("WARNING: Offset is %d but messages are missing - offset tracking is broken", finalOffset)
+	if totalFinalOffset < int64(messageCount) && len(missingMessages) > 0 {
+		t.Logf("WARNING: Total offset is %d but messages are missing - offset tracking is broken", totalFinalOffset)
 	}
 }

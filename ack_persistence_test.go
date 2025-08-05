@@ -10,7 +10,7 @@ import (
 // TestACKPersistenceBug reproduces the critical ACK persistence issue
 func TestACKPersistenceBug(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Step 1: Write messages
 	client1, err := NewClientWithConfig(dir, config)
@@ -114,7 +114,7 @@ func TestACKPersistenceBug(t *testing.T) {
 // TestProcessACKPersistence tests ACK persistence through Process() method
 func TestProcessACKPersistence(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig(0, 2)
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Write messages
 	client1, err := NewClientWithConfig(dir, config)
@@ -134,12 +134,12 @@ func TestProcessACKPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure data is visible
 	if err := client1.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client1.Close()
 
 	// Process first 10 messages
