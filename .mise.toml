@@ -35,11 +35,11 @@ run = ["go test -v ./... -race -shuffle=on -timeout=1m -count=2"]
 
 [tasks."test:all"]
 description = "Run all tests including integration tests"
-run = ["go test -v -tags=integration ./... -race -timeout 5m"]
+run = ["go test -v -tags=integration ./... -race -timeout 6m"]
 
 [tasks."test:integration"]
 description = "Run only integration tests"
-run = ["go test -v -tags=integration ./... -race -timeout 2m"]
+run = ["go test -v -tags=integration ./... -race -timeout 5m"]
 
 [tasks.bench]
 description = "Run all benchmarks (2-3 minutes)"

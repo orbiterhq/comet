@@ -382,6 +382,9 @@ func (c *Client) deleteFiles(shard *Shard, files []FileInfo, metrics *ClientMetr
 	// Now we can release the lock - all index modifications are complete
 	shard.mu.Unlock()
 
+	// Return index to pool after use
+	defer returnIndexToPool(indexCopy)
+
 	// Persist the index after releasing the lock
 	shard.indexMu.Lock()
 	err := shard.saveBinaryIndex(indexCopy)

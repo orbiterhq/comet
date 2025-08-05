@@ -62,7 +62,7 @@ type Consumer struct {
 
 	// Idempotent processing: track processed messages to prevent duplicates
 	processedMsgsMu sync.RWMutex
-	processedMsgs   map[string]bool // messageID -> processed flag
+	processedMsgs   map[MessageID]bool // messageID -> processed flag
 
 	// Deterministic assignment
 	consumerID    int
@@ -249,7 +249,7 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 		consumerID:    opts.ConsumerID,
 		consumerCount: opts.ConsumerCount,
 		highestRead:   make(map[uint32]int64),
-		processedMsgs: make(map[string]bool),
+		processedMsgs: make(map[MessageID]bool),
 		pendingAcks:   make([]MessageID, 0),
 		lastAckFlush:  time.Now(),
 		// readers sync.Map is zero-initialized and ready to use
@@ -299,6 +299,9 @@ func (c *Consumer) Close() error {
 			indexCopy := shard.cloneIndex()
 			shard.mu.Unlock()
 
+			// Return index to pool after use
+			defer returnIndexToPool(indexCopy)
+
 			// Persist without holding the lock
 			shard.indexMu.Lock()
 			err := shard.saveBinaryIndex(indexCopy)
@@ -328,14 +331,14 @@ func (c *Consumer) Close() error {
 func (c *Consumer) isMessageProcessed(messageID MessageID) bool {
 	c.processedMsgsMu.RLock()
 	defer c.processedMsgsMu.RUnlock()
-	return c.processedMsgs[messageID.String()]
+	return c.processedMsgs[messageID]
 }
 
 // markMessageProcessed marks a message as processed by this consumer group
 func (c *Consumer) markMessageProcessed(messageID MessageID) {
 	c.processedMsgsMu.Lock()
 	defer c.processedMsgsMu.Unlock()
-	c.processedMsgs[messageID.String()] = true
+	c.processedMsgs[messageID] = true
 }
 
 // FilterDuplicates removes already-processed messages from a batch, returning only new messages
@@ -961,7 +964,7 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	c.processedMsgsMu.Lock()
 	for msgID := range c.processedMsgs {
 		// Only clear messages from this shard
-		if parsed, err := ParseMessageID(msgID); err == nil && parsed.ShardID == shardID {
+		if msgID.ShardID == shardID {
 			delete(c.processedMsgs, msgID)
 		}
 	}

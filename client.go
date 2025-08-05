@@ -21,6 +21,19 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+// shardIndexPool reuses ShardIndex objects to reduce allocations
+var shardIndexPool = sync.Pool{
+	New: func() interface{} {
+		return &ShardIndex{
+			ConsumerOffsets: make(map[string]int64),
+			Files:           make([]FileInfo, 0),
+			BinaryIndex: BinarySearchableIndex{
+				Nodes: make([]EntryIndexNode, 0),
+			},
+		}
+	},
+}
+
 // EntryPosition represents the location of an entry in the file system
 // EntryPosition represents the location of an entry in the file system
 type EntryPosition struct {
@@ -932,7 +945,7 @@ func (s *Shard) prepareWriteRequest(compressedEntries []CompressedEntry, startTi
 	entryNumbers := s.allocateEntryNumbers(len(compressedEntries), config)
 
 	// Build write request (unified for both single and multi-process modes)
-	writeReq = s.buildWriteRequest(compressedEntries, entryNumbers, now, allHeaders)
+	s.buildWriteRequest(&writeReq, compressedEntries, entryNumbers, now, allHeaders)
 
 	// Capture current write offset for performWrite to use (avoids race condition)
 	writeReq.CurrentWriteOffset = s.index.CurrentWriteOffset
@@ -966,10 +979,7 @@ func (s *Shard) allocateEntryNumbers(count int, config *CometConfig) []int64 {
 }
 
 // buildWriteRequest builds the write request (unified for both modes)
-func (s *Shard) buildWriteRequest(compressedEntries []CompressedEntry, entryNumbers []int64, now int64, allHeaders []byte) WriteRequest {
-	var writeReq WriteRequest
-	writeReq.IDs = make([]MessageID, len(compressedEntries))
-	writeReq.WriteBuffers = make([][]byte, 0, len(compressedEntries)*2)
+func (s *Shard) buildWriteRequest(writeReq *WriteRequest, compressedEntries []CompressedEntry, entryNumbers []int64, now int64, allHeaders []byte) {
 
 	writeOffset := s.index.CurrentWriteOffset
 
@@ -1023,8 +1033,6 @@ func (s *Shard) buildWriteRequest(compressedEntries []CompressedEntry, entryNumb
 		// Update mmap state
 		s.updateMmapState()
 	}
-
-	return writeReq
 }
 
 // performWrite performs the actual I/O operation
@@ -1248,6 +1256,9 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 	s.lastCheckpoint = time.Now()
 	s.mu.Unlock()
 
+	// Return index to pool after use
+	defer returnIndexToPool(indexCopy)
+
 	s.indexMu.Lock()
 	err := s.saveBinaryIndex(indexCopy)
 	s.indexMu.Unlock()
@@ -1377,32 +1388,51 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 
 // cloneIndex creates a deep copy of the shard index for safe persistence
 func (s *Shard) cloneIndex() *ShardIndex {
-	clone := &ShardIndex{
-		CurrentEntryNumber: s.index.CurrentEntryNumber,
-		CurrentWriteOffset: s.index.CurrentWriteOffset,
-		CurrentFile:        s.index.CurrentFile,
-		BoundaryInterval:   s.index.BoundaryInterval,
-		ConsumerOffsets:    make(map[string]int64, len(s.index.ConsumerOffsets)),
-		Files:              make([]FileInfo, len(s.index.Files)),
-		BinaryIndex: BinarySearchableIndex{
-			Nodes:         make([]EntryIndexNode, len(s.index.BinaryIndex.Nodes)),
-			IndexInterval: s.index.BinaryIndex.IndexInterval,
-			MaxNodes:      s.index.BinaryIndex.MaxNodes,
-		},
-	}
+	// Get object from pool
+	clone := shardIndexPool.Get().(*ShardIndex)
 
-	// Deep copy consumer offsets
+	// Reset and populate fields
+	clone.CurrentEntryNumber = s.index.CurrentEntryNumber
+	clone.CurrentWriteOffset = s.index.CurrentWriteOffset
+	clone.CurrentFile = s.index.CurrentFile
+	clone.BoundaryInterval = s.index.BoundaryInterval
+
+	// Clear and repopulate consumer offsets
+	for k := range clone.ConsumerOffsets {
+		delete(clone.ConsumerOffsets, k)
+	}
 	for k, v := range s.index.ConsumerOffsets {
 		clone.ConsumerOffsets[k] = v
 	}
 
-	// Deep copy files
+	// Resize files slice if needed
+	if cap(clone.Files) < len(s.index.Files) {
+		clone.Files = make([]FileInfo, len(s.index.Files))
+	} else {
+		clone.Files = clone.Files[:len(s.index.Files)]
+	}
 	copy(clone.Files, s.index.Files)
 
-	// Deep copy binary index nodes
+	// Update binary index
+	clone.BinaryIndex.IndexInterval = s.index.BinaryIndex.IndexInterval
+	clone.BinaryIndex.MaxNodes = s.index.BinaryIndex.MaxNodes
+
+	// Resize nodes slice if needed
+	if cap(clone.BinaryIndex.Nodes) < len(s.index.BinaryIndex.Nodes) {
+		clone.BinaryIndex.Nodes = make([]EntryIndexNode, len(s.index.BinaryIndex.Nodes))
+	} else {
+		clone.BinaryIndex.Nodes = clone.BinaryIndex.Nodes[:len(s.index.BinaryIndex.Nodes)]
+	}
 	copy(clone.BinaryIndex.Nodes, s.index.BinaryIndex.Nodes)
 
 	return clone
+}
+
+// returnIndexToPool returns a ShardIndex to the pool for reuse
+func returnIndexToPool(index *ShardIndex) {
+	if index != nil {
+		shardIndexPool.Put(index)
+	}
 }
 
 // updateMmapState updates shared state after index changes
@@ -1686,6 +1716,9 @@ func (s *Shard) persistIndex() error {
 	indexCopy := s.cloneIndex()
 	s.mu.RUnlock()
 
+	// Return index to pool after use
+	defer returnIndexToPool(indexCopy)
+
 	// Use binary format for persistence
 	s.indexMu.Lock()
 	err := s.saveBinaryIndex(indexCopy)
@@ -1899,12 +1932,32 @@ func (idx *BinarySearchableIndex) FindEntryPosition(targetEntry int64) (EntryPos
 // parseShardFromStream extracts shard ID from stream name
 func parseShardFromStream(stream string) (uint32, error) {
 	// Expected format: "name:version:shard:NNNN"
-	parts := strings.Split(stream, ":")
-	if len(parts) < 4 || parts[2] != "shard" {
+	// Find the third colon to locate the shard number
+	colonCount := 0
+	shardStart := -1
+
+	for i, ch := range stream {
+		if ch == ':' {
+			colonCount++
+			if colonCount == 3 {
+				shardStart = i + 1
+				break
+			}
+		}
+	}
+
+	// Validate format
+	if colonCount < 3 || shardStart == -1 || shardStart >= len(stream) {
 		return 0, fmt.Errorf("invalid stream format, expected name:version:shard:NNNN")
 	}
 
-	shardStr := parts[3]
+	// Verify "shard" keyword by checking backwards from the third colon
+	if shardStart < 6 || stream[shardStart-6:shardStart-1] != "shard" {
+		return 0, fmt.Errorf("invalid stream format, expected name:version:shard:NNNN")
+	}
+
+	// Parse the shard number directly from the substring
+	shardStr := stream[shardStart:]
 	shard, err := strconv.ParseUint(shardStr, 10, 32)
 	if err != nil {
 		return 0, fmt.Errorf("invalid shard number: %s", shardStr)
@@ -1962,6 +2015,10 @@ func (c *Client) Close() error {
 
 			// Persist index outside lock
 			shard.mu.Unlock() // Release for the persistence operation
+
+			// Return index to pool after use
+			defer returnIndexToPool(indexCopy)
+
 			shard.indexMu.Lock()
 			err := shard.saveBinaryIndex(indexCopy)
 			shard.indexMu.Unlock()
@@ -2362,6 +2419,9 @@ func (c *Client) ListRecent(ctx context.Context, streamName string, limit int) (
 	totalEntries := shard.index.CurrentEntryNumber
 	shard.mu.RUnlock()
 
+	// Return index to pool after reader is done with it
+	defer returnIndexToPool(indexCopy)
+
 	if totalEntries == 0 {
 		return nil, nil
 	}
@@ -2446,6 +2506,9 @@ func (c *Client) ScanAll(ctx context.Context, streamName string, fn func(context
 	indexCopy := shard.cloneIndex() // Create proper deep copy to avoid race conditions
 	totalEntries := shard.index.CurrentEntryNumber
 	shard.mu.RUnlock()
+
+	// Return index to pool after reader is done with it
+	defer returnIndexToPool(indexCopy)
 
 	if totalEntries == 0 {
 		return nil

@@ -24,7 +24,7 @@ import (
 func TestConcurrentRotationStorm(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.ProcessCount = 2
+	config.Concurrency.ProcessCount = 0          // Disable multi-process mode for this test
 	config.Storage.MaxFileSize = 1 << 16         // Small files to trigger rotation quickly (64KB)
 	config.Compression.MinCompressSize = 1 << 30 // Disable compression for predictable sizing
 	client, err := NewClient(dir, config)

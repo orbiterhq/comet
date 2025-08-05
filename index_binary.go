@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -36,7 +37,10 @@ const (
 func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
 	// Create temp file with unique name to avoid race conditions
 	// Use process ID and timestamp to ensure uniqueness
-	tempPath := fmt.Sprintf("%s.tmp.%d.%d", s.indexPath, os.Getpid(), time.Now().UnixNano())
+	// Build path efficiently without fmt.Sprintf
+	pid := strconv.Itoa(os.Getpid())
+	nano := strconv.FormatInt(time.Now().UnixNano(), 10)
+	tempPath := s.indexPath + ".tmp." + pid + "." + nano
 	f, err := os.Create(tempPath)
 	if err != nil {
 		return fmt.Errorf("failed to create temp index: %w", err)

@@ -52,7 +52,7 @@ func TestMessageLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client1.Close()
-	
+
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "test-single"})
 	defer consumer1.Close()
 
@@ -67,7 +67,7 @@ func TestMessageLoss(t *testing.T) {
 		}
 		return nil
 	}, WithStream("loss:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
-	
+
 	if err != nil && err != context.DeadlineExceeded {
 		t.Fatalf("Process error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestMessageLoss(t *testing.T) {
 				return
 			}
 			defer client.Close()
-			
+
 			consumer := NewConsumer(client, ConsumerOptions{
 				Group: fmt.Sprintf("test-group-%d", consumerID),
 			})
@@ -109,7 +109,7 @@ func TestMessageLoss(t *testing.T) {
 				}
 				return nil
 			}, WithStream("loss:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
-			
+
 			if err != nil && err != context.DeadlineExceeded {
 				t.Errorf("Consumer %d process error: %v", consumerID, err)
 			}
@@ -153,7 +153,7 @@ func TestMessageLoss(t *testing.T) {
 				return
 			}
 			defer client.Close()
-			
+
 			consumer := NewConsumer(client, ConsumerOptions{
 				Group: "shared-group",
 			})
@@ -189,7 +189,7 @@ func TestMessageLoss(t *testing.T) {
 				}
 				return nil
 			}, WithStream("loss:v1:shard:*"), WithBatchSize(10), WithAutoAck(true))
-			
+
 			if err != nil && err != context.DeadlineExceeded {
 				t.Errorf("Consumer %d process error: %v", consumerID, err)
 			}
