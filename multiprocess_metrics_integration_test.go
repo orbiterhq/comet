@@ -163,8 +163,6 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			writeLatencyCount := atomic.LoadUint64(&state.WriteLatencyCount)
 			minLatency := atomic.LoadUint64(&state.MinWriteLatency)
 			maxLatency := atomic.LoadUint64(&state.MaxWriteLatency)
-			p50Latency := atomic.LoadUint64(&state.P50WriteLatency)
-			p99Latency := atomic.LoadUint64(&state.P99WriteLatency)
 
 			if writeLatencyCount == 0 {
 				t.Error("WriteLatencyCount = 0, expected > 0")
@@ -172,16 +170,13 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			if minLatency == 0 || maxLatency == 0 {
 				t.Error("Min/Max latency not tracked")
 			}
-			if p50Latency == 0 || p99Latency == 0 {
-				t.Error("Percentile latencies not tracked")
-			}
-			if p99Latency < p50Latency {
-				t.Errorf("P99 (%d) < P50 (%d)", p99Latency, p50Latency)
-			}
 
-			t.Logf("Latency metrics: count=%d, min=%dus, max=%dus, p50=%dus, p99=%dus",
-				writeLatencyCount, minLatency/1000, maxLatency/1000,
-				p50Latency/1000, p99Latency/1000)
+			// Calculate average
+			writeLatencySum := atomic.LoadUint64(&state.WriteLatencySum)
+			avgLatency := writeLatencySum / writeLatencyCount
+
+			t.Logf("Latency metrics: count=%d, min=%dus, max=%dus, avg=%dus",
+				writeLatencyCount, minLatency/1000, maxLatency/1000, avgLatency/1000)
 		})
 
 		// Check file operation metrics
@@ -269,22 +264,6 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			}
 		})
 
-		// Check multi-process coordination metrics
-		t.Run("MultiProcessMetrics", func(t *testing.T) {
-			processCount := atomic.LoadUint64(&state.ProcessCount)
-			contentionCount := atomic.LoadUint64(&state.ContentionCount)
-			lockWaitNanos := atomic.LoadInt64(&state.LockWaitNanos)
-			mmapRemapCount := atomic.LoadUint64(&state.MMAPRemapCount)
-
-			// These should be tracked during multi-process operations
-			t.Logf("Multi-process metrics: processes=%d, contentions=%d, lockWait=%dms, remaps=%d",
-				processCount, contentionCount, lockWaitNanos/1e6, mmapRemapCount)
-
-			// At minimum, verify they're accessible without panics
-			_ = atomic.LoadUint64(&state.FalseShareCount)
-			_ = atomic.LoadInt64(&state.LastProcessHeartbeat)
-		})
-
 		// Check error metrics
 		t.Run("ErrorMetrics", func(t *testing.T) {
 			errorCount := atomic.LoadUint64(&state.ErrorCount)
@@ -295,7 +274,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 				errorCount, failedWrites, readErrors)
 		})
 
-		// Verify all 70 metrics are accessible
+		// Verify all 66 metrics are accessible
 		t.Run("AllMetricsAccessible", func(t *testing.T) {
 			// This ensures we don't panic when accessing any metric
 			metrics := []struct {

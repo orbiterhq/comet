@@ -216,15 +216,11 @@ Each shard maintains a 1KB state file with cache-line aligned sections:
 │ SkippedCompression (8B) │ Too small to compress
 │ CompressionRatio (8B)   │ Average ratio * 100
 │ CompressionTime (8B)    │ Total compress time
-│ BestCompression (8B)    │ Best ratio * 100
-│ WorstCompression (8B)   │ Worst ratio * 100
 ├─────────────────────────┤ Line 3 (192-255): Latency
 │ WriteLatencySum (8B)    │ Sum for averaging
 │ WriteLatencyCount (8B)  │ Count for averaging
 │ MinWriteLatency (8B)    │ Minimum seen
 │ MaxWriteLatency (8B)    │ Maximum seen
-│ P50WriteLatency (8B)    │ Median estimate
-│ P99WriteLatency (8B)    │ 99th percentile
 │ SyncLatencyNanos (8B)   │ Time in fsync
 ├─────────────────────────┤ Line 4 (256-319): File ops
 │ FilesCreated (8B)       │ Total files created
@@ -234,6 +230,7 @@ Each shard maintains a 1KB state file with cache-line aligned sections:
 │ CurrentFiles (8B)       │ Current file count
 │ TotalFileBytes (8B)     │ Total disk size
 │ FailedRotations (8B)    │ Rotation failures
+│ SyncCount (8B)          │ Total sync operations
 ├─────────────────────────┤ Line 5 (320-383): Checkpoint
 │ CheckpointCount (8B)    │ Total checkpoints
 │ LastCheckpoint (8B)     │ Last checkpoint time

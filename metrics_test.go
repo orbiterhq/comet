@@ -353,8 +353,6 @@ func TestWriteLatencyMetrics(t *testing.T) {
 		sum := atomic.LoadUint64(&state.WriteLatencySum)
 		min := atomic.LoadUint64(&state.MinWriteLatency)
 		max := atomic.LoadUint64(&state.MaxWriteLatency)
-		p50 := atomic.LoadUint64(&state.P50WriteLatency)
-		p99 := atomic.LoadUint64(&state.P99WriteLatency)
 
 		avgLatency := sum / count
 
@@ -363,30 +361,10 @@ func TestWriteLatencyMetrics(t *testing.T) {
 		t.Logf("  Avg: %d ns (%.2f μs)", avgLatency, float64(avgLatency)/1000)
 		t.Logf("  Min: %d ns (%.2f μs)", min, float64(min)/1000)
 		t.Logf("  Max: %d ns (%.2f μs)", max, float64(max)/1000)
-		t.Logf("  P50: %d ns (%.2f μs)", p50, float64(p50)/1000)
-		t.Logf("  P99: %d ns (%.2f μs)", p99, float64(p99)/1000)
 
 		// Validate metrics
 		if min == 0 || min > max {
 			t.Errorf("Invalid min/max: min=%d, max=%d", min, max)
-		}
-
-		if p50 == 0 {
-			t.Error("P50 latency not tracked")
-		}
-
-		if p99 == 0 {
-			t.Error("P99 latency not tracked")
-		}
-
-		// P50 should be between min and max
-		if p50 < min || p50 > max {
-			t.Errorf("P50 (%d) outside range [%d, %d]", p50, min, max)
-		}
-
-		// P99 should be >= P50
-		if p99 < p50 {
-			t.Errorf("P99 (%d) < P50 (%d)", p99, p50)
 		}
 	}
 }

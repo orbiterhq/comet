@@ -104,18 +104,12 @@ func TestCompressionEdgeCaseMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	// Check best/worst compression
-	bestCompression := atomic.LoadUint64(&state.BestCompression)
-	worstCompression := atomic.LoadUint64(&state.WorstCompression)
+	// Check compression metrics
+	compressionRatio := atomic.LoadUint64(&state.CompressionRatio)
 
 	// These may be 0 if compression tracking isn't fully implemented
 	t.Logf("Compression edge case metrics:")
-	t.Logf("  Best compression ratio: %d%%", bestCompression)
-	t.Logf("  Worst compression ratio: %d%%", worstCompression)
-
-	// At minimum, verify they're accessible
-	_ = bestCompression
-	_ = worstCompression
+	t.Logf("  Average compression ratio: %d%%", compressionRatio)
 }
 
 // TestCheckpointMetrics tests checkpoint-related metrics
@@ -182,14 +176,18 @@ func TestSyncLatencyMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	// Check sync latency
+	// Check sync metrics
 	syncLatencyNanos := atomic.LoadInt64(&state.SyncLatencyNanos)
+	syncCount := atomic.LoadUint64(&state.SyncCount)
 
 	t.Logf("Sync metrics:")
 	t.Logf("  Sync latency: %d ns", syncLatencyNanos)
+	t.Logf("  Sync count: %d", syncCount)
 
-	// Verify it's accessible (may be 0 if not tracked)
-	_ = syncLatencyNanos
+	// Should have at least one sync from client.Sync() call
+	if syncCount == 0 {
+		t.Error("Expected SyncCount > 0 after calling Sync()")
+	}
 }
 
 // TestRotationFailureMetrics tests failed rotation tracking
@@ -246,11 +244,9 @@ func TestIndexErrorMetrics(t *testing.T) {
 	state := shard.state
 	// Check index metrics
 	indexPersistErrors := atomic.LoadUint64(&state.IndexPersistErrors)
-	indexSizeBytes := atomic.LoadUint64(&state.IndexSizeBytes)
 
 	t.Logf("Index error metrics:")
 	t.Logf("  Index persist errors: %d", indexPersistErrors)
-	t.Logf("  Index size bytes: %d", indexSizeBytes)
 }
 
 // TestCorruptionMetrics tests corruption detection metrics
@@ -360,7 +356,7 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 	t.Logf("  Protected by consumers: %d", protectedByConsumers)
 }
 
-// TestMetricsCompleteness verifies all 70 metrics are accessible
+// TestMetricsCompleteness verifies all 66 metrics are accessible
 func TestMetricsCompleteness(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
@@ -381,7 +377,7 @@ func TestMetricsCompleteness(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	// Access ALL 70 metrics to ensure they don't panic
+	// Access ALL 66 metrics to ensure they don't panic
 	metrics := map[string]interface{}{
 		"Version":              atomic.LoadUint64(&state.Version),
 		"WriteOffset":          atomic.LoadUint64(&state.WriteOffset),
@@ -402,14 +398,10 @@ func TestMetricsCompleteness(t *testing.T) {
 		"SkippedCompression":   atomic.LoadUint64(&state.SkippedCompression),
 		"CompressionRatio":     atomic.LoadUint64(&state.CompressionRatio),
 		"CompressionTimeNanos": atomic.LoadInt64(&state.CompressionTimeNanos),
-		"BestCompression":      atomic.LoadUint64(&state.BestCompression),
-		"WorstCompression":     atomic.LoadUint64(&state.WorstCompression),
 		"WriteLatencySum":      atomic.LoadUint64(&state.WriteLatencySum),
 		"WriteLatencyCount":    atomic.LoadUint64(&state.WriteLatencyCount),
 		"MinWriteLatency":      atomic.LoadUint64(&state.MinWriteLatency),
 		"MaxWriteLatency":      atomic.LoadUint64(&state.MaxWriteLatency),
-		"P50WriteLatency":      atomic.LoadUint64(&state.P50WriteLatency),
-		"P99WriteLatency":      atomic.LoadUint64(&state.P99WriteLatency),
 		"SyncLatencyNanos":     atomic.LoadInt64(&state.SyncLatencyNanos),
 		"FilesCreated":         atomic.LoadUint64(&state.FilesCreated),
 		"FilesDeleted":         atomic.LoadUint64(&state.FilesDeleted),
@@ -418,12 +410,12 @@ func TestMetricsCompleteness(t *testing.T) {
 		"CurrentFiles":         atomic.LoadUint64(&state.CurrentFiles),
 		"TotalFileBytes":       atomic.LoadUint64(&state.TotalFileBytes),
 		"FailedRotations":      atomic.LoadUint64(&state.FailedRotations),
+		"SyncCount":            atomic.LoadUint64(&state.SyncCount),
 		"CheckpointCount":      atomic.LoadUint64(&state.CheckpointCount),
 		"LastCheckpointNanos":  atomic.LoadInt64(&state.LastCheckpointNanos),
 		"CheckpointTimeNanos":  atomic.LoadInt64(&state.CheckpointTimeNanos),
 		"IndexPersistCount":    atomic.LoadUint64(&state.IndexPersistCount),
 		"IndexPersistErrors":   atomic.LoadUint64(&state.IndexPersistErrors),
-		"IndexSizeBytes":       atomic.LoadUint64(&state.IndexSizeBytes),
 		"BinaryIndexNodes":     atomic.LoadUint64(&state.BinaryIndexNodes),
 		"ActiveReaders":        atomic.LoadUint64(&state.ActiveReaders),
 		"TotalReaders":         atomic.LoadUint64(&state.TotalReaders),
@@ -447,11 +439,18 @@ func TestMetricsCompleteness(t *testing.T) {
 		"OldestEntryNanos":     atomic.LoadInt64(&state.OldestEntryNanos),
 		"RetentionErrors":      atomic.LoadUint64(&state.RetentionErrors),
 		"ProtectedByConsumers": atomic.LoadUint64(&state.ProtectedByConsumers),
+		"ReaderFileMaps":       atomic.LoadUint64(&state.ReaderFileMaps),
+		"ReaderFileUnmaps":     atomic.LoadUint64(&state.ReaderFileUnmaps),
+		"ReaderCacheBytes":     atomic.LoadUint64(&state.ReaderCacheBytes),
+		"ReaderMappedFiles":    atomic.LoadUint64(&state.ReaderMappedFiles),
+		"ReaderFileRemaps":     atomic.LoadUint64(&state.ReaderFileRemaps),
+		"ReaderCacheEvicts":    atomic.LoadUint64(&state.ReaderCacheEvicts),
 	}
 
 	// Count how many metrics we accessed
-	if len(metrics) != 70 {
-		t.Errorf("Expected to access 70 metrics, got %d", len(metrics))
+	// Original 70 - 3 removed (BestCompression, WorstCompression, IndexSizeBytes) + 1 added (SyncCount) - 2 removed (P50, P99) = 66
+	if len(metrics) != 66 {
+		t.Errorf("Expected to access 66 metrics, got %d", len(metrics))
 	}
 
 	t.Logf("Successfully accessed all %d metrics without panic", len(metrics))

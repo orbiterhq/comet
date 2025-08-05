@@ -74,38 +74,6 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 	}
 }
 
-// BenchmarkLatencyMetrics specifically benchmarks the latency tracking overhead
-func BenchmarkLatencyMetrics(b *testing.B) {
-	dir := b.TempDir()
-	config := DeprecatedMultiProcessConfig(0, 2)
-
-	client, err := NewClient(dir, config)
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer client.Close()
-
-	shard, err := client.getOrCreateShard(0)
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	if shard.state == nil {
-		b.Skip("State not available")
-	}
-
-	b.Run("UpdateWriteLatency", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			// Simulate various latencies
-			latency := uint64(100000 + i%50000) // 100-150μs range
-			if state := shard.state; state != nil {
-				state.UpdateWriteLatency(latency)
-			}
-		}
-	})
-}
-
 // BenchmarkCompressionMetrics benchmarks compression with metrics tracking
 func BenchmarkCompressionMetrics(b *testing.B) {
 	ctx := context.Background()

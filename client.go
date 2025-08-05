@@ -619,7 +619,14 @@ func (c *Client) Sync(ctx context.Context) error {
 			shard.writeMu.Lock()
 			err := shard.writer.Flush()
 			if err == nil && shard.dataFile != nil {
+				// Track sync latency
+				syncStart := time.Now()
 				err = shard.dataFile.Sync()
+				if err == nil && shard.state != nil {
+					syncDuration := time.Since(syncStart).Nanoseconds()
+					atomic.AddInt64(&shard.state.SyncLatencyNanos, syncDuration)
+					atomic.AddUint64(&shard.state.SyncCount, 1)
+				}
 			}
 			shard.writeMu.Unlock()
 			if err != nil {
@@ -1199,10 +1206,6 @@ func (s *Shard) trackWriteMetrics(startTime time.Time, entries [][]byte, compres
 			}
 		}
 
-		// Update percentiles (simplified - just track recent values)
-		// In production, use a proper percentile tracker
-		atomic.StoreUint64(&state.P50WriteLatency, latencyNanos)
-		atomic.StoreUint64(&state.P99WriteLatency, latencyNanos)
 	}
 
 	// Update client metrics
@@ -1279,6 +1282,9 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 		return
 	}
 
+	// Track checkpoint timing
+	checkpointStart := time.Now()
+
 	// Clone index while holding lock
 	indexCopy := s.cloneIndex()
 	s.writesSinceCheckpoint = 0
@@ -1295,13 +1301,25 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 	if err != nil && clientMetrics != nil {
 		clientMetrics.IndexPersistErrors.Add(1)
 		clientMetrics.ErrorCount.Add(1)
-	} else if clientMetrics != nil {
-		clientMetrics.CheckpointsWritten.Add(1)
+	} else {
+		if clientMetrics != nil {
+			clientMetrics.CheckpointsWritten.Add(1)
+		}
+		// Track checkpoint metrics in state
+		if state := s.state; state != nil {
+			atomic.AddUint64(&state.CheckpointCount, 1)
+			atomic.StoreInt64(&state.LastCheckpointNanos, time.Now().UnixNano())
+			checkpointDuration := time.Since(checkpointStart).Nanoseconds()
+			atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
+		}
 	}
 }
 
 // rotateFile creates a new data file when size limit is reached
 func (s *Shard) rotateFile(config *CometConfig) error {
+	// Track rotation time
+	rotationStart := time.Now()
+
 	// Quick check without lock
 	s.mu.RLock()
 	needsRotation := s.index.CurrentWriteOffset >= config.Storage.MaxFileSize
@@ -1317,6 +1335,10 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 
 	// Ensure shard directory exists (in case it was deleted)
 	if err := os.MkdirAll(shardDir, 0755); err != nil {
+		// Track failed rotation
+		if state := s.state; state != nil {
+			atomic.AddUint64(&state.FailedRotations, 1)
+		}
 		return fmt.Errorf("failed to create shard directory: %w", err)
 	}
 
@@ -1331,6 +1353,10 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	newFilePath := filepath.Join(shardDir, fmt.Sprintf("log-%016d.comet", fileSequence))
 	newFile, err := os.OpenFile(newFilePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
+		// Track failed rotation
+		if state := s.state; state != nil {
+			atomic.AddUint64(&state.FailedRotations, 1)
+		}
 		return fmt.Errorf("failed to create new file: %w", err)
 	}
 
@@ -1409,10 +1435,16 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	if oldFile != nil {
 		// For now, do this synchronously to fix tests
 		// TODO: Make async once we handle file references properly
+		syncStart := time.Now()
 		if err := oldFile.Sync(); err != nil {
 			if s.logger != nil {
 				s.logger.Warn("Failed to sync old file during rotation", "error", err)
 			}
+		} else if state := s.state; state != nil {
+			// Track sync latency during rotation
+			syncDuration := time.Since(syncStart).Nanoseconds()
+			atomic.AddInt64(&state.SyncLatencyNanos, syncDuration)
+			atomic.AddUint64(&state.SyncCount, 1)
 		}
 		if err := oldFile.Close(); err != nil {
 			if s.logger != nil {
@@ -1423,6 +1455,12 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 
 	// Skip checkpoint during rotation to avoid deadlock
 	// The periodic flush and regular checkpoints will handle persistence
+
+	// Track rotation time
+	if state := s.state; state != nil {
+		rotationDuration := time.Since(rotationStart).Nanoseconds()
+		atomic.AddInt64(&state.RotationTimeNanos, rotationDuration)
+	}
 
 	return nil
 }
@@ -1829,6 +1867,11 @@ func (s *Shard) recoverFromCrash() error {
 				"shard", s.shardID)
 		}
 
+		// Track truncation as partial write
+		if state := s.state; state != nil {
+			atomic.AddUint64(&state.PartialWrites, 1)
+		}
+
 		// Scan file to count entries
 		entryCount, err := s.scanFileEntries(file)
 		if err != nil {
@@ -1861,12 +1904,21 @@ func (s *Shard) scanFileEntries(file *os.File) (int64, error) {
 			return count, err
 		}
 		if n < headerSize {
+			// Partial header detected
+			if state := s.state; state != nil {
+				atomic.AddUint64(&state.PartialWrites, 1)
+			}
 			break
 		}
 
 		// Parse header
 		size := binary.LittleEndian.Uint32(header[0:4])
 		if size == 0 || size > maxEntrySize {
+			// Invalid header, likely incomplete write
+			if size == 0 && s.state != nil {
+				// Zero size likely means partial write
+				atomic.AddUint64(&s.state.PartialWrites, 1)
+			}
 			break // Invalid entry
 		}
 
@@ -2056,6 +2108,9 @@ func (c *Client) Close() error {
 		// Final checkpoint - do it directly since we already hold the lock
 		// Always checkpoint on close to ensure index is persisted
 		if shard.shouldCheckpoint(&c.config) || true { // Force checkpoint on close
+			// Track checkpoint timing
+			checkpointStart := time.Now()
+
 			// Clone index while holding lock
 			indexCopy := shard.cloneIndex()
 			shard.writesSinceCheckpoint = 0
@@ -2077,6 +2132,13 @@ func (c *Client) Close() error {
 				c.metrics.ErrorCount.Add(1)
 			} else {
 				c.metrics.CheckpointsWritten.Add(1)
+				// Track checkpoint metrics in state
+				if state := shard.state; state != nil {
+					atomic.AddUint64(&state.CheckpointCount, 1)
+					atomic.StoreInt64(&state.LastCheckpointNanos, time.Now().UnixNano())
+					checkpointDuration := time.Since(checkpointStart).Nanoseconds()
+					atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
+				}
 			}
 		}
 
@@ -2090,7 +2152,13 @@ func (c *Client) Close() error {
 
 		// Ensure data is persisted to disk before closing
 		if shard.dataFile != nil {
-			shard.dataFile.Sync()
+			syncStart := time.Now()
+			if err := shard.dataFile.Sync(); err == nil && shard.state != nil {
+				// Track sync latency during close
+				syncDuration := time.Since(syncStart).Nanoseconds()
+				atomic.AddInt64(&shard.state.SyncLatencyNanos, syncDuration)
+				atomic.AddUint64(&shard.state.SyncCount, 1)
+			}
 		}
 
 		// Close compressor
@@ -2401,8 +2469,6 @@ func (c *Client) GetShardStats(shardID uint32) (map[string]interface{}, error) {
 			stateMetrics["avg_write_latency_us"] = float64(sum/count) / 1000
 			stateMetrics["min_write_latency_us"] = float64(atomic.LoadUint64(&state.MinWriteLatency)) / 1000
 			stateMetrics["max_write_latency_us"] = float64(atomic.LoadUint64(&state.MaxWriteLatency)) / 1000
-			stateMetrics["p50_write_latency_us"] = float64(atomic.LoadUint64(&state.P50WriteLatency)) / 1000
-			stateMetrics["p99_write_latency_us"] = float64(atomic.LoadUint64(&state.P99WriteLatency)) / 1000
 		}
 
 		// File metrics

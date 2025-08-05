@@ -27,16 +27,26 @@ High-performance embedded segmented log for edge observability. Built for single
 
 - **FileInfo** - Tracks individual data files including byte ranges, entry counts, and timestamps. Used for file rotation and retention management.
 
+- **CometState** - Memory-mapped state file (1KB) per shard providing lock-free metrics and coordination. Cache-line aligned structure with comprehensive metrics across 15 cache lines.
+
+### Supporting Components
+
+- **StateRecovery** - Validates and recovers from corrupted state files. Provides automatic recovery with synchronization between state and index.
+
+- **ProcessID** - Manages process slot assignment for multi-process deployments. Supports automatic dead process detection and slot reclamation.
+
+- **Retention** - Background goroutine for automated data lifecycle management. Implements time and size-based retention with consumer protection.
+
 ### Data Format
 
-- **Wire Format** - Each entry consists of: `[uint32 length][uint64 timestamp][byte[] data]`
-- **Compression** - Automatic zstd compression for entries above configurable threshold
+- **Wire Format** - Each entry consists of: `[uint32 length][uint64 timestamp][byte[] data]` where length is data size only (excludes 12-byte header)
+- **Compression** - Automatic zstd compression for entries above configurable threshold. Detected by magic bytes (0x28B52FFD) at start of data
 - **File Rotation** - Automatic rotation when files exceed size limits (default: 1GB)
 
 ### Advanced Features
 
 - **Smart Sharding** - Built-in support for consistent hash-based sharding with helper functions for shard selection and distribution
-- **Multi-Writer Safety** - Optional file-based locking for safe concurrent writes from multiple processes
+- **Multi-Process Safety** - Process-based shard ownership for safe concurrent access from multiple processes
 - **Retention Management** - Configurable time and size-based retention with protection for unconsumed data
 - **Metrics** - Comprehensive metrics tracking including write latency, compression ratios, and consumer lag
 
