@@ -14,15 +14,15 @@ import (
 // TestQuickACKStress is a faster version for regular testing
 func TestQuickACKStress(t *testing.T) {
 	dir := t.TempDir()
-	config := DeprecatedMultiProcessConfig(0, 2)
 	stream := "quick:v1:shard:0000"
 	totalMessages := 200
 
 	// Write messages
-	client, err := NewClient(dir, config)
+	client, err := NewMultiProcessClient(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cleanupClient(t, client)
 
 	var messages [][]byte
 	for i := 0; i < totalMessages; i++ {
@@ -35,6 +35,7 @@ func TestQuickACKStress(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.Close()
+	client = nil // Already closed, prevent double close in defer
 
 	// Track processed messages to detect duplicates
 	processedMessages := make(map[string]bool)
@@ -44,7 +45,7 @@ func TestQuickACKStress(t *testing.T) {
 
 	// Aggressive restart pattern - restart after every 2-3 batches
 	for restart := 0; restart < 20 && atomic.LoadInt64(&totalProcessed) < int64(totalMessages); restart++ {
-		client, err := NewClient(dir, config)
+		client, err := NewMultiProcessClient(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,9 +134,8 @@ func TestACKEdgeCases(t *testing.T) {
 
 func testEmptyBatchACK(t *testing.T) {
 	dir := t.TempDir()
-	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClient(dir, config)
+	client, err := NewMultiProcessClient(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,11 +319,10 @@ func testOutOfOrderACK(t *testing.T) {
 func testRapidACKUnACK(t *testing.T) {
 	// Test rapid ACK operations that could cause race conditions
 	dir := t.TempDir()
-	config := DeprecatedMultiProcessConfig(0, 2)
 	stream := "rapid:v1:shard:0000"
 
 	// Write messages
-	client, err := NewClient(dir, config)
+	client, err := NewMultiProcessClient(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +339,7 @@ func testRapidACKUnACK(t *testing.T) {
 	client.Close()
 
 	// Rapid ACK operations
-	client2, err := NewClient(dir, config)
+	client2, err := NewMultiProcessClient(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,8 +38,16 @@ func TestGetProcessID_MultiProcess(t *testing.T) {
 
 	shmFile := t.TempDir() + "/worker-slots-integration"
 	numProcesses := 4
+	maxSlots := runtime.NumCPU()
+	
+	// In CI environments, we might have fewer CPU cores than processes
+	expectedSlots := numProcesses
+	if maxSlots < numProcesses {
+		expectedSlots = maxSlots
+		t.Logf("Note: System has %d CPU cores, but test wants %d processes. Only %d slots available.", maxSlots, numProcesses, maxSlots)
+	}
 
-	t.Logf("Starting process ID test with %d processes, shared memory file: %s", numProcesses, shmFile)
+	t.Logf("Starting process ID test with %d processes, %d expected slots, shared memory file: %s", numProcesses, expectedSlots, shmFile)
 
 	// Start multiple processes
 	var processes []*exec.Cmd
@@ -86,7 +94,7 @@ func TestGetProcessID_MultiProcess(t *testing.T) {
 	wg.Wait()
 
 	// Verify that processes acquired unique IDs by checking the shared memory file
-	verifyUniqueSlotAssignment(t, shmFile, numProcesses)
+	verifyUniqueSlotAssignment(t, shmFile, expectedSlots)
 }
 
 func runProcessIDWorker(t *testing.T, workerIDStr string) {
@@ -107,11 +115,12 @@ func runProcessIDWorker(t *testing.T, workerIDStr string) {
 	config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
 
 	tempDir := t.TempDir()
+	ensureDirectoryCleanup(t, tempDir)
 	client, err := NewClient(tempDir, config)
 	if err != nil {
 		t.Fatalf("Worker %d failed to create Comet client: %v", workerID, err)
 	}
-	defer client.Close()
+	defer cleanupClient(t, client)
 
 	// Test basic operations
 	ctx := context.Background()
@@ -144,7 +153,7 @@ func runProcessIDWorker(t *testing.T, workerIDStr string) {
 	t.Logf("Worker %d completed successfully with process ID %d", workerID, processID)
 }
 
-func verifyUniqueSlotAssignment(t *testing.T, shmFile string, expectedProcesses int) {
+func verifyUniqueSlotAssignment(t *testing.T, shmFile string, expectedSlots int) {
 	maxWorkers := runtime.NumCPU()
 	slotSize := 8
 
@@ -184,7 +193,12 @@ func verifyUniqueSlotAssignment(t *testing.T, shmFile string, expectedProcesses 
 		t.Errorf("Expected %d unique PIDs, got %d", occupiedSlots, len(seenPIDs))
 	}
 
-	t.Logf("Successfully assigned %d unique process slots out of %d processes", occupiedSlots, expectedProcesses)
+	t.Logf("Successfully assigned %d unique process slots out of %d expected slots", occupiedSlots, expectedSlots)
+	
+	// Verify we got the expected number of slots
+	if occupiedSlots != expectedSlots {
+		t.Errorf("Expected %d occupied slots, got %d", expectedSlots, occupiedSlots)
+	}
 }
 
 // TestGetProcessID_ProcessRestart tests process restart scenarios
@@ -259,11 +273,12 @@ func runRestartWorker(t *testing.T, phase string) {
 	// Create Comet client
 	config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
 	tempDir := t.TempDir()
+	ensureDirectoryCleanup(t, tempDir)
 	client, err := NewClient(tempDir, config)
 	if err != nil {
 		t.Fatalf("Failed to create Comet client in phase %s: %v", phase, err)
 	}
-	defer client.Close()
+	defer cleanupClient(t, client)
 
 	// Test operations
 	ctx := context.Background()
@@ -369,11 +384,12 @@ func runFailureWorker(t *testing.T, workerType string) {
 		// Test that we can use it
 		config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
 		tempDir := t.TempDir()
+		ensureDirectoryCleanup(t, tempDir)
 		client, err := NewClient(tempDir, config)
 		if err != nil {
 			t.Fatalf("Recovery worker failed to create Comet client: %v", err)
 		}
-		defer client.Close()
+		defer cleanupClient(t, client)
 
 		ctx := context.Background()
 		streamName := fmt.Sprintf("test:recovery:shard:%04d", processID)

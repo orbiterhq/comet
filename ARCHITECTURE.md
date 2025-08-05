@@ -16,7 +16,8 @@ This document provides an in-depth look at Comet's architecture, explaining the 
 10. [Consumer Architecture](#consumer-architecture)
 11. [Retention Management](#retention-management)
 12. [Crash Recovery](#crash-recovery)
-13. [Benchmarking Results](#benchmarking-results)
+13. [Logging and Debugging](#logging-and-debugging)
+14. [Benchmarking Results](#benchmarking-results)
 
 ## Overview
 
@@ -67,11 +68,7 @@ Shard Directory Structure:
 ├── log-0000000000000002.comet   # Second segment file
 ├── log-0000000000000003.comet   # Current write file
 ├── index.bin                    # Binary index file
-├── comet.state                  # 1024-byte unified state (multi-process mode)
-├── index.lock                   # Index write lock (multi-process mode)
-├── retention.lock               # Retention coordination lock (multi-process mode)
-├── rotation.lock                # File rotation coordination lock (multi-process mode)
-└── shard.lock                   # Data write lock (multi-process mode)
+└── comet.state                  # 1024-byte unified state (always present)
 ```
 
 ### Wire Format
@@ -124,9 +121,9 @@ Batch writes use vectored I/O to minimize syscalls. Instead of one syscall per e
 
 O(log n) lookups instead of linear scans. The index stores checkpoints every N entries (configurable via BoundaryInterval). To find an entry, we binary search to the nearest checkpoint, then perform a short linear scan. This balances memory usage with lookup performance.
 
-### 6. Compression Workers
+### 6. Pre-Compression Outside Locks
 
-Parallel compression with bounded queues. Multiple worker goroutines handle compression in parallel, preventing compression from becoming a bottleneck. The queue size is bounded to prevent memory bloat.
+Compression happens before acquiring any locks. The `preCompressEntries` function compresses all entries in parallel before the write lock is acquired, preventing compression from blocking other operations.
 
 ### 7. Instant Change Detection
 
@@ -150,26 +147,22 @@ Unified state for multi-process coordination. Writers update the `LastIndexUpdat
 3. **Read from mmap** (atomic pointer, no lock)
 4. **Decompress** (parallel, no lock)
 
-### Multi-Process Lock Files
+### Process-Based Shard Ownership
 
-In multi-process mode, Comet uses specialized lock files for different coordination needs:
+In the current implementation, Comet uses a simplified approach where **processes own shards exclusively**. This eliminates the need for file-based locks:
 
-| Lock File        | Purpose                    | Frequency | Blocking | Notes                                |
-| ---------------- | -------------------------- | --------- | -------- | ------------------------------------ |
-| `shard.lock`     | Data write coordination    | High      | Yes      | Ensures only one process writes data |
-| `index.lock`     | Index modification safety  | Medium    | Yes      | Prevents concurrent index corruption |
-| `rotation.lock`  | File rotation coordination | Low       | No       | Non-blocking to prevent deadlocks    |
-| `retention.lock` | Retention operation safety | Low       | No       | Non-blocking to prevent hanging      |
-
-**Non-blocking locks** use `LOCK_NB` flag - if another process holds the lock, the operation is skipped rather than waiting. This prevents deadlocks in scenarios where operations can be safely deferred.
+- Each shard is assigned to exactly one process based on `shardID % processCount == processID`
+- No lock files are needed since only one process can write to a shard
+- The `comet.state` file provides lock-free coordination through atomic operations
+- This design dramatically reduces complexity and improves performance
 
 ### Lock Hierarchy
 
-To prevent deadlocks:
+The simplified architecture uses minimal locking:
 
-1. Shard lock (data operations)
-2. Index lock (index operations)
-3. Never hold both simultaneously
+1. **Shard mutex** (`shard.mu`) - Protects in-memory shard state within a process
+2. **Write mutex** (`shard.writeMu`) - Protects the buffered writer during I/O operations
+3. **Index mutex** (`shard.indexMu`) - Protects index file writes
 
 ## Memory Management
 
@@ -179,10 +172,11 @@ Comet's memory management addresses production memory exhaustion issues with lon
 
 #### Smart File Mapping
 
-The reader system supports two operating modes:
+The reader system uses intelligent on-demand file mapping to optimize memory usage:
 
-1. **MapAllFiles=true**: Maps all files immediately for maximum read performance
-2. **MapAllFiles=false** (default): Only maps files containing unACKed data, dramatically reducing memory usage
+- Files are mapped only when accessed, not eagerly
+- LRU eviction ensures only frequently accessed files remain mapped
+- Memory limits are strictly enforced to prevent exhaustion
 
 #### Memory Bounds Enforcement
 
@@ -278,7 +272,7 @@ Critical insight: compression is CPU-intensive but doesn't need the lock:
 
 Chosen for:
 
-- Best compression ratio (37:1 on structured logs)
+- Best compression ratio
 - Good speed/ratio balance
 - Streaming support
 - Dictionary potential (future)
@@ -332,7 +326,7 @@ type CometState struct {
     FileSize         uint64  // Current size of active file
     LastFileSequence uint64  // Last file sequence number
     _padding1        uint64  // Padding for cache alignment
-    
+
     // Cache line 2: Write metrics (64-127 bytes)
     TotalEntries     int64   // Total entries written
     TotalBytes       uint64  // Total uncompressed bytes
@@ -401,13 +395,20 @@ Processes coordinate through atomic operations on shared memory:
 - **No File Locking**: Traditional file locks eliminated for data writes
 - **Background Index Updates**: Index persistence happens asynchronously
 
-### Legacy File Locking (Fallback)
+### Process ID Coordination
 
-For non-mmap mode, we use advisory file locks (flock) to coordinate writes between processes. The lock is held only during the actual write operation, not during compression or other preparation.
+Comet provides automatic process ID assignment for multi-process deployments:
 
-### Separate Index Lock
+```go
+// GetProcessID automatically assigns unique IDs (0 to N-1) using shared memory
+processID := comet.GetProcessID()
+if processID < 0 {
+    log.Fatal("Failed to acquire process ID")
+}
+config := comet.MultiProcessConfig()
+```
 
-A separate lock for index updates prevents reader starvation. Writers can update the index without blocking data reads. This separation is crucial for maintaining low read latency.
+The process ID system uses a small shared memory file (`/tmp/comet-worker-slots`) to coordinate ID assignment, with automatic cleanup on process exit.
 
 ### Unified State Architecture
 
@@ -534,6 +535,15 @@ Offsets are persisted in the index:
 - Durable on checkpoint
 - Recovered on startup
 - No data loss for acknowledged messages
+
+### State Recovery
+
+The `state_recovery.go` module handles validation and recovery of the unified state file:
+
+- Validates state version and sanity checks critical fields
+- Synchronizes state with index when they're out of sync
+- Handles corrupted state by renaming and recreating
+- Supports future version migrations through the version field
 
 ## Memory Alignment Strategy
 
@@ -715,10 +725,11 @@ The fixed wire format and bounded operations make Comet suitable for fuzz testin
 Default configuration optimized for common use cases:
 
 - 256MB file size - Balanced memory usage and performance
-- 2KB compression threshold - Balanced CPU vs storage
+- 4KB compression threshold - Only compress entries >4KB to avoid latency hit
 - 100-entry boundaries - Memory-efficient indexing
-- 4-hour retention - Typical debugging window
-- Bounded file mapping - Smart memory management for long retention
+- 7-day retention - One week of data by default
+- 10GB max per shard - Reasonable size limit
+- 2GB reader memory limit - Bounded memory usage for file mapping
 
 ### Progressive Disclosure
 
@@ -728,9 +739,25 @@ Configuration complexity hidden behind:
 2. Specialized configs (HighCompression, MultiProcess, etc.)
 3. Full customization via CometConfig
 
-### Migration Support
+### Configuration Helpers
 
-Automatic migration from old config structure ensures smooth upgrades without breaking existing deployments.
+Comet provides several helper functions for common configurations:
+
+- `DefaultCometConfig()` - Sensible defaults for most use cases
+- `MultiProcessConfig()` - Automatically acquires process ID and configures for multi-process
+- `HighCompressionConfig()` - Optimizes for storage efficiency
+- `HighThroughputConfig()` - Optimizes for write performance with larger batches
+
+The `MultiProcessConfig()` helper is particularly useful as it handles all the complexity of process ID assignment:
+
+```go
+// Automatic multi-process setup
+client, err := comet.NewMultiProcessClient("./data")
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close() // Automatically releases process ID
+```
 
 ## API Design Principles
 
@@ -784,34 +811,37 @@ Consumer acknowledgments are immediately durable through index persistence. This
 
 The system favors throughput over immediate durability, suitable for observability data where some loss is acceptable.
 
-## Benchmarking Results
+## Logging and Debugging
 
-### Single-Process Mode (Default)
+### Logger Interface
 
-```
-BenchmarkWrite_SingleEntry-8         594k ops/s    1.7μs/op     203 B/op    6 allocs/op
-BenchmarkWrite_SmallBatch-8       230k batches/s   2.7μs/batch  1310 B/op   5 allocs/op (10 entries)
-BenchmarkWrite_LargeBatch-8        70k batches/s   9.0μs/batch  13k B/op    5 allocs/op (100 entries)
-BenchmarkWrite_HugeBatch-8         12k batches/s   112μs/batch  383k B/op   7 allocs/op (1K entries)
-BenchmarkWrite_MegaBatch-8        1.2k batches/s   548μs/batch  1.6M B/op   7 allocs/op (10K entries)
-```
+Comet uses a simple, adaptable logger interface:
 
-### Multi-Process Mode (Memory-Mapped)
-
-```
-BenchmarkMultiProcessThroughput/SingleEntry-8    30k ops/s     33μs/op      5k B/op    51 allocs/op
-BenchmarkMultiProcessThroughput/SmallBatch-8     16k batches/s 35μs/batch   9k B/op    54 allocs/op (10 entries)
-BenchmarkMultiProcessThroughput/LargeBatch-8     10k batches/s 56μs/batch   65k B/op   65 allocs/op (100 entries)
-BenchmarkMultiProcessThroughput/HugeBatch-8      6k batches/s  170μs/batch  363k B/op  120 allocs/op (1K entries)
-BenchmarkMultiProcessThroughput/MegaBatch-8      312 batches/s 2.0ms/batch  2.9M B/op  856 allocs/op (10K entries)
+```go
+type Logger interface {
+    Debug(msg string, keysAndValues ...interface{})
+    Info(msg string, keysAndValues ...interface{})
+    Warn(msg string, keysAndValues ...interface{})
+    Error(msg string, keysAndValues ...interface{})
+    WithContext(ctx context.Context) Logger
+    WithFields(keysAndValues ...interface{}) Logger
+}
 ```
 
-### Key Insights
+### Logger Implementations
 
-1. **Batching is critical**: ~66x improvement from single entry to 1000-entry batches (1.7μs → 0.11μs per entry)
-2. **Multi-process overhead decreases with batch size**: 19x slower for single entries, only 1.5x slower for 1K batches
-3. **Memory-mapped coordination is efficient**: 33μs latency is exceptional for multi-process writes
-4. **Compression is worth it**: 37:1 ratio saves enormous disk I/O
+- **NoOpLogger**: Discards all logs (zero overhead)
+- **StdLogger**: Simple stdout/stderr logger with configurable levels
+- **SlogAdapter**: Adapter for Go's standard slog package
+
+### Debug Mode
+
+Debug logging can be enabled via:
+- Environment variable: `COMET_DEBUG=1`
+- Configuration: `config.Log.EnableDebug = true`
+- Runtime: `comet.SetDebug(true)`
+
+The debug mode is controlled by an atomic variable for thread-safe runtime changes.
 
 ## Lock Hierarchy and Deadlock Prevention
 

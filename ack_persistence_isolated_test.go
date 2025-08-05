@@ -30,6 +30,7 @@ func TestIsolatedACKPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cleanupClient(t, client1)
 
 	var messages [][]byte
 	for i := 0; i < totalMessages; i++ {
@@ -42,6 +43,7 @@ func TestIsolatedACKPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	client1.Close()
+	client1 = nil // Already closed, prevent double close in defer
 	t.Logf("✓ Wrote %d messages", totalMessages)
 
 	// Step 2: First consumer reads and ACKs some messages
@@ -50,10 +52,12 @@ func TestIsolatedACKPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cleanupClient(t, client2)
 
 	consumer1 := NewConsumer(client2, ConsumerOptions{
 		Group: "test-group",
 	})
+	defer cleanupConsumer(t, consumer1)
 
 	messagesRead := 0
 
@@ -101,7 +105,9 @@ func TestIsolatedACKPersistence(t *testing.T) {
 	// Close consumer and client
 	t.Logf("Consumer1: Closing...")
 	consumer1.Close()
+	consumer1 = nil // Already closed, prevent double close in defer
 	client2.Close()
+	client2 = nil // Already closed, prevent double close in defer
 
 	// Wait a bit to ensure everything is flushed
 	time.Sleep(100 * time.Millisecond)
@@ -112,6 +118,7 @@ func TestIsolatedACKPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cleanupClient(t, client3)
 
 	// Check what offset is persisted
 	shard2, err := client3.getOrCreateShard(0)
@@ -127,6 +134,7 @@ func TestIsolatedACKPersistence(t *testing.T) {
 	consumer2 := NewConsumer(client3, ConsumerOptions{
 		Group: "test-group",
 	})
+	defer cleanupConsumer(t, consumer2)
 
 	messagesRead2 := 0
 	duplicates := 0
@@ -173,7 +181,9 @@ func TestIsolatedACKPersistence(t *testing.T) {
 	t.Logf("Consumer2: Found %d duplicates", duplicates)
 
 	consumer2.Close()
+	consumer2 = nil // Already closed, prevent double close in defer
 	client3.Close()
+	client3 = nil // Already closed, prevent double close in defer
 
 	// Verify results
 	t.Logf("\n=== RESULTS ===")

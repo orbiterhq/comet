@@ -221,7 +221,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 				t.Errorf("Process %d: failed to create client: %v", pid, err)
 				return
 			}
-			defer c.Close()
+			defer cleanupClient(t, c)
 
 			// Consumer for the shard this process owns
 			shardID := uint32(pid)

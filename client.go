@@ -212,7 +212,6 @@ func HighCompressionConfig() CometConfig {
 // HighThroughputConfig returns a config optimized for write throughput
 func HighThroughputConfig() CometConfig {
 	cfg := DefaultCometConfig()
-	cfg.Storage.MaxFileSize = 1 << 30             // 1GB files
 	cfg.Storage.CheckpointTime = 10000            // Less frequent checkpoints
 	cfg.Storage.CheckpointEntries = 10000         // Checkpoint every 10k entries to avoid frequent syncs
 	cfg.Compression.MinCompressSize = 1024 * 1024 // Only compress very large entries
@@ -1321,9 +1320,15 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 		return fmt.Errorf("failed to create shard directory: %w", err)
 	}
 
-	// Add small sleep to ensure unique timestamp
-	time.Sleep(time.Nanosecond)
-	newFilePath := filepath.Join(shardDir, fmt.Sprintf("log-%d.comet", time.Now().UnixNano()))
+	// Use sequence counter for consistent file naming
+	var fileSequence uint64
+	if state := s.state; state != nil {
+		fileSequence = state.AddLastFileSequence(1)
+	} else {
+		// Fallback for single-process mode - use timestamp
+		fileSequence = uint64(time.Now().UnixNano())
+	}
+	newFilePath := filepath.Join(shardDir, fmt.Sprintf("log-%016d.comet", fileSequence))
 	newFile, err := os.OpenFile(newFilePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to create new file: %w", err)
@@ -1529,8 +1534,15 @@ func (s *Shard) openDataFileForAppend(shardDir string) error {
 		return fmt.Errorf("failed to create shard directory: %w", err)
 	}
 
-	// Generate new filename with microsecond precision for uniqueness
-	filename := fmt.Sprintf("log-%d.comet", time.Now().UnixMicro())
+	// Use sequence counter for consistent file naming
+	var fileSequence uint64
+	if state := s.state; state != nil {
+		fileSequence = state.AddLastFileSequence(1)
+	} else {
+		// Fallback for single-process mode - use timestamp
+		fileSequence = uint64(time.Now().UnixMicro())
+	}
+	filename := fmt.Sprintf("log-%016d.comet", fileSequence)
 	filePath := filepath.Join(shardDir, filename)
 
 	if IsDebug() && s.logger != nil {
