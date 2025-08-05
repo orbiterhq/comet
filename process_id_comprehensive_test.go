@@ -189,6 +189,12 @@ func TestGetProcessID_RaceConditions(t *testing.T) {
 
 	// Start multiple processes simultaneously to test race conditions
 	numProcesses := 8
+	maxSlots := runtime.NumCPU()
+	expectedSlots := numProcesses
+	if maxSlots < numProcesses {
+		expectedSlots = maxSlots
+		t.Logf("System has %d CPU cores, test wants %d processes. Only %d will get slots.", maxSlots, numProcesses, maxSlots)
+	}
 	var processes []*exec.Cmd
 
 	// Start all processes at nearly the same time
@@ -220,7 +226,7 @@ func TestGetProcessID_RaceConditions(t *testing.T) {
 	}
 
 	// Verify final state of shared memory
-	verifyUniqueSlotAssignment(t, shmFile, numProcesses)
+	verifyUniqueSlotAssignment(t, shmFile, expectedSlots)
 }
 
 func runRaceWorker(t *testing.T, workerID string) {
