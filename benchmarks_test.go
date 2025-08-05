@@ -565,32 +565,6 @@ func BenchmarkWrite_ConcurrentReadWrite(b *testing.B) {
 	b.ReportMetric(float64(stats.TotalBytes)/1e6, "MB_written")
 }
 
-// ============================================================================
-// Multi-Process Mode Benchmarks
-// ============================================================================
-
-// BenchmarkWriteMultiProcessThroughput_SingleEntry measures aggregate throughput with multiple processes
-// NOTE: This measures wall-clock time for parallel execution, not individual operation latency
-func BenchmarkWriteMultiProcessThroughput_SingleEntry(b *testing.B) {
-	benchmarkWriteWithProcessMode(b, 1, 2) // 1 entry batch, 2 processes
-}
-
-// BenchmarkWriteMultiProcessThroughput_LargeBatch measures aggregate throughput with multiple processes
-// NOTE: This measures wall-clock time for parallel execution, not individual operation latency
-func BenchmarkWriteMultiProcessThroughput_LargeBatch(b *testing.B) {
-	benchmarkWriteWithProcessMode(b, 100, 2) // 100 entry batch, 2 processes
-}
-
-// BenchmarkWriteSingleProcess_SingleEntry benchmarks single entry writes in single-process mode
-func BenchmarkWriteSingleProcess_SingleEntry(b *testing.B) {
-	benchmarkWriteWithProcessMode(b, 1, 0) // 1 entry batch, single process
-}
-
-// BenchmarkWriteSingleProcess_LargeBatch benchmarks large batch writes in single-process mode
-func BenchmarkWriteSingleProcess_LargeBatch(b *testing.B) {
-	benchmarkWriteWithProcessMode(b, 100, 0) // 100 entry batch, single process
-}
-
 // benchmarkWriteWithProcessMode runs write benchmarks with specified process configuration
 func benchmarkWriteWithProcessMode(b *testing.B, batchSize int, processCount int) {
 	// For multi-process benchmarks, we need to run as child processes
@@ -696,12 +670,18 @@ func runMultiProcessWriteParent(b *testing.B, batchSize int, processCount int) {
 	b.ReportMetric(throughput, "entries/sec")
 	b.ReportMetric(elapsed.Seconds(), "wall_time_sec")
 
-	// Skip the misleading ns/op metric by setting custom time
-	b.ReportMetric(float64(b.N), "total_ops")
+	// IMPORTANT: The ns/op metric shown is misleading!
+	// It shows wall_time / b.N, but operations ran in parallel
+	// For actual per-operation latency, see single-process benchmarks
 
 	// Log a warning about the metrics
-	b.Logf("NOTE: Multi-process benchmarks measure aggregate throughput, not per-operation latency")
+	b.Logf("WARNING: ns/op metric is MISLEADING for parallel execution!")
+	b.Logf("Multi-process benchmarks measure aggregate throughput, not per-operation latency")
 	b.Logf("Wall time: %v for %d operations across %d processes", elapsed, b.N, processCount)
+	if b.N > 0 && processCount > 0 {
+		b.Logf("Actual per-op latency is ~%v (see single-process benchmarks)",
+			time.Duration(float64(elapsed)/float64(b.N)*float64(processCount)))
+	}
 	b.Logf("Allocations shown are for the parent process only (actual work happens in child processes)")
 }
 
