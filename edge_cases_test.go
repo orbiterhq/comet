@@ -761,7 +761,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0
-	config.Storage.MaxFileSize = 5 * 1024 // 5KB - ensures multiple files while avoiding excessive rotations
+	config.Storage.MaxFileSize = 10 * 1024 // 10KB - back to original value that was causing timeout
 	config.Indexing.BoundaryInterval = 10
 	// Disable periodic flush to avoid interference
 	config.Storage.FlushInterval = 0
@@ -775,7 +775,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	streamName := "test:v1:shard:0000"
 
 	// Write entries that will span multiple files
-	const numEntries = 100 // Reduced from 200 to speed up test
+	const numEntries = 200 // Back to original value
 	entryData := make([]byte, 100) // Each entry ~100 bytes
 	for i := range entryData {
 		entryData[i] = 'A' + byte(i%26)

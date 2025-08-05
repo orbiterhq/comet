@@ -50,8 +50,11 @@ func TestMessageLoss(t *testing.T) {
 	client1, _ := NewClient(dir, config)
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "test-single"})
 
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel1()
+
 	var read1 []string
-	consumer1.Process(ctx, func(ctx context.Context, msgs []StreamMessage) error {
+	consumer1.Process(ctx1, func(ctx context.Context, msgs []StreamMessage) error {
 		for _, msg := range msgs {
 			read1 = append(read1, string(msg.Data))
 			t.Logf("Single consumer read: %s (offset=%d)", string(msg.Data), msg.ID.EntryNumber)

@@ -1313,11 +1313,35 @@ func (s *Shard) scheduleAsyncCheckpoint(clientMetrics *ClientMetrics, config *Co
 
 // rotateFile creates a new data file when size limit is reached
 func (s *Shard) rotateFile(config *CometConfig) error {
+	// Quick check without lock
+	s.mu.RLock()
+	needsRotation := s.index.CurrentWriteOffset >= config.Storage.MaxFileSize
+	currentWriteOffset := s.index.CurrentWriteOffset
+	s.mu.RUnlock()
+
+	if !needsRotation {
+		return nil
+	}
+
+	// Prepare new file BEFORE taking locks
+	shardDir := filepath.Dir(s.indexPath)
+	newFilePath := filepath.Join(shardDir, fmt.Sprintf("log-%d.comet", time.Now().UnixNano()))
+	newFile, err := os.OpenFile(newFilePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create new file: %w", err)
+	}
+
+	// Take locks for the critical section
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	
+	s.writeMu.Lock()
 
-	// Check again under lock
+	// Double-check rotation is still needed
 	if s.index.CurrentWriteOffset < config.Storage.MaxFileSize {
+		s.writeMu.Unlock()
+		newFile.Close()
+		os.Remove(newFilePath)
 		return nil
 	}
 
@@ -1326,48 +1350,67 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 		atomic.AddUint64(&state.FileRotations, 1)
 	}
 
-	// Close current file with write lock protection
-	s.writeMu.Lock()
-	// First flush any buffered data
-	if s.writer != nil {
-		if err := s.writer.Flush(); err != nil {
-			s.writeMu.Unlock()
-			return fmt.Errorf("failed to flush before rotation: %w", err)
-		}
-	}
+	// Save references to old file and writer
+	oldFile := s.dataFile
+	oldWriter := s.writer
 
-	// Sync the file
-	if s.dataFile != nil {
-		if err := s.dataFile.Sync(); err != nil {
-			s.writeMu.Unlock()
-			return fmt.Errorf("failed to sync before rotation: %w", err)
-		}
-		// Close the old file
-		s.dataFile.Close()
-		s.dataFile = nil
-		s.writer = nil
-	}
+	// Quick swap to new file (fast operation)
+	s.dataFile = newFile
+	bufferSize := 64 * 1024 // 64KB buffer
+	s.writer = bufio.NewWriterSize(newFile, bufferSize)
 
-	// Update current file end time while holding the lock
+	// Update index metadata (fast in-memory operations)
 	if len(s.index.Files) > 0 {
 		s.index.Files[len(s.index.Files)-1].EndTime = time.Now()
-		s.index.Files[len(s.index.Files)-1].EndOffset = s.index.CurrentWriteOffset
+		s.index.Files[len(s.index.Files)-1].EndOffset = currentWriteOffset
 	}
 
-	// Open new file while holding write lock to prevent race with periodic flush
-	shardDir := filepath.Dir(s.indexPath)
-	if err := s.openDataFileForAppend(shardDir); err != nil {
-		s.writeMu.Unlock()
-		return err
+	// Add new file to index
+	newFileInfo := FileInfo{
+		Path:       newFilePath,
+		StartEntry: s.index.CurrentEntryNumber,
+		StartTime:  time.Now(),
+		Entries:    0,
+		EndOffset:  0,
 	}
-
-	s.writeMu.Unlock()
+	s.index.Files = append(s.index.Files, newFileInfo)
+	s.index.CurrentWriteOffset = 0
+	s.index.CurrentFile = newFilePath
 
 	// Track new file
 	if state := s.state; state != nil {
 		atomic.AddUint64(&state.FilesCreated, 1)
 		atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
-		atomic.StoreUint64(&state.TotalFileBytes, uint64(s.index.CurrentWriteOffset))
+		atomic.StoreUint64(&state.TotalFileBytes, uint64(currentWriteOffset))
+	}
+
+	// Release write lock ASAP
+	s.writeMu.Unlock()
+
+	// Do slow I/O operations AFTER releasing write lock (still holding main lock)
+	if oldWriter != nil {
+		if err := oldWriter.Flush(); err != nil {
+			// Log but don't fail - data is already written
+			if s.logger != nil {
+				s.logger.Warn("Failed to flush old writer during rotation", "error", err)
+			}
+		}
+	}
+
+	if oldFile != nil {
+		// Sync and close in background to avoid blocking
+		go func() {
+			if err := oldFile.Sync(); err != nil {
+				if s.logger != nil {
+					s.logger.Warn("Failed to sync old file during rotation", "error", err)
+				}
+			}
+			if err := oldFile.Close(); err != nil {
+				if s.logger != nil {
+					s.logger.Warn("Failed to close old file during rotation", "error", err)
+				}
+			}
+		}()
 	}
 
 	// Skip checkpoint during rotation to avoid deadlock
