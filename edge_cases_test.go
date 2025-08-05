@@ -1591,14 +1591,20 @@ func TestConsumerGroupSplitBrain(t *testing.T) {
 	ctx1, cancel1 := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel1()
 
-	go consumer1.Process(ctx1, func(ctx context.Context, messages []StreamMessage) error {
-		mu.Lock()
-		processedCount += len(messages)
-		mu.Unlock()
-		return nil
-	}, WithStream("test:v1:shard:*"), WithBatchSize(2))
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		consumer1.Process(ctx1, func(ctx context.Context, messages []StreamMessage) error {
+			mu.Lock()
+			processedCount += len(messages)
+			mu.Unlock()
+			return nil
+		}, WithStream("test:v1:shard:*"), WithBatchSize(2))
+	}()
 
 	<-ctx1.Done()
+	wg.Wait() // Wait for consumer1 to fully complete
 
 	// Create second consumer in same group - should start from where first left off
 	consumer2 := NewConsumer(client, ConsumerOptions{Group: "shared-group"})
@@ -1608,14 +1614,19 @@ func TestConsumerGroupSplitBrain(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel2()
 
-	go consumer2.Process(ctx2, func(ctx context.Context, messages []StreamMessage) error {
-		mu.Lock()
-		secondProcessed += len(messages)
-		mu.Unlock()
-		return nil
-	}, WithStream("test:v1:shard:*"), WithBatchSize(2))
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		consumer2.Process(ctx2, func(ctx context.Context, messages []StreamMessage) error {
+			mu.Lock()
+			secondProcessed += len(messages)
+			mu.Unlock()
+			return nil
+		}, WithStream("test:v1:shard:*"), WithBatchSize(2))
+	}()
 
 	<-ctx2.Done()
+	wg.Wait() // Wait for consumer2 to fully complete
 
 	mu.Lock()
 	t.Logf("First consumer processed %d messages", processedCount)
