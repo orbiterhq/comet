@@ -946,8 +946,6 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 				}
 			}
 			shard.index.ConsumerOffsets[c.group] = newOffset
-			// Mark that we need a checkpoint
-			shard.writesSinceCheckpoint++
 			// Track acked entries
 			if state := shard.state; state != nil {
 				atomic.AddUint64(&state.AckedEntries, uint64(len(ids)))
@@ -1043,8 +1041,6 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	}
 
 	shard.index.ConsumerOffsets[c.group] = entryNumber
-	// Mark that we need a checkpoint
-	shard.writesSinceCheckpoint++
 	shard.mu.Unlock()
 
 	// Update in-memory offset as well
@@ -1122,8 +1118,6 @@ func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEn
 	}
 
 	shard.index.ConsumerOffsets[c.group] = newOffset
-	// Mark that we need a checkpoint
-	shard.writesSinceCheckpoint++
 	shard.mu.Unlock()
 
 	// Persist consumer offset change immediately to prevent data loss
