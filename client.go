@@ -76,7 +76,7 @@ type IndexingConfig struct {
 type StorageConfig struct {
 	MaxFileSize       int64 `json:"max_file_size"`      // Maximum size per file before rotation
 	CheckpointTime    int   `json:"checkpoint_time_ms"` // Checkpoint every N milliseconds
-	CheckpointEntries int   `json:"checkpoint_entries"` // Checkpoint every N entries (default: 1000)
+	CheckpointEntries int   `json:"checkpoint_entries"` // Checkpoint every N entries (default: 100000)
 	FlushInterval     int   `json:"flush_interval_ms"`  // Flush to OS cache every N ms (memory management, not durability)
 	FlushEntries      int   `json:"flush_entries"`      // Flush to OS cache every N entries (memory management, not durability)
 }
@@ -165,8 +165,8 @@ func DefaultCometConfig() CometConfig {
 		Storage: StorageConfig{
 			MaxFileSize:       maxFileSize,
 			CheckpointTime:    2000,   // Checkpoint every 2 seconds
-			CheckpointEntries: 1000,   // Checkpoint every 1000 entries
-			FlushEntries:      50000, // Flush every 50k entries (~5MB) - optimal for large batches
+			CheckpointEntries: 100000, // Checkpoint every 100k entries  
+			FlushEntries:      50000,  // Flush every 50k entries (~5MB) - optimal for large batches
 		},
 
 		// Concurrency - single-process mode by default
@@ -216,11 +216,21 @@ func HighCompressionConfig() CometConfig {
 func HighThroughputConfig() CometConfig {
 	cfg := DefaultCometConfig()
 	cfg.Storage.CheckpointTime = 10000            // Less frequent checkpoints
-	cfg.Storage.CheckpointEntries = 10000         // Checkpoint every 10k entries to avoid frequent syncs
+	cfg.Storage.CheckpointEntries = 200000        // Checkpoint every 200k entries (infrequent syncs)
 	cfg.Storage.FlushEntries = 100000             // Flush every 100k entries for large batch throughput
 	cfg.Compression.MinCompressSize = 1024 * 1024 // Only compress very large entries
 	cfg.Indexing.BoundaryInterval = 1000          // Less frequent index entries
 	// Reader config is set to defaults in DefaultReaderConfig()
+	return cfg
+}
+
+// LowLatencyConfig returns a config optimized for low latency and durability
+func LowLatencyConfig() CometConfig {
+	cfg := DefaultCometConfig()
+	cfg.Storage.CheckpointTime = 500              // Checkpoint every 500ms
+	cfg.Storage.CheckpointEntries = 10000         // Checkpoint every 10k entries
+	cfg.Storage.FlushEntries = 5000               // Flush every 5k entries
+	cfg.Compression.MinCompressSize = 1024 * 1024 // Only compress very large entries (reduce CPU latency)
 	return cfg
 }
 
@@ -233,12 +243,18 @@ func validateConfig(cfg *CometConfig) error {
 		cfg.Storage.CheckpointTime = 2000 // 2 seconds default
 	}
 	if cfg.Storage.CheckpointEntries <= 0 {
-		cfg.Storage.CheckpointEntries = 1000 // 1000 entries default
+		cfg.Storage.CheckpointEntries = 100000 // 100k entries default
 	}
 	if cfg.Storage.FlushEntries < 0 {
 		cfg.Storage.FlushEntries = 50000 // 50k entries default
 	}
 	// FlushEntries of 0 means no entry-based flushing (rely on buffer size)
+	
+	// Validate constraint: checkpoint should be >= flush (if both are set)
+	if cfg.Storage.FlushEntries > 0 && cfg.Storage.CheckpointEntries < cfg.Storage.FlushEntries {
+		// Auto-adjust checkpoint to be at least 2x flush for efficiency
+		cfg.Storage.CheckpointEntries = cfg.Storage.FlushEntries * 2
+	}
 	if cfg.Compression.MinCompressSize < 0 {
 		cfg.Compression.MinCompressSize = 4096 // 4KB default
 	}
