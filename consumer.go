@@ -258,6 +258,12 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 
 // Close closes the consumer and releases all resources
 func (c *Consumer) Close() error {
+	// Flush any pending ACKs before closing to prevent message reprocessing
+	ctx := context.Background() // Use background context since we're closing
+	if err := c.flushPendingAcks(ctx); err != nil && c.client.logger != nil {
+		c.client.logger.Warn("Failed to flush pending ACKs on close", "error", err)
+	}
+	
 	// Close all cached readers
 	c.readers.Range(func(key, value any) bool {
 		if reader, ok := value.(*Reader); ok {
