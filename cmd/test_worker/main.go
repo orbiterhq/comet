@@ -228,8 +228,9 @@ func runRetentionTest() {
 		log.Fatal("--dir and --stream are required")
 	}
 
-	// Use same config as test
-	config := comet.DeprecatedMultiProcessConfig(*workerID, 2)
+	// Use single-process mode for retention test workers
+	// This allows all workers to access the same shard for testing race conditions
+	config := comet.DefaultCometConfig()
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0
 

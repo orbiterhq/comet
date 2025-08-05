@@ -254,6 +254,14 @@ func testOutOfOrderACK(t *testing.T) {
 
 	// Parse shard ID from stream name
 	shardID, _ := parseShardFromStream(stream)
+
+	// Debug: Check initial offset before reading
+	shard, _ := client2.getOrCreateShard(shardID)
+	shard.mu.RLock()
+	initialOffset := shard.index.ConsumerOffsets["order-test"]
+	shard.mu.RUnlock()
+	t.Logf("Initial offset before reading: %d", initialOffset)
+
 	msgs, err := consumer.Read(context.Background(), []uint32{shardID}, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -264,21 +272,47 @@ func testOutOfOrderACK(t *testing.T) {
 	}
 
 	// ACK in reverse order: 9, 8, 7, ..., 0
+	t.Logf("ACKing messages in reverse order. Message IDs:")
+	for i, msg := range msgs {
+		t.Logf("  msgs[%d] = entry %d", i, msg.ID.EntryNumber)
+	}
+
 	for i := len(msgs) - 1; i >= 0; i-- {
+		t.Logf("ACKing msgs[%d] (entry %d)", i, msgs[i].ID.EntryNumber)
 		err = consumer.Ack(context.Background(), msgs[i].ID)
 		if err != nil {
 			t.Errorf("Out-of-order ACK %d failed: %v", i, err)
 		}
 	}
 
+	// Force consumer to flush ACKs before checking lag
+	if err := consumer.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Debug: Check the actual offset
+	shard2, err := client2.getOrCreateShard(shardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shard2.mu.RLock()
+	currentOffset := shard2.index.ConsumerOffsets["order-test"]
+	totalEntries := shard2.index.CurrentEntryNumber
+	shard2.mu.RUnlock()
+	t.Logf("After ACKing: offset=%d, total entries=%d", currentOffset, totalEntries)
+
 	// Verify all messages were ACKed
-	lag, err := consumer.GetLag(context.Background(), 1)
+	// Note: ACKing entry 9 advances the offset to 10, assuming 0-8 were also processed
+	// This is correct behavior - consumer offset represents "next entry to read"
+	lag, err := consumer.GetLag(context.Background(), shardID)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// Since we wrote 10 messages and ACKed the highest one (9),
+	// the offset should be 10, giving us lag 0
 	if lag != 0 {
-		t.Errorf("Expected lag 0 after out-of-order ACKs, got %d", lag)
+		t.Errorf("Expected lag 0 after out-of-order ACKs (ACKing entry 9 should advance offset to 10), got %d", lag)
 	}
 }
 
@@ -374,6 +408,11 @@ func testACKDuringRotation(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// Sync to ensure write is visible before reading
+		if err := client.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+
 		// Immediately read and ACK
 		// Parse shard ID from stream name
 		shardID, _ := parseShardFromStream(stream)
@@ -391,7 +430,9 @@ func testACKDuringRotation(t *testing.T) {
 	}
 
 	// Verify final state
-	lag, err := consumer.GetLag(ctx, 1)
+	// Parse shard ID from stream name for GetLag
+	finalShardID, _ := parseShardFromStream(stream)
+	lag, err := consumer.GetLag(ctx, finalShardID)
 	if err != nil {
 		t.Fatal(err)
 	}

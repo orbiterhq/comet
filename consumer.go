@@ -939,13 +939,16 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 
 			shard.mu.Lock()
 			// Check if this is a new consumer group
-			_, groupExists := shard.index.ConsumerOffsets[c.group]
+			currentOffset, groupExists := shard.index.ConsumerOffsets[c.group]
 			if !groupExists {
 				if state := shard.state; state != nil {
 					atomic.AddUint64(&state.ConsumerGroups, 1)
 				}
+				shard.index.ConsumerOffsets[c.group] = newOffset
+			} else if newOffset > currentOffset {
+				// Only update if the new offset is higher
+				shard.index.ConsumerOffsets[c.group] = newOffset
 			}
-			shard.index.ConsumerOffsets[c.group] = newOffset
 			// Track acked entries
 			if state := shard.state; state != nil {
 				atomic.AddUint64(&state.AckedEntries, uint64(len(ids)))
