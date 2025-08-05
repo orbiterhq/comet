@@ -42,6 +42,11 @@ func TestConsumerProcessedMessagesCleanup(t *testing.T) {
 		}
 	}
 
+	// Ensure all data is flushed before reading
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Process messages in batches
 	totalProcessed := 0
 	for totalProcessed < numMessages {
@@ -58,6 +63,13 @@ func TestConsumerProcessedMessagesCleanup(t *testing.T) {
 		// ACK messages
 		for _, msg := range messages {
 			if err := consumer.Ack(ctx, msg.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// Flush consumer state periodically to avoid issues
+		if totalProcessed%1000 == 0 {
+			if err := consumer.Sync(ctx); err != nil {
 				t.Fatal(err)
 			}
 		}

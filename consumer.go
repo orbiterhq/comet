@@ -989,6 +989,11 @@ func (c *Consumer) FlushACKs(ctx context.Context) error {
 	return lastErr
 }
 
+// Sync forces immediate persistence of any pending ACKs
+func (c *Consumer) Sync(ctx context.Context) error {
+	return c.FlushACKs(ctx)
+}
+
 // GetLag returns how many entries behind this consumer group is
 func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 	shard, err := c.client.getOrCreateShard(shardID)

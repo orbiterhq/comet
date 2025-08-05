@@ -520,6 +520,11 @@ func TestBrowseDoesNotAffectConsumers(t *testing.T) {
 		}
 	}
 
+	// Force consumer to flush its in-memory offsets before checking
+	if err := consumer.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Get initial consumer offset
 	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
@@ -544,6 +549,11 @@ func TestBrowseDoesNotAffectConsumers(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("Scanned %d messages", scanCount)
+
+	// Force consumer to flush its in-memory offsets before checking
+	if err := consumer.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	// Check consumer offset hasn't changed
 	shard.mu.RLock()
