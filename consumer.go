@@ -68,11 +68,6 @@ type Consumer struct {
 	consumerID    int
 	consumerCount int
 
-	// Hybrid ACK batching
-	pendingAcksMu sync.Mutex
-	pendingAcks   []MessageID
-	lastAckFlush  time.Time
-
 	// Strings last
 	group string
 }
@@ -250,19 +245,12 @@ func NewConsumer(client *Client, opts ConsumerOptions) *Consumer {
 		consumerCount: opts.ConsumerCount,
 		highestRead:   make(map[uint32]int64),
 		processedMsgs: make(map[MessageID]bool),
-		pendingAcks:   make([]MessageID, 0),
-		lastAckFlush:  time.Now(),
 		// readers sync.Map is zero-initialized and ready to use
 	}
 }
 
 // Close closes the consumer and releases all resources
 func (c *Consumer) Close() error {
-	// Flush any pending ACKs before closing to prevent message reprocessing
-	ctx := context.Background() // Use background context since we're closing
-	if err := c.flushPendingAcks(ctx); err != nil && c.client.logger != nil {
-		c.client.logger.Warn("Failed to flush pending ACKs on close", "error", err)
-	}
 
 	// Close all cached readers
 	c.readers.Range(func(key, value any) bool {
@@ -320,11 +308,6 @@ func (c *Consumer) Close() error {
 		}
 		return true
 	})
-
-	// Flush any pending ACKs before closing
-	if err := c.flushPendingAcks(context.Background()); err != nil && c.client.logger != nil {
-		c.client.logger.Warn("Failed to flush pending ACKs on close", "error", err)
-	}
 
 	// Since processes own their shards exclusively, they own all consumer groups
 	// No need to deregister
@@ -840,56 +823,11 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		return nil
 	}
 
-	// For single message or small batches, ACK immediately to avoid offset issues
-	if len(messageIDs) <= 5 {
-		// Mark messages as processed (for idempotent processing)
-		for _, msgID := range messageIDs {
-			c.markMessageProcessed(msgID)
-		}
-		return c.ackBatch(messageIDs)
-	}
-
-	// For large batches, use hybrid batching logic
-	c.pendingAcksMu.Lock()
-	c.pendingAcks = append(c.pendingAcks, messageIDs...)
-
-	// Hybrid batching: flush if batch is large enough OR timeout exceeded
-	shouldFlush := len(c.pendingAcks) >= 10 || time.Since(c.lastAckFlush) > 1*time.Second
-	c.pendingAcksMu.Unlock()
-
-	if shouldFlush {
-		return c.flushPendingAcks(ctx)
-	}
-
-	return nil
-}
-
-// flushPendingAcks writes all pending ACKs in a batch
-func (c *Consumer) flushPendingAcks(ctx context.Context) error {
-	c.pendingAcksMu.Lock()
-	if len(c.pendingAcks) == 0 {
-		c.pendingAcksMu.Unlock()
-		return nil
-	}
-
-	// Take a copy and clear pending ACKs
-	toFlush := make([]MessageID, len(c.pendingAcks))
-	copy(toFlush, c.pendingAcks)
-	c.pendingAcks = c.pendingAcks[:0] // Clear slice but keep capacity
-	c.lastAckFlush = time.Now()
-	c.pendingAcksMu.Unlock()
-
-	// Mark messages as processed (for idempotent processing)
-	for _, msgID := range toFlush {
+	// Mark messages as processed immediately for deduplication
+	for _, msgID := range messageIDs {
 		c.markMessageProcessed(msgID)
 	}
 
-	// Process ACKs in batches by shard for efficiency
-	return c.ackBatch(toFlush)
-}
-
-// ackBatch is a helper for batch acknowledgments
-func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 	// Group messages by shard
 	shardGroups := make(map[uint32][]MessageID)
 	for _, id := range messageIDs {
@@ -937,20 +875,18 @@ func (c *Consumer) ackBatch(messageIDs []MessageID) error {
 		shard.mu.Unlock()
 
 		// Always persist consumer offsets immediately to prevent data loss
-		// Do this after releasing the shard lock to prevent deadlocks
+		// This ensures exactly-once semantics are maintained
 		if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-			c.client.logger.Warn("Failed to persist consumer offsets after batch ACK", "error", err)
+			c.client.logger.Warn("Failed to persist consumer offsets after ACK", "error", err)
 		}
 	}
 
-	// Periodically clean up the processedMsgs map after batch ACKs
-	// This is a good time to do it since we just updated offsets
-	c.processedMsgsMu.Lock()
-	if len(c.processedMsgs) > 5000 {
-		c.cleanupProcessedMessages()
-	}
-	c.processedMsgsMu.Unlock()
+	return nil
+}
 
+// FlushACKs is a no-op now that ACKs are persisted immediately.
+// Kept for API compatibility.
+func (c *Consumer) FlushACKs(ctx context.Context) error {
 	return nil
 }
 

@@ -73,9 +73,10 @@ type IndexingConfig struct {
 
 // StorageConfig controls file storage behavior
 type StorageConfig struct {
-	MaxFileSize    int64 `json:"max_file_size"`      // Maximum size per file before rotation
-	CheckpointTime int   `json:"checkpoint_time_ms"` // Checkpoint every N milliseconds
-	FlushInterval  int   `json:"flush_interval_ms"`  // Flush buffered writes every N milliseconds (0 = checkpoint interval)
+	MaxFileSize       int64 `json:"max_file_size"`      // Maximum size per file before rotation
+	CheckpointTime    int   `json:"checkpoint_time_ms"` // Checkpoint every N milliseconds
+	CheckpointEntries int   `json:"checkpoint_entries"` // Checkpoint every N entries (default: 1000)
+	FlushInterval     int   `json:"flush_interval_ms"`  // Flush buffered writes every N milliseconds (0 = checkpoint interval)
 }
 
 // ConcurrencyConfig controls multi-process behavior
@@ -160,8 +161,9 @@ func DefaultCometConfig() CometConfig {
 
 		// Storage - optimized for 256MB files
 		Storage: StorageConfig{
-			MaxFileSize:    maxFileSize,
-			CheckpointTime: 2000, // Checkpoint every 2 seconds
+			MaxFileSize:       maxFileSize,
+			CheckpointTime:    2000, // Checkpoint every 2 seconds
+			CheckpointEntries: 1000, // Checkpoint every 1000 entries
 		},
 
 		// Concurrency - single-process mode by default
@@ -212,6 +214,7 @@ func HighThroughputConfig() CometConfig {
 	cfg := DefaultCometConfig()
 	cfg.Storage.MaxFileSize = 1 << 30             // 1GB files
 	cfg.Storage.CheckpointTime = 10000            // Less frequent checkpoints
+	cfg.Storage.CheckpointEntries = 10000         // Checkpoint every 10k entries to avoid frequent syncs
 	cfg.Compression.MinCompressSize = 1024 * 1024 // Only compress very large entries
 	cfg.Indexing.BoundaryInterval = 1000          // Less frequent index entries
 	// Reader config is set to defaults in DefaultReaderConfig()
@@ -225,6 +228,9 @@ func validateConfig(cfg *CometConfig) error {
 	}
 	if cfg.Storage.CheckpointTime <= 0 {
 		cfg.Storage.CheckpointTime = 2000 // 2 seconds default
+	}
+	if cfg.Storage.CheckpointEntries <= 0 {
+		cfg.Storage.CheckpointEntries = 1000 // 1000 entries default
 	}
 	if cfg.Compression.MinCompressSize < 0 {
 		cfg.Compression.MinCompressSize = 4096 // 4KB default
@@ -1229,8 +1235,8 @@ func (s *Shard) shouldCheckpoint(config *CometConfig) bool {
 		return true
 	}
 
-	// Entry-based checkpoint (every 1000 entries)
-	if s.writesSinceCheckpoint >= 1000 {
+	// Entry-based checkpoint
+	if s.writesSinceCheckpoint >= config.Storage.CheckpointEntries {
 		return true
 	}
 

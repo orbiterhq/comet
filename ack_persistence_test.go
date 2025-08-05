@@ -157,6 +157,11 @@ func TestProcessACKPersistence(t *testing.T) {
 		processedCount += len(msgs)
 		t.Logf("Process() batch: %d messages (total: %d)", len(msgs), processedCount)
 
+		// Log message IDs and data for debugging
+		for i, msg := range msgs {
+			t.Logf("  Message %d: ID=%s, Data=%s", i, msg.ID, string(msg.Data))
+		}
+
 		// Stop after processing 10 messages
 		if processedCount >= 10 {
 			cancel()
@@ -171,6 +176,12 @@ func TestProcessACKPersistence(t *testing.T) {
 	)
 
 	t.Logf("First Process() completed: processed %d messages", processedCount)
+
+	// Flush any pending ACKs before closing
+	if err := consumer1.FlushACKs(ctx); err != nil {
+		t.Fatalf("Failed to flush ACKs: %v", err)
+	}
+
 	consumer1.Close()
 	client2.Close()
 

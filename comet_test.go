@@ -127,6 +127,11 @@ func TestClient_Consumer(t *testing.T) {
 		}
 	}
 
+	// Flush ACKs to ensure they're persisted before reading again
+	if err := consumer.FlushACKs(ctx); err != nil {
+		t.Fatalf("failed to flush ACKs: %v", err)
+	}
+
 	// Reading again should return no messages
 	messages2, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
