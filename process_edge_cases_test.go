@@ -3,6 +3,7 @@ package comet
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -198,6 +199,7 @@ func TestProcessLongRunning(t *testing.T) {
 	defer consumer.Close()
 
 	var processedCount int64
+	var wg sync.WaitGroup
 
 	// Run for longer period
 	processCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -209,7 +211,9 @@ func TestProcessLongRunning(t *testing.T) {
 
 		// After processing initial messages, add more messages to test continuous processing
 		if processed == int64(initialMessages) {
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				time.Sleep(1 * time.Second)
 				additionalMessages := 25
 				var newMessages [][]byte
@@ -237,6 +241,9 @@ func TestProcessLongRunning(t *testing.T) {
 		WithAutoAck(true),
 		WithPollInterval(500*time.Millisecond), // Poll every 500ms for new data
 	)
+
+	// Wait for any background goroutines to complete
+	wg.Wait()
 
 	finalProcessed := atomic.LoadInt64(&processedCount)
 	expectedTotal := int64(initialMessages + 25)
