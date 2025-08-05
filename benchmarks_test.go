@@ -566,6 +566,172 @@ func BenchmarkWrite_ConcurrentReadWrite(b *testing.B) {
 }
 
 // ============================================================================
+// Multi-Process Mode Benchmarks
+// ============================================================================
+
+// BenchmarkWriteMultiProcess_SingleEntry benchmarks single entry writes in multi-process mode
+func BenchmarkWriteMultiProcess_SingleEntry(b *testing.B) {
+	benchmarkWriteWithProcessMode(b, 1, 2) // 1 entry batch, 2 processes
+}
+
+// BenchmarkWriteMultiProcess_LargeBatch benchmarks large batch writes in multi-process mode
+func BenchmarkWriteMultiProcess_LargeBatch(b *testing.B) {
+	benchmarkWriteWithProcessMode(b, 100, 2) // 100 entry batch, 2 processes
+}
+
+// BenchmarkWriteSingleProcess_SingleEntry benchmarks single entry writes in single-process mode
+func BenchmarkWriteSingleProcess_SingleEntry(b *testing.B) {
+	benchmarkWriteWithProcessMode(b, 1, 0) // 1 entry batch, single process
+}
+
+// BenchmarkWriteSingleProcess_LargeBatch benchmarks large batch writes in single-process mode
+func BenchmarkWriteSingleProcess_LargeBatch(b *testing.B) {
+	benchmarkWriteWithProcessMode(b, 100, 0) // 100 entry batch, single process
+}
+
+// benchmarkWriteWithProcessMode runs write benchmarks with specified process configuration
+func benchmarkWriteWithProcessMode(b *testing.B, batchSize int, processCount int) {
+	// For multi-process benchmarks, we need to run as child processes
+	if processCount > 1 {
+		workerID := os.Getenv("COMET_BENCH_WORKER_ID")
+		if workerID != "" {
+			// We're a worker process
+			runMultiProcessWriteWorker(b, batchSize)
+			return
+		}
+		// We're the parent - spawn workers
+		runMultiProcessWriteParent(b, batchSize, processCount)
+		return
+	}
+
+	// Single process benchmark
+	dir := b.TempDir()
+	config := HighThroughputConfig()
+	config.Concurrency.ProcessCount = 0 // Ensure single-process mode
+	client, err := NewClient(dir, config)
+	if err != nil {
+		b.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+
+	// Create batch
+	batch := make([][]byte, batchSize)
+	for i := 0; i < batchSize; i++ {
+		batch[i] = []byte(fmt.Sprintf(`{"id":%d,"msg":"benchmark entry","ts":%d}`, i, time.Now().UnixNano()))
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		// Always write to shard 0 in single-process mode
+		streamName := "bench:v1:shard:0000"
+		if _, err := client.Append(ctx, streamName, batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	// Report metrics
+	entriesWritten := int64(b.N * batchSize)
+	b.ReportMetric(float64(entriesWritten), "entries_written")
+}
+
+// runMultiProcessWriteParent coordinates multi-process benchmarks
+func runMultiProcessWriteParent(b *testing.B, batchSize int, processCount int) {
+	dir := b.TempDir()
+	ctx := context.Background()
+
+	// Find our executable
+	executable, err := os.Executable()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Launch worker processes
+	var wg sync.WaitGroup
+	for id := 0; id < processCount; id++ {
+		wg.Add(1)
+		go func(processID int) {
+			defer wg.Done()
+
+			iterations := b.N / processCount
+			if iterations < 1 {
+				iterations = 1
+			}
+
+			cmd := exec.CommandContext(ctx, executable,
+				"-test.bench", fmt.Sprintf("^%s$", b.Name()),
+				"-test.run", "^$",
+				"-test.benchtime", fmt.Sprintf("%dx", iterations))
+
+			cmd.Env = append(os.Environ(),
+				fmt.Sprintf("COMET_BENCH_WORKER_ID=%d", processID),
+				fmt.Sprintf("COMET_BENCH_DIR=%s", dir),
+				fmt.Sprintf("COMET_BENCH_BATCH_SIZE=%d", batchSize),
+				fmt.Sprintf("COMET_BENCH_PROCESS_COUNT=%d", processCount),
+			)
+
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				b.Errorf("Worker %d failed: %v\nOutput: %s", processID, err, output)
+			}
+		}(id)
+	}
+
+	wg.Wait()
+
+	// Report combined metrics
+	totalEntries := int64(b.N * batchSize)
+	b.ReportMetric(float64(totalEntries), "entries_written")
+	b.ReportMetric(float64(processCount), "process_count")
+}
+
+// runMultiProcessWriteWorker runs as a worker process
+func runMultiProcessWriteWorker(b *testing.B, batchSize int) {
+	dir := os.Getenv("COMET_BENCH_DIR")
+	processID, _ := strconv.Atoi(os.Getenv("COMET_BENCH_WORKER_ID"))
+	processCount, _ := strconv.Atoi(os.Getenv("COMET_BENCH_PROCESS_COUNT"))
+
+	config := HighThroughputConfig()
+	config.Concurrency.ProcessID = processID
+	config.Concurrency.ProcessCount = processCount
+
+	client, err := NewClient(dir, config)
+	if err != nil {
+		b.Fatalf("Worker %d: failed to create client: %v", processID, err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+
+	// Create batch
+	batch := make([][]byte, batchSize)
+	for i := 0; i < batchSize; i++ {
+		batch[i] = []byte(fmt.Sprintf(`{"id":%d,"worker":%d,"msg":"benchmark entry"}`, i, processID))
+	}
+
+	// Each process writes to shards it owns
+	// Process 0 writes to shards 0, 2, 4, 6...
+	// Process 1 writes to shards 1, 3, 5, 7...
+	shardID := uint32(processID)
+
+	for i := 0; i < b.N; i++ {
+		streamName := fmt.Sprintf("bench:v1:shard:%04d", shardID)
+		if _, err := client.Append(ctx, streamName, batch); err != nil {
+			b.Fatalf("Worker %d: append failed: %v", processID, err)
+		}
+
+		// Rotate through owned shards
+		shardID += uint32(processCount)
+		if shardID >= 10 { // Limit to 10 shards total
+			shardID = uint32(processID)
+		}
+	}
+}
+
+// ============================================================================
 // Consumer/Read Benchmarks
 // ============================================================================
 

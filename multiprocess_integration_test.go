@@ -952,7 +952,19 @@ func runTestWorker(t *testing.T, workerID string) {
 		duration = 3 * time.Second
 	}
 
-	config := DeprecatedMultiProcessConfig(0, 2)
+	// Extract process ID from worker ID (e.g., "writer-0" -> 0, "reader-1" -> 1)
+	// Writers use IDs 0, 1, 2 and readers use IDs 3, 4
+	var processID int
+	if strings.HasPrefix(workerID, "writer-") {
+		fmt.Sscanf(workerID, "writer-%d", &processID)
+	} else if strings.HasPrefix(workerID, "reader-") {
+		var readerNum int
+		fmt.Sscanf(workerID, "reader-%d", &readerNum)
+		processID = 3 + readerNum // Readers start at process ID 3
+	}
+
+	// Total processes = 3 writers + 2 readers = 5
+	config := DeprecatedMultiProcessConfig(processID, 5)
 	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Worker %s (PID %d): failed to create client: %v", workerID, pid, err)
@@ -962,15 +974,21 @@ func runTestWorker(t *testing.T, workerID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
 
-	if workerID[:6] == "writer" {
-		// Writer process - use different shards for each writer
-		shardNum := workerID[len(workerID)-1:]
-		streamName := fmt.Sprintf("test:v1:shard:000%s", shardNum)
+	if strings.HasPrefix(workerID, "writer") {
+		// Writer process - write to shards this process owns
+		// With 5 processes, process N owns shards N, N+5, N+10, etc.
 		count := 0
+		errorCount := 0
 
 		// Log progress periodically in CI
 		lastLog := time.Now()
+
+		// Write to multiple shards that this process owns
 		for ctx.Err() == nil {
+			// Write to shard matching our process ID
+			shardID := uint32(processID)
+			streamName := fmt.Sprintf("test:v1:shard:%04d", shardID)
+
 			batch := make([][]byte, 10)
 			for i := 0; i < 10; i++ {
 				entry := fmt.Sprintf(`{"worker":"%s","seq":%d,"time":%d}`,
@@ -979,13 +997,18 @@ func runTestWorker(t *testing.T, workerID string) {
 			}
 
 			if _, err := client.Append(ctx, streamName, batch); err != nil {
-				t.Logf("Worker %s: append error: %v", workerID, err)
+				errorCount++
+				t.Logf("Worker %s: append error on shard %d: %v", workerID, shardID, err)
+				if errorCount > 10 {
+					t.Logf("Worker %s: too many errors, exiting", workerID)
+					break
+				}
 			} else {
 				count += 10
 
 				// Progress logging in CI
 				if os.Getenv("CI") != "" && time.Since(lastLog) > 200*time.Millisecond {
-					t.Logf("Worker %s progress: %d entries written", workerID, count)
+					t.Logf("Worker %s progress: %d entries written to shard %d", workerID, count, shardID)
 					lastLog = time.Now()
 				}
 			}
@@ -993,7 +1016,7 @@ func runTestWorker(t *testing.T, workerID string) {
 			time.Sleep(10 * time.Millisecond)
 		}
 
-		t.Logf("Worker %s: wrote %d entries", workerID, count)
+		t.Logf("Worker %s: wrote %d entries total, %d errors", workerID, count, errorCount)
 
 	} else {
 		// Reader process - read from all shards
@@ -1033,7 +1056,8 @@ func runTestWorker(t *testing.T, workerID string) {
 
 // verifyMultiProcessResults checks data integrity after multi-process test
 func verifyMultiProcessResults(t *testing.T, dir string, numWriters int) {
-	config := DeprecatedMultiProcessConfig(0, 2)
+	// Use single-process mode for verification to read all shards
+	config := DefaultCometConfig()
 	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
@@ -1048,8 +1072,11 @@ func verifyMultiProcessResults(t *testing.T, dir string, numWriters int) {
 	totalEntries := 0
 	writers := make(map[string]int)
 
+	// Read from shards 0-4 (matching our 5 process IDs)
+	shards := []uint32{0, 1, 2, 3, 4}
+
 	for {
-		messages, err := consumer.Read(ctx, []uint32{0, 1, 2}, 1000)
+		messages, err := consumer.Read(ctx, shards, 1000)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -48,13 +48,13 @@ run = ["go test ./... -bench=. -benchmem -run=^$"]
 [tasks."bench:core"]
 description = "Core benchmarks: 1/10/100/1K/10K entries, single vs multi-process, acks (~25s)"
 run = [
-  """go test ./... -bench='BenchmarkFileRotation|BenchmarkWrite_(SingleEntry|SmallBatch|LargeBatch|HugeBatch|MegaBatch)$|BenchmarkMultiProcessThroughput/(SingleEntry|SmallBatch|LargeBatch|HugeBatch|MegaBatch)$|BenchmarkConsumerAck/(SingleAck|BatchAckMultiShard)$' -benchmem -run=^$ -benchtime=1s""",
+  """go test ./... -bench='BenchmarkFileRotation|BenchmarkWrite_(SingleEntry|SmallBatch|LargeBatch|HugeBatch|MegaBatch)$|BenchmarkWrite(SingleProcess|MultiProcess)_(SingleEntry|LargeBatch)$|BenchmarkConsumerAck/(SingleAck|BatchAckMultiShard)$' -benchmem -run=^$ -benchtime=1s""",
 ]
 
 [tasks."bench:quick"]
 description = "Quick comparison: 1/10/100/1K/10K entries, single vs multi-process (~10s)"
 run = [
-  """go test ./... -bench='BenchmarkFileRotation|BenchmarkWrite_(SingleEntry|SmallBatch|LargeBatch|HugeBatch|MegaBatch)$|BenchmarkMultiProcessThroughput/(SingleEntry|SmallBatch|LargeBatch|HugeBatch|MegaBatch)$|BenchmarkConsumerAck/SingleAck$' -benchmem -run=^$ -benchtime=0.5s""",
+  """go test ./... -bench='BenchmarkFileRotation|BenchmarkWrite_(SingleEntry|SmallBatch|LargeBatch)$|BenchmarkWrite(SingleProcess|MultiProcess)_(SingleEntry|LargeBatch)$|BenchmarkConsumerAck/SingleAck$' -benchmem -run=^$ -benchtime=0.5s""",
 ]
 
 [settings]
