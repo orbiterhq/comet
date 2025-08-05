@@ -339,7 +339,7 @@ func (c *Consumer) markMessageProcessed(messageID MessageID) {
 	c.processedMsgsMu.Lock()
 	defer c.processedMsgsMu.Unlock()
 	c.processedMsgs[messageID] = true
-	
+
 	// Cleanup old entries periodically to prevent unbounded growth
 	// Clean up every 1000 messages to amortize the cost
 	if len(c.processedMsgs) > 1000 && len(c.processedMsgs)%1000 == 0 {
@@ -352,7 +352,7 @@ func (c *Consumer) markMessageProcessed(messageID MessageID) {
 func (c *Consumer) cleanupProcessedMessages() {
 	// Get current consumer offsets for all shards
 	shardOffsets := make(map[uint32]int64)
-	
+
 	c.client.mu.RLock()
 	for shardID, shard := range c.client.shards {
 		shard.mu.RLock()
@@ -362,7 +362,7 @@ func (c *Consumer) cleanupProcessedMessages() {
 		shard.mu.RUnlock()
 	}
 	c.client.mu.RUnlock()
-	
+
 	// Remove messages that are below the consumer offset
 	for msgID := range c.processedMsgs {
 		if offset, exists := shardOffsets[msgID.ShardID]; exists {

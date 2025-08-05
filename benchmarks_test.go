@@ -719,8 +719,14 @@ func BenchmarkConsumer_LagMeasurement(b *testing.B) {
 	})
 	defer consumer.Close()
 
+	// Parse shard ID from stream name
+	parsedShardID, err := parseShardFromStream(streamName)
+	if err != nil {
+		b.Fatalf("failed to parse shard ID: %v", err)
+	}
+	
 	// Set consumer behind by 500 entries
-	err = consumer.ResetOffset(ctx, 1, 500)
+	err = consumer.ResetOffset(ctx, parsedShardID, 500)
 	if err != nil {
 		b.Fatalf("failed to set initial offset: %v", err)
 	}
@@ -730,7 +736,7 @@ func BenchmarkConsumer_LagMeasurement(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// Measure lag
-		lag, err := consumer.GetLag(ctx, 1)
+		lag, err := consumer.GetLag(ctx, parsedShardID)
 		if err != nil {
 			b.Fatalf("failed to get lag: %v", err)
 		}

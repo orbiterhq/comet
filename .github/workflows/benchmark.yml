@@ -39,7 +39,7 @@ jobs:
           # First check if tests compile
           echo "Checking if tests compile..."
           go test -c ./... || { echo "Compilation failed"; exit 1; }
-          
+
           # benchtime=100ms: Run each benchmark for 100ms (enough for thousands of iterations)
           # count=3: Run each benchmark 3 times for statistical validity (required by benchstat)
           # 2>&1: Capture both stdout and stderr to see any errors
