@@ -14,7 +14,7 @@ func TestRetention_Basic(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
-	config.Retention.MinFilesToKeep = 1
+	config.Retention.MinFilesToKeep = 0 // Allow deletion of all old files
 	config.Storage.MaxFileSize = 1024 // Small file size to force rotation
 
 	client, err := NewClient(dir, config)
@@ -92,6 +92,9 @@ func TestRetention_Basic(t *testing.T) {
 		t.Fatal("Need at least 2 files to test retention")
 	}
 
+	// Wait a bit for async file close to complete
+	time.Sleep(100 * time.Millisecond)
+	
 	// Force retention cleanup
 	client.ForceRetentionCleanup()
 

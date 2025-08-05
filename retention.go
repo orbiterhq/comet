@@ -3,6 +3,7 @@ package comet
 import (
 	"maps"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -197,8 +198,13 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 		shouldDelete := false
 
 		// Time-based deletion
-		if c.config.Retention.MaxAge > 0 && now.Sub(file.EndTime) > c.config.Retention.MaxAge {
+		age := now.Sub(file.EndTime)
+		if c.config.Retention.MaxAge > 0 && age > c.config.Retention.MaxAge {
 			shouldDelete = true
+			if c.logger != nil {
+				c.logger.Debug("File marked for deletion by age", 
+					"file", filepath.Base(file.Path), "age", age, "maxAge", c.config.Retention.MaxAge)
+			}
 		}
 
 		// Force delete after time
@@ -208,11 +214,16 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 		}
 
 		// Check if file has active readers
-		if shouldDelete && atomic.LoadInt64(&shard.readerCount) > 0 {
+		readerCount := atomic.LoadInt64(&shard.readerCount)
+		if shouldDelete && readerCount > 0 {
 			// Skip files that might have active readers
 			// This is conservative - we could track per-file readers for more precision
 			if i == 0 || i == len(files)-1 {
 				shouldDelete = false
+				if c.logger != nil {
+					c.logger.Debug("Skipping file deletion due to active readers", 
+						"file", file.Path, "readerCount", readerCount, "fileIndex", i)
+				}
 			}
 		}
 
@@ -233,6 +244,11 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 		remainingFiles := totalNonCurrentFiles - len(filesToDelete)
 		if shouldDelete && remainingFiles <= c.config.Retention.MinFilesToKeep {
 			shouldDelete = false
+			if c.logger != nil {
+				c.logger.Debug("File protected by MinFilesToKeep", 
+					"file", filepath.Base(file.Path), "remainingFiles", remainingFiles, 
+					"minFilesToKeep", c.config.Retention.MinFilesToKeep)
+			}
 		}
 
 		if shouldDelete {

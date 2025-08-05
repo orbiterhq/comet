@@ -1325,6 +1325,14 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 
 	// Prepare new file BEFORE taking locks
 	shardDir := filepath.Dir(s.indexPath)
+	
+	// Ensure shard directory exists (in case it was deleted)
+	if err := os.MkdirAll(shardDir, 0755); err != nil {
+		return fmt.Errorf("failed to create shard directory: %w", err)
+	}
+	
+	// Add small sleep to ensure unique timestamp
+	time.Sleep(time.Nanosecond)
 	newFilePath := filepath.Join(shardDir, fmt.Sprintf("log-%d.comet", time.Now().UnixNano()))
 	newFile, err := os.OpenFile(newFilePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 	if err != nil {
@@ -1398,19 +1406,18 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	}
 
 	if oldFile != nil {
-		// Sync and close in background to avoid blocking
-		go func() {
-			if err := oldFile.Sync(); err != nil {
-				if s.logger != nil {
-					s.logger.Warn("Failed to sync old file during rotation", "error", err)
-				}
+		// For now, do this synchronously to fix tests
+		// TODO: Make async once we handle file references properly
+		if err := oldFile.Sync(); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("Failed to sync old file during rotation", "error", err)
 			}
-			if err := oldFile.Close(); err != nil {
-				if s.logger != nil {
-					s.logger.Warn("Failed to close old file during rotation", "error", err)
-				}
+		}
+		if err := oldFile.Close(); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("Failed to close old file during rotation", "error", err)
 			}
-		}()
+		}
 	}
 
 	// Skip checkpoint during rotation to avoid deadlock

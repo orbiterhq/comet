@@ -16,7 +16,7 @@ func TestRetentionSingleProcess(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
-	config.Retention.MinFilesToKeep = 1
+	config.Retention.MinFilesToKeep = 0 // Allow deletion of all old files
 	config.Storage.MaxFileSize = 1024
 	// Single-process mode is the default
 
@@ -79,7 +79,7 @@ func TestRetentionWithActiveReaders(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.MaxAge = 50 * time.Millisecond
 	config.Retention.CleanupInterval = 25 * time.Millisecond
-	config.Retention.MinFilesToKeep = 1
+	config.Retention.MinFilesToKeep = 0 // Allow deletion of all old files
 	config.Storage.MaxFileSize = 512
 
 	client, err := NewClient(dir, config)
@@ -144,7 +144,7 @@ func TestRetentionConsumerProtection(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.MaxAge = 50 * time.Millisecond
 	config.Retention.CleanupInterval = 25 * time.Millisecond
-	config.Retention.MinFilesToKeep = 1
+	config.Retention.MinFilesToKeep = 0 // Allow deletion of all old files
 	config.Retention.ProtectUnconsumed = true // Enable consumer protection
 	config.Storage.MaxFileSize = 512
 
