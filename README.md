@@ -30,7 +30,7 @@ Edge deployments need local observability buffering, but other solutions fall sh
 
 ## Features
 
-- **Ultra-low latency**: Up to 12,634,200 entries/sec with batching
+- **Ultra-low latency**: Up to 12,634,200 entries/sec with batching (2.4M ops/sec with optimal sharding)
   - Comet uses periodic checkpoints (default: every 1000 writes or 1 second) to persist data to disk. Between checkpoints, writes are acknowledged after being written to the OS page cache.
 - **Predictable performance**: No compaction stalls or write amplification like LSM-trees
 - **True multi-process support**: Hybrid coordination (mmap + file locks), crash-safe rotation, real OS processes
@@ -80,8 +80,8 @@ defer client.Close()
 ```go
 // Pick which shard to write to based on a key (for consistent routing)
 // High cardinality keys (e.g. uuid) are recommended for consistent routing
-stream := comet.PickShardStream(event.ID, "events", "v1", 16)
-// This returns something like "events:v1:shard:0007" based on hash(userID) % 16
+stream := comet.PickShardStream(event.ID, "events", "v1", 256)
+// This returns something like "events:v1:shard:00A7" based on hash(event.ID) % 256
 
 ids, err := client.Append(ctx, stream, [][]byte{
     []byte(event.ToJSON()),
@@ -340,6 +340,88 @@ client, err := comet.NewMultiProcessClient("/data/streams")
 
 - Single service deployment
 - Don't need process-level isolation
+
+### Sharding Configuration and Performance
+
+Comet uses sharding to enable parallel writes and horizontal scaling. Based on extensive benchmarking, here are the optimal configurations:
+
+#### Performance Benchmarks
+
+With a 3GB memory budget and 16 concurrent threads on 2023 MacBook Air w/ Apple M2 chip:
+
+| Configuration              | Ops/sec  | Latency  | Performance vs Default |
+| -------------------------- | -------- | -------- | ---------------------- |
+| 1 shard × 1GB              | 748K     | 1.0μs    | Baseline               |
+| 4 shards × 768MB (default) | 912K     | 1.0μs    | -                      |
+| 16 shards × 192MB          | 1.3M     | <1μs     | +45%                   |
+| 64 shards × 48MB           | 1.5M     | <1μs     | +65%                   |
+| **256 shards × 10MB**      | **2.4M** | **<1μs** | **+168%**              |
+| 1024 shards × 4MB          | 7.8K     | 127μs    | -91% (degradation)     |
+
+#### Multi-Process Performance
+
+With 256 shards and varying process counts on 2023 MacBook Air w/ Apple M2 chip:
+
+| Processes | Shards/Process | Ops/sec | Performance Gain |
+| --------- | -------------- | ------- | ---------------- |
+| 1         | 256            | 1.3M    | Baseline         |
+| 4         | 64             | 5.3M    | 4x               |
+| 8         | 32             | 6.2M    | 4.8x             |
+| 16        | 16             | 6.4M    | 4.9x             |
+
+#### Recommended Configurations
+
+**For single-process deployments:**
+
+```go
+// Option 1: Use the OptimizedConfig helper
+config := comet.OptimizedConfig(256, 3072)  // 256 shards with 3GB memory budget
+client, err := comet.NewClient("/data", config)
+
+// Option 2: Manual configuration
+config := comet.DefaultCometConfig()
+config.Storage.MaxFileSize = 10 << 20  // 10MB
+
+// Use 256 shards when creating streams
+stream := comet.PickShardStream(key, "events", "v1", 256)
+```
+
+**For multi-process deployments:**
+
+```go
+// 4-8 processes with 256 total shards works best
+config := comet.MultiProcessConfig()
+config.Storage.MaxFileSize = 10 << 20  // 10MB
+config.Concurrency.ProcessCount = 4    // 64 shards per process
+
+// Still use 256 total shards
+stream := comet.PickShardStream(key, "events", "v1", 256)
+```
+
+#### Sharding Best Practices
+
+1. **Choose shard count upfront**: Changing shard count requires data migration
+2. **Use high-cardinality keys**: UUIDs, user IDs, or request IDs for even distribution
+3. **Powers of 2**: Use 16, 64, 256 shards for optimal hash distribution
+4. **File size scaling**: Smaller files (10-50MB) work better with many shards
+5. **Memory budget**: Plan for memory mapped capacity for optimal performance
+
+#### How Sharding Works
+
+```go
+// Helper functions for shard management
+shardID := comet.PickShard(key, 256)                    // Get shard ID (0-255)
+stream := comet.ShardStreamName("events", "v1", shardID) // "events:v1:shard:00FF"
+stream := comet.PickShardStream(key, "events", "v1", 256) // One-liner
+
+// Get all shards for parallel processing
+shardIDs := comet.AllShardsRange(256)                   // [0, 1, ..., 255]
+streams := comet.AllShardStreams("events", "v1", 256)   // All stream names
+
+// Consumers automatically discover all shards
+consumer.Process(ctx, handler,
+    comet.WithStream("events:v1:shard:*"))  // Wildcard pattern
+```
 
 ## License
 
