@@ -16,7 +16,7 @@ func TestMissingEntry_FirstWrite(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Log.EnableDebug = true
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 
 	// First process writes
 	{
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -131,7 +131,7 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 		if IsDebug() {
 			t.Logf("TRACE: Debug is enabled, about to create second client")
 		}
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}

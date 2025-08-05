@@ -17,7 +17,7 @@ func TestProcessExclusiveShardOwnership(t *testing.T) {
 		config.Concurrency.ProcessID = 0
 		config.Concurrency.ProcessCount = 2
 
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatalf("failed to create client: %v", err)
 		}
@@ -57,7 +57,7 @@ func TestProcessExclusiveShardOwnership(t *testing.T) {
 		config.Concurrency.ProcessID = 1
 		config.Concurrency.ProcessCount = 2
 
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatalf("failed to create client: %v", err)
 		}
@@ -97,7 +97,7 @@ func TestProcessExclusiveShardOwnership(t *testing.T) {
 		config0.Concurrency.ProcessID = 0
 		config0.Concurrency.ProcessCount = 2
 
-		client0, err := NewClientWithConfig(dir, config0)
+		client0, err := NewClient(dir, config0)
 		if err != nil {
 			t.Fatalf("failed to create client0: %v", err)
 		}
@@ -118,7 +118,7 @@ func TestProcessExclusiveShardOwnership(t *testing.T) {
 		config1.Concurrency.ProcessID = 1
 		config1.Concurrency.ProcessCount = 2
 
-		client1, err := NewClientWithConfig(dir, config1)
+		client1, err := NewClient(dir, config1)
 		if err != nil {
 			t.Fatalf("failed to create client1: %v", err)
 		}
@@ -178,7 +178,7 @@ func TestProcessExclusiveShardOwnership(t *testing.T) {
 		config.Concurrency.ProcessID = 0
 		config.Concurrency.ProcessCount = 2
 
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatalf("failed to create client: %v", err)
 		}
@@ -248,7 +248,7 @@ func TestProcessOwnershipWithThreeProcesses(t *testing.T) {
 			config.Concurrency.ProcessID = tc.processID
 			config.Concurrency.ProcessCount = 3
 
-			client, err := NewClientWithConfig(dir, config)
+			client, err := NewClient(dir, config)
 			if err != nil {
 				t.Fatalf("failed to create client: %v", err)
 			}

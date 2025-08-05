@@ -20,7 +20,7 @@ func TestRetentionSingleProcess(t *testing.T) {
 	config.Storage.MaxFileSize = 1024
 	// Single-process mode is the default
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestRetentionWithActiveReaders(t *testing.T) {
 	config.Retention.MinFilesToKeep = 1
 	config.Storage.MaxFileSize = 512
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestRetentionConsumerProtection(t *testing.T) {
 	config.Retention.ProtectUnconsumed = true // Enable consumer protection
 	config.Storage.MaxFileSize = 512
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}

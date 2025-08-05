@@ -50,7 +50,7 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 			dir := t.TempDir()
 			config := tt.config()
 
-			client, err := NewClientWithConfig(dir, config)
+			client, err := NewClient(dir, config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -175,7 +175,7 @@ func TestProcessWithDynamicDataAddition(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

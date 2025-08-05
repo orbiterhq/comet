@@ -218,7 +218,7 @@ func runBrowseTestWorker(t *testing.T, role string) {
 	}
 
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestBrowseMultiProcessConcurrent(t *testing.T) {
 
 	// Verify final state using main process
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,7 +523,7 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 		}
 		config := DeprecatedMultiProcessConfig(processID, 4) // 4 processes total for 4 shards
 
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatalf("Worker %d failed to create client: %v", workerID, err)
 		}
@@ -572,7 +572,7 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 
 		// Browser processes use default config (no multi-process restrictions for reading)
 		config := DefaultCometConfig()
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatalf("Browser %d failed to create client: %v", browseID, err)
 		}
@@ -619,7 +619,7 @@ func runBrowseConcurrentWorker(t *testing.T, role string) {
 
 		// Tail processes use default config (no multi-process restrictions for reading)
 		config := DefaultCometConfig()
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatalf("Tailer %d failed to create client: %v", shardID, err)
 		}

@@ -128,7 +128,7 @@ ls -la /var/lib/comet/shard-*/*.lock
 ```go
 // Enable multi-process mode with optimized settings
 config := comet.MultiProcessConfig()
-client, err := comet.NewClientWithConfig("/data", config)
+client, err := comet.NewClient("/data", config)
 
 // For Fiber prefork deployments
 app := fiber.New(fiber.Config{
@@ -138,7 +138,7 @@ app := fiber.New(fiber.Config{
 // Each process gets its own client instance
 var client *comet.Client
 app.Hooks().OnFork(func() error {
-    client, err = comet.NewClientWithConfig("/data", comet.MultiProcessConfig())
+    client, err = comet.NewClient("/data", comet.MultiProcessConfig())
     return err
 })
 ```

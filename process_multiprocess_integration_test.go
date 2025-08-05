@@ -29,7 +29,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 	t.Logf("Writing %d messages to %s", totalMessages, stream)
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 	client.Close()
 
 	// Verify data was written
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 	}
 
 	// Verify that data is still accessible and consistent
-	client3, err := NewClientWithConfig(dir, config)
+	client3, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestMultiProcessWorker(t *testing.T) {
 
 	// Initialize client in multi-process mode
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dataDir, config)
+	client, err := NewClient(dataDir, config)
 	if err != nil {
 		t.Fatalf("Worker %d failed to create client: %v", workerID, err)
 	}
@@ -243,7 +243,7 @@ func TestProcessMultiProcessContention(t *testing.T) {
 
 	// Write test data
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func TestMultiProcessContentionWorker(t *testing.T) {
 	workerID, _ := strconv.Atoi(workerIDStr)
 
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dataDir, config)
+	client, err := NewClient(dataDir, config)
 	if err != nil {
 		t.Fatalf("Contention worker %d failed to create client: %v", workerID, err)
 	}

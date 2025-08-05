@@ -54,7 +54,7 @@ func TestNewMultiProcessClientWithFile(t *testing.T) {
 	tempDir := t.TempDir()
 	shmFile := tempDir + "/custom-slots"
 
-	client, err := NewMultiProcessClientWithFile(tempDir+"/data", shmFile)
+	client, err := NewMultiProcessClient(tempDir+"/data", MultiProcessConfig(shmFile))
 	if err != nil {
 		t.Fatalf("Failed to create multi-process client: %v", err)
 	}
@@ -66,8 +66,8 @@ func TestNewMultiProcessClientWithFile(t *testing.T) {
 	}
 
 	// Verify shared memory file is stored
-	if client.sharedMemoryFile != shmFile {
-		t.Errorf("Expected shared memory file %s, got %s", shmFile, client.sharedMemoryFile)
+	if client.config.Concurrency.SHMFile != shmFile {
+		t.Errorf("Expected shared memory file %s, got %s", shmFile, client.config.Concurrency.SHMFile)
 	}
 }
 
@@ -86,9 +86,9 @@ func TestNewMultiProcessClient_DefaultOptions(t *testing.T) {
 		t.Errorf("Expected default process count %d, got %d", expectedCount, client.config.Concurrency.ProcessCount)
 	}
 
-	// Should use empty shared memory file (default)
-	if client.sharedMemoryFile != "" {
-		t.Errorf("Expected empty shared memory file, got %s", client.sharedMemoryFile)
+	// Should use default shared memory file (empty in config means use default)
+	if client.config.Concurrency.SHMFile != "" {
+		t.Errorf("Expected empty SHMFile (default), got %s", client.config.Concurrency.SHMFile)
 	}
 }
 
@@ -97,10 +97,12 @@ func TestNewMultiProcessClient_FailureCleanup(t *testing.T) {
 	tempDir := t.TempDir()
 	shmFile := tempDir + "/slots"
 
+	// First, create a config that will work for process ID acquisition
+	config := MultiProcessConfig(shmFile)
+	
 	// Try to create client with invalid data directory (read-only)
 	invalidDir := "/proc/invalid" // This should fail on most systems
-
-	client, err := NewMultiProcessClientWithFile(invalidDir, shmFile)
+	client, err := NewMultiProcessClient(invalidDir, config)
 	if err == nil {
 		client.Close()
 		t.Fatal("Expected client creation to fail with invalid directory")
@@ -108,7 +110,7 @@ func TestNewMultiProcessClient_FailureCleanup(t *testing.T) {
 
 	// The process ID should have been released automatically
 	// We can test this by creating another client - it should get the same slot
-	client2, err := NewMultiProcessClientWithFile(tempDir+"/data", shmFile)
+	client2, err := NewMultiProcessClient(tempDir+"/data", MultiProcessConfig(shmFile))
 	if err != nil {
 		t.Fatalf("Failed to create second client after first failed: %v", err)
 	}
@@ -125,10 +127,7 @@ func TestMultiProcessCometConfig(t *testing.T) {
 	shmFile := tempDir + "/config-test-slots"
 
 	// Test the config creation function
-	config, err := DeprecatedMultiProcessConfig(shmFile)
-	if err != nil {
-		t.Fatalf("Failed to create multi-process config: %v", err)
-	}
+	config := MultiProcessConfig(shmFile)
 
 	// Should be in multi-process mode
 	if !config.Concurrency.IsMultiProcess() {

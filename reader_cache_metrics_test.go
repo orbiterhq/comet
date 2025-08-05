@@ -16,7 +16,7 @@ func TestReaderCacheMetrics(t *testing.T) {
 	// Create client with multi-process config to get state
 	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 512 // Small files to create multiple
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestReaderCacheEviction(t *testing.T) {
 
 	// Create client
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

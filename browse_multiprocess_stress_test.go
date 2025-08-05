@@ -230,7 +230,7 @@ func runBrowseStressWorker(t *testing.T, role string) {
 	SetDebug(false)
 
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -473,7 +473,7 @@ func runBrowseStressWorker(t *testing.T, role string) {
 
 			case 2:
 				// Just create a client and close it (test connection churn)
-				newClient, err := NewClientWithConfig(dir, config)
+				newClient, err := NewClient(dir, config)
 				if err == nil {
 					newClient.Close()
 				}

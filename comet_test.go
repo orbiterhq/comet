@@ -579,7 +579,7 @@ func TestClient_Compression(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 100 // Lower threshold for testing
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestClient_CompressionMetrics(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 100 // Lower threshold to ensure compression
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -713,7 +713,7 @@ func TestClient_LoggingOptimization(t *testing.T) {
 	dir := t.TempDir()
 
 	// Use default config (optimized for logging)
-	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -791,7 +791,7 @@ func TestHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	
+
 	// Sleep longer to ensure uptime is measurable (at least 1 second)
 	time.Sleep(1100 * time.Millisecond)
 
@@ -852,7 +852,7 @@ func TestHealth(t *testing.T) {
 	if health.WritesOK {
 		t.Error("Expected WritesOK to be false after write errors")
 	}
-	
+
 	// ErrorCount should match WriteErrors
 	if health.ErrorCount != 10 {
 		t.Errorf("Expected error count 10, got %d", health.ErrorCount)
@@ -878,7 +878,7 @@ func TestDebugLogging(t *testing.T) {
 	config.Log.Logger = testLogger
 	config.Storage.MaxFileSize = 1024 // Small file size to trigger rotation
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

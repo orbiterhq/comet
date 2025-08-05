@@ -16,7 +16,7 @@ func TestEnsureWriterRecovery(t *testing.T) {
 	config.Concurrency.ProcessCount = 0 // Test non-mmap path
 
 	// Create initial client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestInitializeMmapWriterRecovery(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2) // Use multi-process mode to test mmap path
 
 	// Create initial client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestScanDataFilesForEntryFallback(t *testing.T) {
 	config := DefaultCometConfig()
 
 	// Create client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create client and write data
-			client, err := NewClientWithConfig(dir+"/"+tc.name, tc.config)
+			client, err := NewClient(dir+"/"+tc.name, tc.config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -221,7 +221,7 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 			}
 
 			// Recreate client - this should trigger recovery
-			client2, err := NewClientWithConfig(dir+"/"+tc.name, tc.config)
+			client2, err := NewClient(dir+"/"+tc.name, tc.config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -280,7 +280,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 	config := DefaultCometConfig()
 
 	// Create client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 	}
 
 	// Create a new client - this should handle the corruption
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		// Recovery might fail, but shouldn't panic
 		t.Logf("Client creation after corruption failed (expected): %v", err)
@@ -344,7 +344,7 @@ func TestConcurrentRecovery(t *testing.T) {
 	config.Retention.CleanupInterval = 50 * time.Millisecond
 
 	// Create initial client
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestConcurrentRecovery(t *testing.T) {
 	}
 
 	// Create a new client - this should trigger recovery
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -220,7 +220,7 @@ func BenchmarkWrite_CompressibleEntries(b *testing.B) {
 	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 256 // Compress logs larger than 256 bytes
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -330,7 +330,7 @@ func BenchmarkWrite_CompressionComparison(b *testing.B) {
 			config := DefaultCometConfig()
 			config.Compression.MinCompressSize = scenario.compressionSize
 
-			client, err := NewClientWithConfig(dir, config)
+			client, err := NewClient(dir, config)
 			if err != nil {
 				b.Fatalf("failed to create client: %v", err)
 			}
@@ -813,7 +813,7 @@ func BenchmarkSimpleConsumerRead(b *testing.B) {
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0 // Single-process mode
 	config.Indexing.BoundaryInterval = 100
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -887,7 +887,7 @@ func BenchmarkConsumerAck(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0 // Single-process mode
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1350,7 +1350,7 @@ func BenchmarkAllocation_CompressionImpact(b *testing.B) {
 		cfg.Indexing.BoundaryInterval = 100
 		cfg.Storage.MaxFileSize = 1 << 30
 		cfg.Storage.CheckpointTime = 2000
-		client, err := NewClientWithConfig(dir, cfg)
+		client, err := NewClient(dir, cfg)
 		if err != nil {
 			b.Fatalf("failed to create client: %v", err)
 		}
@@ -1508,7 +1508,7 @@ func BenchmarkFileLocking_Enabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 2 // Multi-process mode // Explicitly enable for clarity
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1539,7 +1539,7 @@ func BenchmarkFileLocking_Disabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0 // Single-process mode // Disable file locking
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1570,7 +1570,7 @@ func BenchmarkFileLocking_ConcurrentEnabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 2 // Multi-process mode
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1610,7 +1610,7 @@ func BenchmarkFileLocking_ConcurrentDisabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0 // Single-process mode
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1650,7 +1650,7 @@ func BenchmarkFileLocking_BatchWrites_Enabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 2 // Multi-process mode
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1688,7 +1688,7 @@ func BenchmarkFileLocking_BatchWrites_Disabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0 // Single-process mode
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1867,7 +1867,7 @@ func BenchmarkMultiProcessMode_MmapWriter(b *testing.B) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create client which will use mmap writer in multi-process mode
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1898,7 +1898,7 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 		dir := b.TempDir()
 		config := DefaultCometConfig()
 
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1920,7 +1920,7 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 		config := DeprecatedMultiProcessConfig(0, 2)
 
 		// Temporarily disable mmap writer to test async checkpoint only
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1944,7 +1944,7 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 		dir := b.TempDir()
 		config := DeprecatedMultiProcessConfig(0, 2)
 
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1971,7 +1971,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 	b.Run("SingleEntry", func(b *testing.B) {
 		dir := b.TempDir()
 		config := DeprecatedMultiProcessConfig(0, 2)
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1995,7 +1995,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 	b.Run("SmallBatch", func(b *testing.B) {
 		dir := b.TempDir()
 		config := DeprecatedMultiProcessConfig(0, 2)
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2025,7 +2025,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 	b.Run("LargeBatch", func(b *testing.B) {
 		dir := b.TempDir()
 		config := DeprecatedMultiProcessConfig(0, 2)
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2055,7 +2055,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 	b.Run("HugeBatch", func(b *testing.B) {
 		dir := b.TempDir()
 		config := DeprecatedMultiProcessConfig(0, 2)
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2085,7 +2085,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 	b.Run("MegaBatch", func(b *testing.B) {
 		dir := b.TempDir()
 		config := DeprecatedMultiProcessConfig(0, 2)
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2128,7 +2128,7 @@ func BenchmarkThroughputComparison(b *testing.B) {
 	b.Run("SingleProcess_Batch1000", func(b *testing.B) {
 		dir := b.TempDir()
 		config := DefaultCometConfig()
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2152,7 +2152,7 @@ func BenchmarkThroughputComparison(b *testing.B) {
 	b.Run("MultiProcess_Batch1000", func(b *testing.B) {
 		dir := b.TempDir()
 		config := DeprecatedMultiProcessConfig(0, 2)
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2223,7 +2223,7 @@ func BenchmarkMultiProcess(b *testing.B) {
 
 			// Read final stats
 			config := DeprecatedMultiProcessConfig(0, numProcs)
-			client, err := NewClientWithConfig(dir, config)
+			client, err := NewClient(dir, config)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -2250,7 +2250,7 @@ func runBenchmarkWorker(b *testing.B) {
 
 	// Each worker needs its own process ID and total process count
 	config := DeprecatedMultiProcessConfig(workerID, totalProcs)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Worker %d failed to create client: %v\n", workerID, err)
 		b.Fatal(err)

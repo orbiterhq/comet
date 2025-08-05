@@ -61,7 +61,7 @@ if err != nil {
 config.Storage.MaxFileSize = 512 << 20  // 512MB files
 config.Retention.MaxAge = time.Hour     // 1 hour retention
 
-client, err := comet.NewClientWithConfig("./data", config)
+client, err := comet.NewClient("./data", config)
 if err != nil {
     log.Fatal(err)
 }
@@ -92,7 +92,7 @@ func main() {
     config := comet.MultiProcessConfig(processID, runtime.NumCPU())
 
     // Initialize Comet client
-    client, err := comet.NewClientWithConfig("./data", config)
+    client, err := comet.NewClient("./data", config)
     if err != nil {
         log.Fatal(err)
     }
@@ -164,7 +164,7 @@ client, err := comet.NewMultiProcessClientWithFile("./data", "/tmp/myapp-slots")
 
 ## How It Works
 
-1. **Shared Memory File**: Creates a memory-mapped file at `/tmp/comet-worker-slots` (or custom path)
+1. **Shared Memory File**: Creates a memory-mapped file at `/tmp/comet-worker-slots-worker-slots` (or custom path)
 2. **Slot Size**: Each slot is 8 bytes containing the process PID
 3. **Atomic Operations**: Uses atomic compare-and-swap for thread-safe slot acquisition
 4. **Dead Process Detection**: Checks if existing PIDs are still alive using `kill(pid, 0)`

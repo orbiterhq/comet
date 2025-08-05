@@ -26,7 +26,7 @@ func TestACKDebug(t *testing.T) {
 	}
 
 	t.Logf("=== Writing 20 messages across %d shards ===", len(streams))
-	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestACKDebug(t *testing.T) {
 			for sessionID := 0; sessionID < 3; sessionID++ {
 				// Each consumer gets its own process ID to avoid race conditions
 				processConfig := DeprecatedMultiProcessConfig(cID, 2)
-				client, err := NewClientWithConfig(dir, processConfig)
+				client, err := NewClient(dir, processConfig)
 				if err != nil {
 					logEvent(cID, sessionID, "ERROR", fmt.Sprintf("Failed to create client: %v", err), -1)
 					return
@@ -160,7 +160,7 @@ func TestACKDebug(t *testing.T) {
 				client.Close()
 
 				// Check persisted offset
-				client2, _ := NewClientWithConfig(dir, processConfig)
+				client2, _ := NewClient(dir, processConfig)
 				shard2, _ := client2.getOrCreateShard(ownedShard)
 				shard2.mu.RLock()
 				persistedOffset := shard2.index.ConsumerOffsets[fmt.Sprintf("consumer-%d", cID)]

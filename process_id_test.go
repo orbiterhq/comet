@@ -101,7 +101,7 @@ func TestGetProcessID_Integration(t *testing.T) {
 
 	// Should be valid - test by trying to create a client
 	tempDir := t.TempDir()
-	client, err := NewClientWithConfig(tempDir, config)
+	client, err := NewClient(tempDir, config)
 	if err != nil {
 		t.Errorf("Config validation failed: %v", err)
 	} else {
@@ -115,7 +115,7 @@ func TestGetProcessID_DefaultFile(t *testing.T) {
 	// In practice, you'd want isolation, but this tests the default behavior
 
 	// Clean up any existing default file for this test
-	defaultFile := "/tmp/comet-worker-slots"
+	defaultFile := "/tmp/comet-worker-slots-worker-slots"
 	os.Remove(defaultFile)
 	defer os.Remove(defaultFile)
 

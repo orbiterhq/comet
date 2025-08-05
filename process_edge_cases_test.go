@@ -13,7 +13,7 @@ func TestProcessMultiProcessMode(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2) // Use multi-process config
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestProcessWithErrors(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestProcessLongRunning(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

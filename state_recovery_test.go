@@ -18,7 +18,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create client to initialize state
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestRecoverCorruptedState(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create client and shard
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestStateCorruptionEndToEnd(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create initial client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestStateCorruptionEndToEnd(t *testing.T) {
 	}
 
 	// Create new client - should detect corruption and recover
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestMigrateStateVersion(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Process 1: Create and write data
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 	}
 
 	// Process 2: Should detect corruption and recover
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +440,7 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 	}
 
 	// Process 3: Should work with recovered state
-	client3, err := NewClientWithConfig(dir, config)
+	client3, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +477,7 @@ func TestPartialStateCorruption(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestPartialStateCorruption(t *testing.T) {
 	}
 
 	// Reopen - should still work as we only validate critical fields
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestStateFilePermissions(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -578,7 +578,7 @@ func TestStateFilePermissions(t *testing.T) {
 	}
 
 	// Try to open - should fail with permission denied
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		// This is expected - we can't write to a read-only file
 		if !strings.Contains(err.Error(), "permission denied") {
@@ -619,7 +619,7 @@ func TestValidateNilState(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +655,7 @@ func TestRecoverWithNoIndex(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -701,7 +701,7 @@ func TestSuspiciousMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +749,7 @@ func TestRecoveryFailure(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -779,7 +779,7 @@ func TestRecoveryFailure(t *testing.T) {
 	defer os.Chmod(shardDir, 0755) // Restore permissions
 
 	// Try to create a new client
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 
 	// Both outcomes are valid:
 	// 1. Permission denied (most systems) - recovery can't proceed
@@ -812,7 +812,7 @@ func TestStateWithEmptyCurrentFile(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -856,7 +856,7 @@ func TestStateWithInvalidFilename(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -898,7 +898,7 @@ func TestCorruptedFileRecovery(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -943,7 +943,7 @@ func TestCorruptedFileRecovery(t *testing.T) {
 	file.Close()
 
 	// Reopen client
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -974,7 +974,7 @@ func TestKillProcessMidWrite(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1027,7 +1027,7 @@ func TestKillProcessMidWrite(t *testing.T) {
 	client.Close()
 
 	// Simulate process restart by creating new client
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1056,7 +1056,7 @@ func TestErrorHandlingInsteadOfPanic(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1079,7 +1079,7 @@ func TestErrorHandlingInsteadOfPanic(t *testing.T) {
 	}
 
 	// Create a new client - this should handle the corrupted index gracefully
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1108,7 +1108,7 @@ func BenchmarkStateValidation(b *testing.B) {
 	dir := b.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}

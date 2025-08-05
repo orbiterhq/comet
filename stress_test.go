@@ -19,7 +19,7 @@ func TestQuickACKStress(t *testing.T) {
 	totalMessages := 200
 
 	// Write messages
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestQuickACKStress(t *testing.T) {
 
 	// Aggressive restart pattern - restart after every 2-3 batches
 	for restart := 0; restart < 20 && atomic.LoadInt64(&totalProcessed) < int64(totalMessages); restart++ {
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -135,7 +135,7 @@ func testEmptyBatchACK(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func testDuplicateACK(t *testing.T) {
 	stream := "dup:v1:shard:0000"
 
 	// Write message
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func testDuplicateACK(t *testing.T) {
 	client.Close()
 
 	// Read and ACK same message multiple times
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func testDuplicateACK(t *testing.T) {
 	consumer.Close()
 	client2.Close()
 
-	client3, err := NewClientWithConfig(dir, config)
+	client3, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func testOutOfOrderACK(t *testing.T) {
 	stream := "order:v1:shard:0000"
 
 	// Write messages
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func testOutOfOrderACK(t *testing.T) {
 	client.Close()
 
 	// Read all messages
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func testRapidACKUnACK(t *testing.T) {
 	stream := "rapid:v1:shard:0000"
 
 	// Write messages
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func testRapidACKUnACK(t *testing.T) {
 	client.Close()
 
 	// Rapid ACK operations
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func testACKDuringRotation(t *testing.T) {
 	config.Storage.MaxFileSize = 1024 // Very small files to force rotation
 	stream := "rotation:v1:shard:0000"
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,13 +19,13 @@ func TestMultiProcessInSameProcess(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Retention.CleanupInterval = 0 // Disable retention to prevent interference
 
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client1.Close()
 
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestMultiProcessMmapSize(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestMultiWriter_DisabledLocking(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestMultiWriter_Configuration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 
-			client, err := NewClientWithConfig(dir, tt.config)
+			client, err := NewClient(dir, tt.config)
 			if err != nil {
 				t.Fatalf("failed to create client: %v", err)
 			}
@@ -326,7 +326,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 
 	// Phase 1: Writer process
 	t.Run("Writer", func(t *testing.T) {
-		client1, err := NewClientWithConfig(dir, config)
+		client1, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatalf("failed to create writer client: %v", err)
 		}
@@ -388,7 +388,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 
 	// Phase 2: Reader process (separate client instance to simulate different process)
 	t.Run("Reader", func(t *testing.T) {
-		client2, err := NewClientWithConfig(dir, config)
+		client2, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatalf("failed to create reader client: %v", err)
 		}
@@ -438,7 +438,7 @@ func TestCometStateFile(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +474,7 @@ func TestMmapTimestampUpdates(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

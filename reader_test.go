@@ -21,7 +21,7 @@ func TestReaderBasicUsage(t *testing.T) {
 	// Create client with standard config
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 1024 // Small files to test multiple files
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestReaderMemoryBounds(t *testing.T) {
 	// Create client and write data to create multiple files
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 512 // Very small files
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestReaderCompressedData(t *testing.T) {
 	// Create client with compression enabled
 	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 50 // Compress entries > 50 bytes
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestReaderErrorHandling(t *testing.T) {
 
 	// Create basic setup
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestReaderConcurrentAccess(t *testing.T) {
 
 	// Create test data
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestReaderClose(t *testing.T) {
 	ctx := context.Background()
 
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +461,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 	config.Storage.MaxFileSize = 4096 // Small-ish files but not too extreme
 	// Reader config is managed internally, we'll use small files to force remapping
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 
 	// Give writers a head start to ensure some data is written
 	time.Sleep(100 * time.Millisecond)
-	
+
 	// Sync to ensure initial writes are visible
 	client.Sync(context.Background())
 
@@ -611,7 +611,7 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 	config.Storage.MaxFileSize = 512 // Very small files
 	// Reader will handle memory mapping internally
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -682,7 +682,7 @@ func TestReaderMemoryPressure(t *testing.T) {
 	config.Storage.MaxFileSize = 1024 // 1KB files
 	// Reader will manage memory internally
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -756,7 +756,7 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 2048
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -839,7 +839,7 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 	config.Storage.MaxFileSize = 4096
 	config.Compression.MinCompressSize = 100 // Only compress larger entries
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}

@@ -13,7 +13,7 @@ func TestACKPersistenceBug(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Step 1: Write messages
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestACKPersistenceBug(t *testing.T) {
 	client1.Close()
 
 	// Step 2: Process and ACK some messages
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestACKPersistenceBug(t *testing.T) {
 
 	// Step 3: Create new client/consumer (simulates restart)
 	t.Log("=== Creating new client (simulate restart) ===")
-	client3, err := NewClientWithConfig(dir, config)
+	client3, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestProcessACKPersistence(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Write messages
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestProcessACKPersistence(t *testing.T) {
 	client1.Close()
 
 	// Process first 10 messages
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestProcessACKPersistence(t *testing.T) {
 	client2.Close()
 
 	// Start new client/consumer (simulate restart)
-	client3, err := NewClientWithConfig(dir, config)
+	client3, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

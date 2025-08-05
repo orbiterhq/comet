@@ -25,7 +25,7 @@ func TestSimpleRead(t *testing.T) {
 	t.Logf("=== Writing to stream: %s ===", stream)
 
 	// Write 10 messages
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestSimpleRead(t *testing.T) {
 
 	// Try to read with exact stream
 	t.Logf("\n=== Reading with exact stream: %s ===", stream)
-	client2, _ := NewClientWithConfig(dir, config)
+	client2, _ := NewClient(dir, config)
 	consumer2 := NewConsumer(client2, ConsumerOptions{Group: "test"})
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
@@ -73,7 +73,7 @@ func TestSimpleRead(t *testing.T) {
 
 	// Try to read with wildcard
 	t.Logf("\n=== Reading with wildcard stream: simple:v1:shard:* ===")
-	client3, _ := NewClientWithConfig(dir, config)
+	client3, _ := NewClient(dir, config)
 	consumer3 := NewConsumer(client3, ConsumerOptions{Group: "test2"})
 
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 2*time.Second)
@@ -96,7 +96,7 @@ func TestSimpleRead(t *testing.T) {
 
 	// Check what shards exist
 	t.Logf("\n=== Checking shard structure ===")
-	client4, _ := NewClientWithConfig(dir, config)
+	client4, _ := NewClient(dir, config)
 
 	// Try to get shard directly
 	shard, err := client4.getOrCreateShard(shardID)

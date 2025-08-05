@@ -17,7 +17,7 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write test data using default config (no process restrictions)
-	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 
 				// Each consumer gets its own process ID to avoid race conditions
 				processConfig := DeprecatedMultiProcessConfig(consumerID, 3)
-				client, err := NewClientWithConfig(dir, processConfig)
+				client, err := NewClient(dir, processConfig)
 				if err != nil {
 					t.Errorf("Consumer %d failed to create client: %v", consumerID, err)
 					return
@@ -104,7 +104,7 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 		results := make([]int, 3)
 
 		// Use a single shared client to avoid race conditions from separate clients
-		sharedClient2, err := NewClientWithConfig(dir, DefaultCometConfig())
+		sharedClient2, err := NewClient(dir, DefaultCometConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -151,7 +151,7 @@ func TestConsumerFailover(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write test data using default config
-	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestConsumerFailover(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Consumer 1: Process some messages then "die"
-	client1, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client1, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestConsumerFailover(t *testing.T) {
 	t.Logf("Consumer 1 processed %d messages before dying", processed1)
 
 	// Consumer 2: Should take over and process remaining messages
-	client2, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client2, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write data to multiple shards using default config (no process restrictions)
-	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 
 			// Each consumer gets its own process ID to avoid race conditions
 			processConfig := DeprecatedMultiProcessConfig(consumerID, 3)
-			client, err := NewClientWithConfig(dir, processConfig)
+			client, err := NewClient(dir, processConfig)
 			if err != nil {
 				t.Errorf("Consumer %d failed: %v", consumerID, err)
 				return
@@ -366,7 +366,7 @@ func TestDebugMessageLoss(t *testing.T) {
 	defer SetDebug(false)
 
 	// Write exactly 100 messages
-	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestDebugMessageLoss(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify data was written
-	client2, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client2, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestDebugMessageLoss(t *testing.T) {
 	client2.Close()
 
 	// Now try to read all messages with detailed logging
-	client3, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client3, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

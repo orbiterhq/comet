@@ -23,7 +23,7 @@ func TestMessageLoss(t *testing.T) {
 
 	// Write 100 messages
 	t.Logf("=== Writing 100 messages ===")
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestMessageLoss(t *testing.T) {
 
 	// Test 1: Single consumer should read all messages
 	t.Logf("\n=== Test 1: Single Consumer ===")
-	client1, _ := NewClientWithConfig(dir, config)
+	client1, _ := NewClient(dir, config)
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "test-single"})
 
 	var read1 []string
@@ -77,7 +77,7 @@ func TestMessageLoss(t *testing.T) {
 		go func(consumerID int) {
 			defer wg.Done()
 
-			client, _ := NewClientWithConfig(dir, config)
+			client, _ := NewClient(dir, config)
 			consumer := NewConsumer(client, ConsumerOptions{
 				Group: fmt.Sprintf("test-group-%d", consumerID),
 			})
@@ -113,7 +113,7 @@ func TestMessageLoss(t *testing.T) {
 	t.Logf("\n=== Test 3: Three Consumers, SAME Group ===")
 
 	// First, check what offset the shared group is at
-	checkClient, _ := NewClientWithConfig(dir, config)
+	checkClient, _ := NewClient(dir, config)
 	checkShard, _ := checkClient.getOrCreateShard(0)
 	checkShard.mu.RLock()
 	initialOffset := checkShard.index.ConsumerOffsets["shared-group"]
@@ -129,7 +129,7 @@ func TestMessageLoss(t *testing.T) {
 		go func(consumerID int) {
 			defer wg.Done()
 
-			client, _ := NewClientWithConfig(dir, config)
+			client, _ := NewClient(dir, config)
 			consumer := NewConsumer(client, ConsumerOptions{
 				Group: "shared-group",
 			})

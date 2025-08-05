@@ -60,7 +60,7 @@ func runWriter(dir, id string, duration time.Duration) {
 		log.Fatalf("invalid process ID '%s': %v", id, err)
 	}
 	config := comet.DeprecatedMultiProcessConfig(processID, 2)
-	client, err := comet.NewClientWithConfig(dir, config)
+	client, err := comet.NewClient(dir, config)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
@@ -108,7 +108,7 @@ func runReader(dir, id string, duration time.Duration) {
 		log.Fatalf("invalid process ID '%s': %v", id, err)
 	}
 	config := comet.DeprecatedMultiProcessConfig(processID, 2)
-	client, err := comet.NewClientWithConfig(dir, config)
+	client, err := comet.NewClient(dir, config)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
@@ -174,7 +174,7 @@ func runBenchmark(dir, id string, duration time.Duration) {
 		log.Fatalf("invalid process ID '%s': %v", id, err)
 	}
 	config := comet.DeprecatedMultiProcessConfig(processID, 2)
-	client, err := comet.NewClientWithConfig(dir, config)
+	client, err := comet.NewClient(dir, config)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
@@ -233,7 +233,7 @@ func runRetentionTest() {
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0
 
-	client, err := comet.NewClientWithConfig(*dir, config)
+	client, err := comet.NewClient(*dir, config)
 	if err != nil {
 		log.Fatalf("Worker %d: failed to create client: %v", *workerID, err)
 	}
@@ -287,7 +287,7 @@ func runIndexRebuildTest() {
 	log.Printf("Expected: %d files, %d entries", *initialFiles, *initialEntries)
 
 	config := comet.DeprecatedMultiProcessConfig(0, 1)
-	client, err := comet.NewClientWithConfig(*dir, config)
+	client, err := comet.NewClient(*dir, config)
 	if err != nil {
 		log.Fatalf("Failed to create client (this should trigger index rebuild): %v", err)
 	}
@@ -346,7 +346,7 @@ func runRetentionDebug() {
 	config.Retention.MinFilesToKeep = 0
 	config.Retention.ProtectUnconsumed = false
 
-	client, err := comet.NewClientWithConfig(*dir, config)
+	client, err := comet.NewClient(*dir, config)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}

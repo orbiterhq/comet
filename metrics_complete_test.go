@@ -15,7 +15,7 @@ func TestAllInternalMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestCompressionEdgeCaseMetrics(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 10 // Low threshold
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestCheckpointMetrics(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.CheckpointTime = 10 // Short interval
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestSyncLatencyMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestRotationFailureMetrics(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 100 // Small files
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestIndexErrorMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestCorruptionMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestCorruptionMetrics(t *testing.T) {
 	}
 
 	// Reopen client - should detect corruption during recovery
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		// Error is expected but we want to check metrics
 		t.Logf("Expected error on corrupted data: %v", err)
@@ -319,7 +319,7 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 	config.Retention.CleanupInterval = 10 * time.Millisecond
 	config.Retention.ProtectUnconsumed = true
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestMultiProcessDetailedMetrics(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create first client
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestMultiProcessDetailedMetrics(t *testing.T) {
 	atomic.StoreInt64(&shard1.state.LastProcessHeartbeat, time.Now().UnixNano())
 
 	// Create second client
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestMetricsCompleteness(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

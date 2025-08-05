@@ -297,7 +297,7 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 	config.Concurrency.ProcessCount = 0 // Ensure single-process mode
 	// Use frequent checkpoints to ensure data is persisted
 	config.Storage.CheckpointTime = 10
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 
 	// Track writes per writer for debugging
 	var writerCounts [3]atomic.Int64
-	
+
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
 		go func(writerID int) {
@@ -328,7 +328,7 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 				default:
 					// Continue with write
 				}
-				
+
 				// Only write if we haven't been asked to stop yet
 				if !stopping {
 					data := []byte(fmt.Sprintf(`{"writer": %d, "count": %d}`, writerID, localCount))
@@ -350,7 +350,7 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 					time.Sleep(10 * time.Millisecond)
 				}
 			}
-			
+
 			// Ensure our writes are flushed before exiting
 			client.Sync(ctx)
 			t.Logf("Writer %d stopping, wrote %d entries", writerID, localCount)
@@ -388,23 +388,23 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 	// Stop writers
 	close(stopWriting)
 	wg.Wait()
-	
+
 	// Get the final write count immediately after writers stop
 	totalWrites := writeCount.Load()
-	
+
 	// Log per-writer counts
-	t.Logf("Writer 0: %d, Writer 1: %d, Writer 2: %d", 
+	t.Logf("Writer 0: %d, Writer 1: %d, Writer 2: %d",
 		writerCounts[0].Load(), writerCounts[1].Load(), writerCounts[2].Load())
 
 	// Wait a bit for any periodic flush to complete
 	time.Sleep(20 * time.Millisecond)
-	
+
 	// Sync to ensure all writes are visible
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("Total writes: %d", totalWrites)
-	
+
 	// Force a second sync to be absolutely sure
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
@@ -416,7 +416,7 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("Shard length: %d", length)
-	
+
 	// Also check via direct shard access
 	shard, err := client.getOrCreateShard(0)
 	if err != nil {
@@ -436,7 +436,7 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		seenWriters[i] = make(map[int]bool)
 	}
-	
+
 	err = client.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {
 		scanCount++
 		// Try to parse the message to see which writer/count it is
@@ -459,7 +459,7 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 		t.Errorf("Scanned %d entries, but wrote %d", scanCount, totalWrites)
 		// Try to understand the discrepancy
 		if scanCount < totalWrites {
-			t.Logf("Missing %d entries", totalWrites - scanCount)
+			t.Logf("Missing %d entries", totalWrites-scanCount)
 			// Check which specific entries are missing
 			for writer := 0; writer < 3; writer++ {
 				expectedCount := int(writerCounts[writer].Load())

@@ -549,7 +549,7 @@ Potentially 20-30% improvement for high-volume workloads, but adds complexity.
 
 ```go
 config := comet.HighThroughputConfig()
-client, _ := comet.NewClientWithConfig("/data", config)
+client, _ := comet.NewClient("/data", config)
 
 // Use 16 shards
 entries := make([][]byte, 1000)

@@ -167,7 +167,7 @@ err = consumer.Process(ctx, processEvents,
 // Only override what you need:
 config := comet.DefaultCometConfig()
 config.Retention.MaxAge = 24 * time.Hour  // Keep data longer
-client, err := comet.NewClientWithConfig("/var/lib/comet", config)
+client, err := comet.NewClient("/var/lib/comet", config)
 
 // Or use a preset:
 config = comet.HighCompressionConfig()      // Optimize for storage
@@ -348,7 +348,7 @@ client, err := comet.NewClient("/data/streams")
 // Multi-process mode (EXPERIMENTAL) - for prefork/multi-process deployments
 config := comet.DefaultCometConfig()
 config.Concurrency.EnableMultiProcessMode = true
-client, err := comet.NewClientWithConfig("/data/streams", config)
+client, err := comet.NewClient("/data/streams", config)
 ```
 
 **⚠️ IMPORTANT: Multi-Process Mode Limitations**

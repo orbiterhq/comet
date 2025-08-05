@@ -14,7 +14,7 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	defer SetDebug(false)
 
 	// Write messages
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	client.Close()
 
 	// STEP 1: Consumer group-A processes first 3 messages
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	client1.Close()
 
 	// STEP 2: Consumer group-B should start from beginning, not from group-A's position
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

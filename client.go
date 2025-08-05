@@ -69,8 +69,9 @@ type StorageConfig struct {
 type ConcurrencyConfig struct {
 	// Process-level shard ownership (simplifies multi-process coordination)
 	// When ProcessCount > 1, multi-process mode is automatically enabled
-	ProcessID    int `json:"process_id"`    // This process's ID (0-based)
-	ProcessCount int `json:"process_count"` // Total number of processes (0 = single-process)
+	ProcessID    int    `json:"process_id"`    // This process's ID (0-based)
+	ProcessCount int    `json:"process_count"` // Total number of processes (0 = single-process)
+	SHMFile      string `json:"shm_file"`      // Shared memory file path (empty = "/tmp/comet-worker-slots-shm")
 }
 
 // Owns checks if this process owns a particular shard
@@ -332,6 +333,12 @@ func MultiProcessConfig(sharedMemoryFile ...string) CometConfig {
 
 	// Create multi-process config
 	config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
+	
+	// Set the shared memory file
+	if len(sharedMemoryFile) > 0 && sharedMemoryFile[0] != "" {
+		config.Concurrency.SHMFile = sharedMemoryFile[0]
+	}
+	
 	return config
 }
 
@@ -447,14 +454,6 @@ type FileInfo struct {
 	Path string `json:"path"`
 }
 
-// NewClient creates a new comet client for local file-based streaming with default config
-func NewClient(dataDir string, cfg ...CometConfig) (*Client, error) {
-	if len(cfg) > 0 {
-		return NewClientWithConfig(dataDir, cfg[0])
-	}
-	return NewClientWithConfig(dataDir, DefaultCometConfig())
-}
-
 // NewMultiProcessClient creates a new comet client with automatic multi-process coordination.
 // It uses the default shared memory file for process ID coordination.
 // The process ID is automatically released when the client is closed.
@@ -471,9 +470,16 @@ func NewMultiProcessClient(dataDir string, cfg ...CometConfig) (*Client, error) 
 	config := mpCfg
 	if len(cfg) > 0 {
 		config = cfg[0]
+		shmFile := config.Concurrency.SHMFile
 		config.Concurrency = mpCfg.Concurrency
+		if shmFile != "" {
+			config.Concurrency.SHMFile = shmFile
+		}
+		if config.Concurrency.SHMFile == "" {
+			config.Concurrency.SHMFile = "/tmp/comet-worker-slots-shm"
+		}
 	}
-	client, err := NewClientWithConfig(dataDir, config)
+	client, err := NewClient(dataDir, config)
 	if err != nil {
 		// Release process ID on failure
 		ReleaseProcessID()
@@ -486,10 +492,14 @@ func NewMultiProcessClient(dataDir string, cfg ...CometConfig) (*Client, error) 
 	return client, nil
 }
 
-// NewClientWithConfig creates a new comet client with custom configuration
-func NewClientWithConfig(dataDir string, config CometConfig) (*Client, error) {
+// NewClient creates a new comet client with custom configuration
+func NewClient(dataDir string, config ...CometConfig) (*Client, error) {
+	cfg := DefaultCometConfig()
+	if len(config) > 0 {
+		cfg = config[0]
+	}
 	// Validate configuration
-	if err := validateConfig(&config); err != nil {
+	if err := validateConfig(&cfg); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
@@ -498,16 +508,16 @@ func NewClientWithConfig(dataDir string, config CometConfig) (*Client, error) {
 	}
 
 	// Create logger based on config
-	logger := createLogger(config.Log)
+	logger := createLogger(cfg.Log)
 
 	// Set debug mode from config
-	if config.Log.EnableDebug {
+	if cfg.Log.EnableDebug || os.Getenv("COMET_DEBUG") != "" {
 		SetDebug(true)
 	}
 
 	c := &Client{
 		dataDir:   dataDir,
-		config:    config,
+		config:    cfg,
 		logger:    logger,
 		shards:    make(map[uint32]*Shard),
 		stopCh:    make(chan struct{}),

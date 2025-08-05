@@ -38,7 +38,7 @@ func TestMultiProcessRetention(t *testing.T) {
 	config.Retention.MinFilesToKeep = 0
 	config.Storage.MaxFileSize = 512
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestMultiProcessRetention(t *testing.T) {
 	}
 
 	// STEP 3: Process A verifies deletion happened
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to recreate client: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	// Create initial data with the main process
 	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 1024 // Small files to create multiple
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestIndexRebuildIntegration(t *testing.T) {
 	t.Logf("Worker output: %s", output)
 
 	// Verify the index was rebuilt by checking if we can read from a new process
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create verification client: %v", err)
 	}

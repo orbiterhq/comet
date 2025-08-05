@@ -18,7 +18,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 	stream := "concurrent:v1:shard:0000"
 
 	// Write messages
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 
 	// Check persisted offsets
 	t.Logf("\n=== Checking persisted offsets ===")
-	client2, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client2, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 	t.Logf("\n=== Testing concurrent persistence with separate clients ===")
 
 	// Reset by removing consumer offsets
-	client3, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client3, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 			defer wg.Done()
 
 			// Each gets its own client
-			c, err := NewClientWithConfig(dir, DefaultCometConfig())
+			c, err := NewClient(dir, DefaultCometConfig())
 			if err != nil {
 				t.Errorf("Failed to create client %d: %v", consumerID, err)
 				return
@@ -169,7 +169,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Check what got persisted
-	client4, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client4, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 	t.Logf("\n=== Testing correct multi-process configuration ===")
 
 	// Write messages to both shard 0 and shard 1
-	client5, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client5, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 
 			// Each process gets proper configuration
 			cfg := DeprecatedMultiProcessConfig(pid, 2)
-			c, err := NewClientWithConfig(dir, cfg)
+			c, err := NewClient(dir, cfg)
 			if err != nil {
 				t.Errorf("Process %d: failed to create client: %v", pid, err)
 				return
@@ -253,7 +253,7 @@ func TestACKConcurrentPersistence(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify both consumer offsets are persisted correctly
-	client6, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client6, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

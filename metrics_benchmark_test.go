@@ -32,7 +32,7 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 	for _, cfg := range configs {
 		for _, size := range sizes {
 			b.Run(fmt.Sprintf("%s/Size=%d", cfg.name, size), func(b *testing.B) {
-				client, err := NewClientWithConfig(dir+"/"+cfg.name, cfg.config)
+				client, err := NewClient(dir+"/"+cfg.name, cfg.config)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -79,7 +79,7 @@ func BenchmarkLatencyMetrics(b *testing.B) {
 	dir := b.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func BenchmarkCompressionMetrics(b *testing.B) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 100 // Enable compression
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func BenchmarkConcurrentMetrics(b *testing.B) {
 	dir := b.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func BenchmarkRetentionMetrics(b *testing.B) {
 	config.Retention.CleanupInterval = 50 * time.Millisecond
 	config.Storage.MaxFileSize = 1024 // Small files to force rotation
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}

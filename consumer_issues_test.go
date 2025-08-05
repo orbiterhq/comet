@@ -38,7 +38,7 @@ func TestSingleProcessACKPersistence(t *testing.T) {
 	// Use single-process config
 	config := DefaultCometConfig()
 
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestSingleProcessACKPersistence(t *testing.T) {
 	client1.Close()
 
 	// Simulate crash and restart - open new client
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

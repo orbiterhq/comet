@@ -354,7 +354,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 
 		// Initialize with one entry
 		config := DeprecatedMultiProcessConfig(0, 2)
-		client, err := NewClientWithConfig(testDir, config)
+		client, err := NewClient(testDir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -433,7 +433,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		config := DeprecatedMultiProcessConfig(0, 2)
 
 		// Use multi-process config as intended
-		client, err := NewClientWithConfig(testDir, config)
+		client, err := NewClient(testDir, config)
 		if err != nil {
 			t.Fatalf("Failed to create client: %v", err)
 		}
@@ -514,7 +514,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		t.Logf("All writer processes completed, ensuring all writes are fully committed...")
 
 		// Create a temporary client to force all pending writes to flush
-		tempClient, err := NewClientWithConfig(testDir, config)
+		tempClient, err := NewClient(testDir, config)
 		if err != nil {
 			t.Fatalf("Failed to create temp client: %v", err)
 		}
@@ -546,7 +546,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 		}
 
 		// Verify all entries
-		client, err = NewClientWithConfig(testDir, config)
+		client, err = NewClient(testDir, config)
 		if err != nil {
 			t.Fatalf("Failed to create verification client: %v", err)
 		}
@@ -656,7 +656,7 @@ func TestMultiProcessIntegration(t *testing.T) {
 
 		// Now try to write - should work since OS released the lock
 		config := DeprecatedMultiProcessConfig(0, 2)
-		client, err := NewClientWithConfig(testDir, config)
+		client, err := NewClient(testDir, config)
 		if err != nil {
 			t.Fatal("Failed to create client after crash:", err)
 		}
@@ -686,7 +686,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 	switch {
 	case role[:6] == "writer":
 		// Simple writer
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -718,7 +718,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 
 	case role[:6] == "reader":
 		// Simple reader
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -771,7 +771,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 
 	case role == "mmap-writer":
 		// Mmap coordination writer
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -800,7 +800,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 
 	case role == "mmap-reader":
 		// Mmap coordination reader - monitors for changes
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -868,7 +868,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 
 	case strings.HasPrefix(role, "contention-writer-"):
 		// Same-shard contention writer
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -924,7 +924,7 @@ func runMultiProcessWorker(t *testing.T, role string) {
 
 	case role == "crasher":
 		// Crash test - acquire lock then exit abruptly
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -953,7 +953,7 @@ func runTestWorker(t *testing.T, workerID string) {
 	}
 
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Worker %s (PID %d): failed to create client: %v", workerID, pid, err)
 	}
@@ -1034,7 +1034,7 @@ func runTestWorker(t *testing.T, workerID string) {
 // verifyMultiProcessResults checks data integrity after multi-process test
 func verifyMultiProcessResults(t *testing.T, dir string, numWriters int) {
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1366,7 +1366,7 @@ func TestMultiProcessCrashRecovery(t *testing.T) {
 
 	// Now try to acquire the lock - it should work because OS releases locks on process exit
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client after crash: %v", err)
 	}
@@ -1388,7 +1388,7 @@ func runCrashTestWorker(t *testing.T, workerID string) {
 	dir := os.Getenv("COMET_CRASH_TEST_DIR")
 
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1436,7 +1436,7 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 
 	// Initialize shard
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1511,7 +1511,7 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 	}
 
 	// Verify all entries were written
-	client, err = NewClientWithConfig(dir, config)
+	client, err = NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1557,7 +1557,7 @@ func TestMultiProcessSameShardContention(t *testing.T) {
 	t.Logf("Total data file size: %d bytes", totalDataSize)
 
 	// Create a new client to ensure we're reading from disk
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1665,7 +1665,7 @@ func runContentionWorker(t *testing.T, workerID string) {
 	t.Logf("Worker %s (PID %d) starting: will write %d entries", workerID, pid, numWrites)
 
 	config := DeprecatedMultiProcessConfig(0, 2)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Worker %s: failed to create client: %v", workerID, err)
 	}
@@ -1748,7 +1748,7 @@ func TestBulletproofMultiProcess(t *testing.T) {
 			config := DeprecatedMultiProcessConfig(0, 2)
 
 			// Initialize with first entry
-			client, err := NewClientWithConfig(testDir, config)
+			client, err := NewClient(testDir, config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1769,7 +1769,7 @@ func TestBulletproofMultiProcess(t *testing.T) {
 				go func(workerID int) {
 					defer wg.Done()
 
-					workerClient, err := NewClientWithConfig(testDir, config)
+					workerClient, err := NewClient(testDir, config)
 					if err != nil {
 						t.Errorf("Worker %d failed to create client: %v", workerID, err)
 						return
@@ -1801,7 +1801,7 @@ func TestBulletproofMultiProcess(t *testing.T) {
 			wg.Wait()
 
 			// Verify all entries are readable
-			verifyClient, err := NewClientWithConfig(testDir, config)
+			verifyClient, err := NewClient(testDir, config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1849,7 +1849,7 @@ func TestRapidStartupShutdown(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Initialize
-	client, err := NewClientWithConfig(testDir, config)
+	client, err := NewClient(testDir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1872,7 +1872,7 @@ func TestRapidStartupShutdown(t *testing.T) {
 
 			// Rapid client lifecycle
 			for cycle := 0; cycle < 5; cycle++ {
-				workerClient, err := NewClientWithConfig(testDir, config)
+				workerClient, err := NewClient(testDir, config)
 				if err != nil {
 					t.Errorf("Worker %d cycle %d: failed to create client: %v", workerID, cycle, err)
 					return
@@ -1895,7 +1895,7 @@ func TestRapidStartupShutdown(t *testing.T) {
 	wg.Wait()
 
 	// Verify data integrity after rapid cycling
-	verifyClient, err := NewClientWithConfig(testDir, config)
+	verifyClient, err := NewClient(testDir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1934,7 +1934,7 @@ func TestTimeBasedStress(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Initialize
-	client, err := NewClientWithConfig(testDir, config)
+	client, err := NewClient(testDir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1971,7 +1971,7 @@ func TestTimeBasedStress(t *testing.T) {
 		go func(workerID int) {
 			defer wg.Done()
 
-			workerClient, err := NewClientWithConfig(testDir, config)
+			workerClient, err := NewClient(testDir, config)
 			if err != nil {
 				t.Errorf("Worker %d failed to create client: %v", workerID, err)
 				return
@@ -2020,7 +2020,7 @@ func TestTimeBasedStress(t *testing.T) {
 	t.Logf("All workers completed. Total successful writes: %d", totalWritesCount)
 
 	// Verify data integrity with more generous wait time
-	verifyClient, err := NewClientWithConfig(testDir, config)
+	verifyClient, err := NewClient(testDir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2081,7 +2081,7 @@ func TestEOFRetryLogic(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create initial client and write some data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2110,7 +2110,7 @@ func TestEOFRetryLogic(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		writerClient, _ := NewClientWithConfig(dir, config)
+		writerClient, _ := NewClient(dir, config)
 		defer writerClient.Close()
 
 		for i := 0; i < 100; i++ {
@@ -2135,7 +2135,7 @@ func TestEOFRetryLogic(t *testing.T) {
 		wg.Add(1)
 		go func(readerID int) {
 			defer wg.Done()
-			readerClient, _ := NewClientWithConfig(dir, config)
+			readerClient, _ := NewClient(dir, config)
 			defer readerClient.Close()
 
 			consumer := NewConsumer(readerClient, ConsumerOptions{
@@ -2190,13 +2190,13 @@ func TestEOFRetryRaceCondition(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create two clients to simulate multi-process scenario
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client1.Close()
 
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2285,7 +2285,7 @@ func TestRetryLogicVerification(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

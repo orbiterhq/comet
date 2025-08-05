@@ -13,7 +13,7 @@ func TestProcessContinuousBatching(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestProcessOffsetPersistence(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

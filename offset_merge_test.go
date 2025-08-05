@@ -22,7 +22,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 
 	// Write 20 messages
 	t.Logf("=== Writing 20 messages ===")
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 	t.Logf("\n=== Simulating offset race condition ===")
 
 	// Consumer 1: Read and ACK first 10 messages
-	client1, _ := NewClientWithConfig(dir, config)
+	client1, _ := NewClient(dir, config)
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "test-group"})
 
 	msgs1, err := consumer1.Read(ctx, []uint32{0}, 10)
@@ -74,7 +74,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 	t.Logf("Consumer 1: Offset before close = %d", offset1)
 
 	// Start Consumer 2 BEFORE Consumer 1 closes (simulating concurrent access)
-	client2, _ := NewClientWithConfig(dir, config)
+	client2, _ := NewClient(dir, config)
 	consumer2 := NewConsumer(client2, ConsumerOptions{Group: "test-group"})
 
 	// Check what offset Consumer 2 sees
@@ -116,7 +116,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Check final persisted offset
-	client3, _ := NewClientWithConfig(dir, config)
+	client3, _ := NewClient(dir, config)
 	shard3, _ := client3.getOrCreateShard(0)
 	shard3.mu.RLock()
 	finalOffset := shard3.index.ConsumerOffsets["test-group"]
@@ -147,7 +147,7 @@ func TestOffsetMergeLogic(t *testing.T) {
 		go func(consumerID int) {
 			defer wg.Done()
 
-			client, _ := NewClientWithConfig(dir, config)
+			client, _ := NewClient(dir, config)
 			consumer := NewConsumer(client, ConsumerOptions{Group: "concurrent-group"})
 
 			// Read 5 messages

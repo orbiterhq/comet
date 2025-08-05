@@ -22,7 +22,7 @@ func TestSingleProcessACKPersistenceIsolated(t *testing.T) {
 
 	// Step 1: Write test messages
 	t.Logf("=== STEP 1: Writing %d messages ===", totalMessages)
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestSingleProcessACKPersistenceIsolated(t *testing.T) {
 
 	// Step 2: First consumer reads and ACKs some messages
 	t.Logf("\n=== STEP 2: First consumer session (single-process) ===")
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestSingleProcessACKPersistenceIsolated(t *testing.T) {
 
 	// Step 3: New consumer should start from where first one left off
 	t.Logf("\n=== STEP 3: Second consumer session (single-process) ===")
-	client3, err := NewClientWithConfig(dir, config)
+	client3, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

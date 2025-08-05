@@ -27,7 +27,7 @@ func TestConcurrentRotationStorm(t *testing.T) {
 	config.Concurrency.ProcessCount = 2
 	config.Storage.MaxFileSize = 1 << 16         // Small files to trigger rotation quickly (64KB)
 	config.Compression.MinCompressSize = 1 << 30 // Disable compression for predictable sizing
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestPartialWriteRecovery(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0
 	config.Storage.MaxFileSize = 1 << 20 // 1MB files
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestPartialWriteRecovery(t *testing.T) {
 	// Reopen client - it should recover gracefully
 	config2 := DefaultCometConfig()
 	config2.Concurrency.ProcessCount = 0
-	client2, err := NewClientWithConfig(dir, config2)
+	client2, err := NewClient(dir, config2)
 	if err != nil {
 		t.Fatalf("failed to create client after corruption: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestIndexReconstructionWithGaps(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0
 	config.Indexing.BoundaryInterval = 5 // Index every 5 entries for testing
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestIndexReconstructionWithGaps(t *testing.T) {
 	config2 := DefaultCometConfig()
 	config2.Concurrency.ProcessCount = 0
 	config2.Indexing.BoundaryInterval = 5
-	client2, err := NewClientWithConfig(dir, config2)
+	client2, err := NewClient(dir, config2)
 	if err != nil {
 		t.Fatalf("failed to create client after index deletion: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestConsumerOffsetDurability(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0
 	config.Storage.CheckpointTime = 1 // Checkpoint every 1ms (effectively after every write)
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestConsumerOffsetDurability(t *testing.T) {
 	// Simulate crash/restart - reopen client
 	config2 := DefaultCometConfig()
 	config2.Concurrency.ProcessCount = 0
-	client2, err := NewClientWithConfig(dir, config2)
+	client2, err := NewClient(dir, config2)
 	if err != nil {
 		t.Fatalf("failed to reopen client: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestMaxIndexEntriesEnforcement(t *testing.T) {
 	config.Concurrency.ProcessCount = 0
 	config.Indexing.BoundaryInterval = 1 // Index every entry
 	config.Indexing.MaxIndexEntries = 10 // Very small limit for testing
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestReaderStalenessAfterFileRotation(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 1024 // 1KB files
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,7 +586,7 @@ func TestCrashRecoveryFileEntries(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +635,7 @@ func TestCrashRecoveryFileEntries(t *testing.T) {
 	// Close and reopen to trigger recovery
 	client.Close()
 
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +674,7 @@ func TestFileGrowthRaceCondition(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.CleanupInterval = 0 // Disable retention
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -763,7 +763,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	config.Concurrency.ProcessCount = 0
 	config.Storage.MaxFileSize = 10 * 1024 // 10KB - more realistic but still forces multiple files
 	config.Indexing.BoundaryInterval = 10
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -799,7 +799,7 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	// Close and reopen client to ensure all data is persisted
 	client.Close()
 
-	client, err = NewClientWithConfig(dir, config)
+	client, err = NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to recreate client: %v", err)
 	}
@@ -926,7 +926,7 @@ func TestConsumerReadEntryAtFileBoundary(t *testing.T) {
 	config.Concurrency.ProcessCount = 0
 	config.Storage.MaxFileSize = 130     // Force rotation after 3 entries
 	config.Indexing.BoundaryInterval = 1 // Store every entry position
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -1013,7 +1013,7 @@ func TestIndexEntryLimit(t *testing.T) {
 	config.Indexing.BoundaryInterval = 5 // Store every 5th entry
 	config.Indexing.MaxIndexEntries = 10 // Only keep 10 entries
 	config.Storage.MaxFileSize = 1 << 20 // 1MB files
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -1123,7 +1123,7 @@ func TestIndexLimitWithConsumer(t *testing.T) {
 	config.Indexing.BoundaryInterval = 5 // Store every 5th entry
 	config.Indexing.MaxIndexEntries = 20 // Keep 20 boundary entries
 	config.Storage.MaxFileSize = 1 << 20 // 1MB files
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -1194,7 +1194,7 @@ func TestIO_OutsideLock(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0      // Single writer test
 	config.Compression.MinCompressSize = 100 // Enable compression for some entries
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -1257,7 +1257,7 @@ func BenchmarkLockContention(b *testing.B) {
 				config.Compression.MinCompressSize = 1000 // Enable for large entries
 			}
 
-			client, err := NewClientWithConfig(dir, config)
+			client, err := NewClient(dir, config)
 			if err != nil {
 				b.Fatalf("failed to create client: %v", err)
 			}
@@ -1301,7 +1301,7 @@ func TestOptimizationShowcase(t *testing.T) {
 	config.Concurrency.ProcessCount = 2
 	config.Compression.MinCompressSize = 1000
 	config.Indexing.BoundaryInterval = 10 // Frequent indexing for binary search demo
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -1392,7 +1392,7 @@ func TestCorruptedIndexFileRecovery(t *testing.T) {
 	config.Indexing.BoundaryInterval = 5
 
 	// Create client and write some data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1432,7 +1432,7 @@ func TestCorruptedIndexFileRecovery(t *testing.T) {
 	}
 
 	// Try to reopen - should handle corruption gracefully
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		// Some corruptions might be caught at open time
 		t.Logf("Client creation failed with corrupted index (expected): %v", err)
@@ -1453,7 +1453,7 @@ func TestCorruptedIndexFileRecovery(t *testing.T) {
 func TestWritePathPanicRecovery(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1491,7 +1491,7 @@ func TestMmapExhaustion(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 1024 // Very small files to create many of them
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1553,7 +1553,7 @@ func TestConsumerGroupSplitBrain(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Storage.CheckpointTime = 1 // Fast checkpointing
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1629,7 +1629,7 @@ func TestRetentionDataIntegrity(t *testing.T) {
 	config.Retention.CleanupInterval = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 1
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -1710,7 +1710,7 @@ func TestFindEntryBinarySearch(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Indexing.BoundaryInterval = 5 // Index every 5 entries
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

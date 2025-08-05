@@ -22,7 +22,7 @@ func TestShardDirectoryDeletionRecovery(t *testing.T) {
 	// Create a client with multi-process mode enabled (this is where the issue occurs)
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 2
-	client, err := NewClientWithConfig(tempDir, config)
+	client, err := NewClient(tempDir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestShardDirectoryDeletionWithFileRotation(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0
 	config.Storage.MaxFileSize = 200 // Very small to force rotation quickly
-	client, err := NewClientWithConfig(tempDir, config)
+	client, err := NewClient(tempDir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

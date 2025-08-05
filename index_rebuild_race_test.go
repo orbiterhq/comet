@@ -38,7 +38,7 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 512 // Small files to create multiple
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestIndexRebuildRaceCondition(t *testing.T) {
 	}
 
 	// Check final state
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to recreate client: %v", err)
 	}

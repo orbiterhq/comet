@@ -21,7 +21,7 @@ func TestMultiProcessCometStateStats(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Process 1: Write some data and check initial stats
-	client1, err := NewClientWithConfig(baseDir, config)
+	client1, err := NewClient(baseDir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client1: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestMultiProcessCometStateStats(t *testing.T) {
 	client1.Close()
 
 	// Process 2: Open same directory and add more data
-	client2, err := NewClientWithConfig(baseDir, config)
+	client2, err := NewClient(baseDir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client2: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestCometStateDirectAccess(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Process 1: Create and write data
-	client1, err := NewClientWithConfig(baseDir, config)
+	client1, err := NewClient(baseDir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client1: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestCometStateDirectAccess(t *testing.T) {
 	client1.Close()
 
 	// Process 2: Open same directory and verify it sees the same CometState
-	client2, err := NewClientWithConfig(baseDir, config)
+	client2, err := NewClient(baseDir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client2: %v", err)
 	}

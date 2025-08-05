@@ -18,7 +18,7 @@ func TestIndexRebuild(t *testing.T) {
 	// Create initial client and write data
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 1024 // Small file size to force rotation
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestIndexRebuild(t *testing.T) {
 	}
 
 	// Create new client - should rebuild index from data files
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestIndexRebuildWithCorruptedFile(t *testing.T) {
 	// Create initial client and write data
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 1024 // Small files to force rotation
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestIndexRebuildWithCorruptedFile(t *testing.T) {
 	}
 
 	// Create new client - should rebuild index skipping corrupted file
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestIndexMissingDetection(t *testing.T) {
 
 	// First, create a client and write some data to generate real data files
 	config := DefaultCometConfig()
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestIndexMissingDetection(t *testing.T) {
 	}
 
 	// Create new client - should detect missing index and rebuild
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestScanFileForEntries(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestScanFileForEntries(t *testing.T) {
 	client.Close()
 
 	// Test scanFileForEntries directly
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	// Create initial client in multi-process mode and write data
 	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 2048 // Small files to force rotation
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +449,7 @@ func TestIndexRebuildMultiProcess(t *testing.T) {
 	}
 
 	// Create new client in multi-process mode - should rebuild everything
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -25,7 +25,7 @@ func Example_customLogger() {
 	config.Log.EnableDebug = true // or set COMET_DEBUG=1 environment variable
 
 	// Create client with configured logging
-	client, err := comet.NewClientWithConfig("/tmp/comet", config)
+	client, err := comet.NewClient("/tmp/comet-worker-slots", config)
 	if err != nil {
 		panic(err)
 	}

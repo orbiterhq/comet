@@ -75,7 +75,7 @@ func TestACKPersistenceStress(t *testing.T) {
 
 func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, processDelayMs, restartFreq int, sameGroup bool) {
 	dir := t.TempDir()
-	
+
 	// For multi-consumer same group tests, we need to distribute messages across multiple shards
 	// so each consumer can own different shards to avoid race conditions
 	streams := []string{}
@@ -91,7 +91,7 @@ func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, proc
 
 	// Step 1: Write all test messages
 	t.Logf("Writing %d messages across %d shards", totalMessages, len(streams))
-	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,22 +99,22 @@ func runACKStressTest(t *testing.T, totalMessages, batchSize, numConsumers, proc
 	ctx := context.Background()
 	messagesPerShard := totalMessages / len(streams)
 	remainingMessages := totalMessages % len(streams)
-	
+
 	messageNum := 0
 	for shardIdx, stream := range streams {
 		var messages [][]byte
-		
+
 		// Calculate how many messages for this shard (distribute remainder across first shards)
 		shardMessageCount := messagesPerShard
 		if shardIdx < remainingMessages {
 			shardMessageCount++
 		}
-		
+
 		for i := 0; i < shardMessageCount; i++ {
 			messages = append(messages, []byte(fmt.Sprintf("stress-msg-%06d", messageNum)))
 			messageNum++
 		}
-		
+
 		_, err = client.Append(ctx, stream, messages)
 		if err != nil {
 			t.Fatal(err)
@@ -264,13 +264,13 @@ func runStressConsumer(t *testing.T, dataDir string, streams []string, consumerI
 		var config CometConfig
 		if sameGroup && numConsumers > 1 {
 			// Each consumer gets its own process ID to avoid race conditions
-			config = MultiProcessConfig(consumerID, numConsumers)
+			config = DeprecatedMultiProcessConfig(consumerID, numConsumers)
 		} else {
 			// Use default config for single consumer or different group tests
 			config = DefaultCometConfig()
 		}
-		
-		client, err := NewClientWithConfig(dataDir, config)
+
+		client, err := NewClient(dataDir, config)
 		if err != nil {
 			results <- stressResult{consumerID: consumerID, err: err}
 			return
@@ -333,7 +333,7 @@ func runStressConsumer(t *testing.T, dataDir string, streams []string, consumerI
 					ownedShards = append(ownedShards, shardID)
 				}
 			}
-			
+
 			if len(ownedShards) == 0 {
 				// No owned shards, close and exit
 				consumer.Close()
@@ -341,7 +341,7 @@ func runStressConsumer(t *testing.T, dataDir string, streams []string, consumerI
 				cancel()
 				break
 			}
-			
+
 			// Process owned shards using WithShards
 			err = consumer.Process(ctx, processFunc,
 				WithShards(ownedShards...),
@@ -408,7 +408,7 @@ func TestACKPersistenceRaceConditions(t *testing.T) {
 	totalMessages := 1000
 
 	// Write messages
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +455,7 @@ func TestACKPersistenceRaceConditions(t *testing.T) {
 	wg.Wait()
 
 	// Verify final state consistency
-	finalClient, err := NewClientWithConfig(dir, config)
+	finalClient, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestACKRaceWorker(t *testing.T) {
 	workerID, _ := strconv.Atoi(workerIDStr)
 
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dataDir, config)
+	client, err := NewClient(dataDir, config)
 	if err != nil {
 		t.Fatalf("Race worker %d failed to create client: %v", workerID, err)
 	}
@@ -546,7 +546,7 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 	totalMessages := 10000 // Large number to create memory pressure
 
 	// Write large messages to consume memory
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +576,7 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 
 	// Simulate memory pressure with forced restarts
 	for restartCount < 10 && processedCount < totalMessages {
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -47,7 +47,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 	config.Retention.CleanupInterval = 100 * time.Millisecond
 	config.Storage.MaxFileSize = 10 * 1024 // 10KB files to ensure rotation
 
-	initClient, err := NewClientWithConfig(dir, config)
+	initClient, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 
 	// Now verify all metrics
 	t.Run("VerifyMetrics", func(t *testing.T) {
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -341,7 +341,7 @@ func runMetricsWorker(t *testing.T, role string) {
 	config.Retention.CleanupInterval = 100 * time.Millisecond
 	config.Storage.MaxFileSize = 10 * 1024
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Worker %s: failed to create client: %v", role, err)
 	}

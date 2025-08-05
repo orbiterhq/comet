@@ -44,7 +44,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 	config.Retention.MinFilesToKeep = 0
 	config.Storage.MaxFileSize = 200 // Small files to force frequent rotations
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestRetentionRaceCondition(t *testing.T) {
 	}
 
 	// Check final state
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to recreate client: %v", err)
 	}

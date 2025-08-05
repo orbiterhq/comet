@@ -15,7 +15,7 @@ func TestDeterministicAssignment(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write test data to multiple shards using default config (no process restrictions)
-	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestDeterministicAssignment(t *testing.T) {
 
 				// Each consumer gets its own process ID and only handles its owned shards
 				processConfig := DeprecatedMultiProcessConfig(consumerID, 2)
-				client, err := NewClientWithConfig(dir, processConfig)
+				client, err := NewClient(dir, processConfig)
 				if err != nil {
 					t.Errorf("Consumer %d failed: %v", consumerID, err)
 					return
@@ -163,7 +163,7 @@ func TestHybridACKBatching(t *testing.T) {
 	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Write test data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestHybridACKBatching(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Test that ACK batching works
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

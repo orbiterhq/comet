@@ -15,7 +15,7 @@ func TestConsumerReadNoInterference(t *testing.T) {
 	// Explicitly ensure single-process mode
 	config.Concurrency.ProcessCount = 0
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestConsumerReadMultiProcessMode(t *testing.T) {
 	config.Concurrency.ProcessCount = 2
 	config.Concurrency.ProcessID = 0
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}

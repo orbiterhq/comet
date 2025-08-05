@@ -107,7 +107,7 @@ func runProcessIDWorker(t *testing.T, workerIDStr string) {
 	config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
 
 	tempDir := t.TempDir()
-	client, err := NewClientWithConfig(tempDir, config)
+	client, err := NewClient(tempDir, config)
 	if err != nil {
 		t.Fatalf("Worker %d failed to create Comet client: %v", workerID, err)
 	}
@@ -259,7 +259,7 @@ func runRestartWorker(t *testing.T, phase string) {
 	// Create Comet client
 	config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
 	tempDir := t.TempDir()
-	client, err := NewClientWithConfig(tempDir, config)
+	client, err := NewClient(tempDir, config)
 	if err != nil {
 		t.Fatalf("Failed to create Comet client in phase %s: %v", phase, err)
 	}
@@ -369,7 +369,7 @@ func runFailureWorker(t *testing.T, workerType string) {
 		// Test that we can use it
 		config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
 		tempDir := t.TempDir()
-		client, err := NewClientWithConfig(tempDir, config)
+		client, err := NewClient(tempDir, config)
 		if err != nil {
 			t.Fatalf("Recovery worker failed to create Comet client: %v", err)
 		}

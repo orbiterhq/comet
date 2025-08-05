@@ -25,7 +25,7 @@ func TestConsumerCoordination(t *testing.T) {
 
 	// Write to multiple shards so consumers can be distributed
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestConsumerCoordination(t *testing.T) {
 			for restarts < 10 { // Each consumer will restart 10 times
 				// Each consumer gets its own process ID to avoid race conditions
 				processConfig := DeprecatedMultiProcessConfig(consumerID, 5)
-				client, err := NewClientWithConfig(dir, processConfig)
+				client, err := NewClient(dir, processConfig)
 				if err != nil {
 					t.Logf("Consumer %d: Failed to create client: %v", consumerID, err)
 					return
@@ -231,7 +231,7 @@ func TestConsumerCoordination(t *testing.T) {
 	}
 
 	// Check final offset across all shards
-	finalClient, _ := NewClientWithConfig(dir, DefaultCometConfig())
+	finalClient, _ := NewClient(dir, DefaultCometConfig())
 	totalFinalOffset := int64(0)
 	for shardID := uint32(0); shardID < 5; shardID++ {
 		finalShard, _ := finalClient.getOrCreateShard(shardID)

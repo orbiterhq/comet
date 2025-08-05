@@ -17,7 +17,7 @@ func TestRetention_Basic(t *testing.T) {
 	config.Retention.MinFilesToKeep = 1
 	config.Storage.MaxFileSize = 1024 // Small file size to force rotation
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestRetention_Disabled(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.CleanupInterval = 0 // Disabled
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestRetention_DeleteFiles(t *testing.T) {
 	config.Retention.ProtectUnconsumed = false // Don't protect unconsumed data
 	config.Storage.MaxFileSize = 512           // Small files
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestRetention_GlobalSizeLimit(t *testing.T) {
 	config.Retention.MaxTotalSize = 1024 // 1KB total limit
 	config.Storage.MaxFileSize = 512     // Small files
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestRetentionStats_NewestData(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 	config.Retention.CleanupInterval = time.Hour // Don't run cleanup during test
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
