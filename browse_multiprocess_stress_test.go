@@ -57,7 +57,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v")
+			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=30s")
 			cmd.Env = append(os.Environ(),
 				"COMET_BROWSE_STRESS_ROLE=hammer-writer",
 				fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
@@ -65,11 +65,17 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 				fmt.Sprintf("COMET_BROWSE_STRESS_DURATION=%s", duration),
 				fmt.Sprintf("COMET_BROWSE_STRESS_NUM_SHARDS=%d", numShards),
 			)
-			output, err := cmd.CombinedOutput()
+			// Use Start/Wait instead of CombinedOutput to avoid blocking on large output
+			err := cmd.Start()
+			if err != nil {
+				t.Logf("Writer %d failed to start: %v", id, err)
+				return
+			}
+			
+			err = cmd.Wait()
 			if err != nil {
 				t.Logf("Writer %d failed: %v", id, err)
 			}
-			t.Logf("Writer %d: %s", id, strings.TrimSpace(string(output)))
 		}(i)
 	}
 
@@ -79,7 +85,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			time.Sleep(200 * time.Millisecond) // Let writers start
-			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v")
+			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=30s")
 			cmd.Env = append(os.Environ(),
 				"COMET_BROWSE_STRESS_ROLE=aggressive-consumer",
 				fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
@@ -88,11 +94,16 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 				fmt.Sprintf("COMET_BROWSE_STRESS_NUM_SHARDS=%d", numShards),
 				"COMET_BROWSE_STRESS_NUM_GROUPS=3",
 			)
-			output, err := cmd.CombinedOutput()
+			err := cmd.Start()
+			if err != nil {
+				t.Logf("Consumer process %d failed to start: %v", id, err)
+				return
+			}
+			
+			err = cmd.Wait()
 			if err != nil {
 				t.Logf("Consumer process %d failed: %v", id, err)
 			}
-			t.Logf("Consumer process %d:\n%s", id, string(output))
 		}(i)
 	}
 
@@ -102,7 +113,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			time.Sleep(400 * time.Millisecond) // Let writers and consumers start
-			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v")
+			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=30s")
 			cmd.Env = append(os.Environ(),
 				"COMET_BROWSE_STRESS_ROLE=browse-storm",
 				fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
@@ -110,11 +121,16 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 				fmt.Sprintf("COMET_BROWSE_STRESS_DURATION=%s", duration),
 				fmt.Sprintf("COMET_BROWSE_STRESS_NUM_SHARDS=%d", numShards),
 			)
-			output, err := cmd.CombinedOutput()
+			err := cmd.Start()
+			if err != nil {
+				t.Logf("Browser %d failed to start: %v", id, err)
+				return
+			}
+			
+			err = cmd.Wait()
 			if err != nil {
 				t.Logf("Browser %d failed: %v", id, err)
 			}
-			t.Logf("Browser %d: %s", id, strings.TrimSpace(string(output)))
 		}(i)
 	}
 
@@ -124,7 +140,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			time.Sleep(1 * time.Second) // Let others establish
-			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v")
+			cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=30s")
 			cmd.Env = append(os.Environ(),
 				"COMET_BROWSE_STRESS_ROLE=chaos-actor",
 				fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
@@ -145,7 +161,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 		for {
 			select {
 			case <-validatorTicker.C:
-				cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v")
+				cmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=10s")
 				cmd.Env = append(os.Environ(),
 					"COMET_BROWSE_STRESS_ROLE=validator",
 					fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
@@ -170,7 +186,7 @@ func TestBrowseMultiProcessStress(t *testing.T) {
 
 	// Final validation
 	t.Log("Running final validation...")
-	finalCmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v")
+	finalCmd := exec.Command(executable, "-test.run", "^TestBrowseMultiProcessStress$", "-test.v", "-test.timeout=10s")
 	finalCmd.Env = append(os.Environ(),
 		"COMET_BROWSE_STRESS_ROLE=validator",
 		fmt.Sprintf("COMET_BROWSE_STRESS_DIR=%s", dir),
@@ -246,6 +262,9 @@ func runBrowseStressWorker(t *testing.T, role string) {
 
 		fmt.Printf("Writer %s: writes=%d errors=%d rate=%.0f/sec\n",
 			workerID, totalWrites, errors, float64(totalWrites)/time.Since(start).Seconds())
+		
+		// Ensure final sync
+		client.Sync(ctx)
 
 	case "aggressive-consumer":
 		// Multiple consumer groups fighting for data
@@ -449,16 +468,20 @@ func runBrowseStressWorker(t *testing.T, role string) {
 
 		numShards, _ := strconv.Atoi(os.Getenv("COMET_BROWSE_STRESS_NUM_SHARDS"))
 
+		// Use a timeout context to prevent hanging
+		validatorCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
 		inconsistencies := 0
 		for shardID := 1; shardID <= numShards; shardID++ {
 			streamName := fmt.Sprintf("test:v1:shard:%04d", shardID)
 
 			// Get data via different methods
-			recent, err1 := client.ListRecent(ctx, streamName, 100)
+			recent, err1 := client.ListRecent(validatorCtx, streamName, 100)
 
 			var scanFirst100 []StreamMessage
 			var scanCount int
-			err2 := client.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {
+			err2 := client.ScanAll(validatorCtx, streamName, func(ctx context.Context, msg StreamMessage) bool {
 				if scanCount < 100 {
 					scanFirst100 = append(scanFirst100, msg)
 				}
@@ -497,5 +520,8 @@ func runBrowseStressWorker(t *testing.T, role string) {
 		}
 
 		fmt.Printf("Validator: all shards consistent\n")
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown role: %s\n", role)
+		os.Exit(1)
 	}
 }

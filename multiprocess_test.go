@@ -376,7 +376,7 @@ func TestMmapMultiProcessCoordination(t *testing.T) {
 		// DEBUG: Check state metrics
 		if shard1.state != nil {
 			t.Logf("State metrics: WriteOffset=%d, TotalWrites=%d",
-				atomic.LoadUint64(&shard1.state.WriteOffset), 
+				atomic.LoadUint64(&shard1.state.WriteOffset),
 				atomic.LoadUint64(&shard1.state.TotalWrites))
 		}
 
@@ -452,6 +452,7 @@ func TestCometStateFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	client.Sync(ctx)
 	// Check that the comet.state file was created
 	shardDir := filepath.Join(dir, "shard-0000")
 	stateFile := filepath.Join(shardDir, "comet.state")

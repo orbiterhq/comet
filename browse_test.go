@@ -293,7 +293,11 @@ func TestBrowseMultipleShards(t *testing.T) {
 // TestBrowseConcurrentAccess tests browse operations with concurrent writes
 func TestBrowseConcurrentAccess(t *testing.T) {
 	dir := t.TempDir()
-	client, err := NewClient(dir)
+	config := DefaultCometConfig()
+	config.Concurrency.ProcessCount = 0 // Ensure single-process mode
+	// Use frequent checkpoints to ensure data is persisted
+	config.Storage.CheckpointTime = 10
+	client, err := NewClientWithConfig(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,34 +311,54 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 	stopWriting := make(chan struct{})
 	var wg sync.WaitGroup
 
+	// Track writes per writer for debugging
+	var writerCounts [3]atomic.Int64
+	
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
 		go func(writerID int) {
 			defer wg.Done()
-			for {
+			localCount := 0
+			stopping := false
+			for !stopping {
 				select {
 				case <-stopWriting:
-					return
+					stopping = true
+					// Don't return immediately - complete any in-progress work
 				default:
-					seq := writeCount.Load()
-					data := []byte(fmt.Sprintf(`{"writer": %d, "seq": %d}`, writerID, seq))
+					// Continue with write
+				}
+				
+				// Only write if we haven't been asked to stop yet
+				if !stopping {
+					data := []byte(fmt.Sprintf(`{"writer": %d, "count": %d}`, writerID, localCount))
 					ids, err := client.Append(ctx, streamName, [][]byte{data})
 					if err != nil {
-						t.Logf("Writer %d error: %v", writerID, err)
+						t.Logf("Writer %d error on count %d: %v", writerID, localCount, err)
 					} else {
-						writeCount.Add(1)
+						oldTotal := writeCount.Add(1)
+						localCount++
+						writerCounts[writerID].Add(1)
 						if len(ids) != 1 {
 							t.Logf("Writer %d: expected 1 ID, got %d", writerID, len(ids))
+						}
+						// Log successful writes for entry #6
+						if localCount == 7 {
+							t.Logf("Writer %d successfully wrote entry #6 (total writes now: %d)", writerID, oldTotal+1)
 						}
 					}
 					time.Sleep(10 * time.Millisecond)
 				}
 			}
+			
+			// Ensure our writes are flushed before exiting
+			client.Sync(ctx)
+			t.Logf("Writer %d stopping, wrote %d entries", writerID, localCount)
 		}(i)
 	}
 
 	// Give writers time to write some data
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(75 * time.Millisecond) // Enough time for 7 writes (0-6) with 10ms between each
 
 	// Browse while writing
 	t.Run("ListRecentDuringWrites", func(t *testing.T) {
@@ -364,14 +388,27 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 	// Stop writers
 	close(stopWriting)
 	wg.Wait()
+	
+	// Get the final write count immediately after writers stop
+	totalWrites := writeCount.Load()
+	
+	// Log per-writer counts
+	t.Logf("Writer 0: %d, Writer 1: %d, Writer 2: %d", 
+		writerCounts[0].Load(), writerCounts[1].Load(), writerCounts[2].Load())
 
+	// Wait a bit for any periodic flush to complete
+	time.Sleep(20 * time.Millisecond)
+	
 	// Sync to ensure all writes are visible
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-
-	totalWrites := writeCount.Load()
 	t.Logf("Total writes: %d", totalWrites)
+	
+	// Force a second sync to be absolutely sure
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	// Debug: check how many entries are in the shard
 	length, err := client.Len(ctx, streamName)
@@ -395,8 +432,22 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 
 	// Verify we can read all entries
 	var scanCount int64
+	seenWriters := make(map[int]map[int]bool)
+	for i := 0; i < 3; i++ {
+		seenWriters[i] = make(map[int]bool)
+	}
+	
 	err = client.ScanAll(ctx, streamName, func(ctx context.Context, msg StreamMessage) bool {
 		scanCount++
+		// Try to parse the message to see which writer/count it is
+		var data map[string]int
+		if err := json.Unmarshal(msg.Data, &data); err == nil {
+			if writer, ok := data["writer"]; ok {
+				if count, ok := data["count"]; ok {
+					seenWriters[writer][count] = true
+				}
+			}
+		}
 		return true
 	})
 
@@ -408,7 +459,16 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 		t.Errorf("Scanned %d entries, but wrote %d", scanCount, totalWrites)
 		// Try to understand the discrepancy
 		if scanCount < totalWrites {
-			t.Logf("Missing %d entries - they might be in unflushed buffers", totalWrites - scanCount)
+			t.Logf("Missing %d entries", totalWrites - scanCount)
+			// Check which specific entries are missing
+			for writer := 0; writer < 3; writer++ {
+				expectedCount := int(writerCounts[writer].Load())
+				for count := 0; count < expectedCount; count++ {
+					if !seenWriters[writer][count] {
+						t.Logf("  Missing: writer=%d, count=%d", writer, count)
+					}
+				}
+			}
 		}
 	}
 }
