@@ -827,6 +827,17 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		// Use the new ReadEntryByNumber method which handles position finding internally
 		data, err := reader.ReadEntryByNumber(entryNum)
 		if err != nil {
+			// Handle transient conditions gracefully
+			if errors.Is(err, ErrFileAwaitingData) {
+				// File exists but has no data yet - this is normal during active writes
+				// Return what we have so far and let the consumer retry later
+				if len(messages) > 0 {
+					return messages, nil
+				}
+				// If we haven't read anything yet, return the error so consumer can backoff
+				return nil, err
+			}
+
 			// In multi-process mode, some entries might not exist due to gaps in the sequence
 			// Skip these entries instead of failing the entire read
 			if strings.Contains(err.Error(), "not found in any file") {

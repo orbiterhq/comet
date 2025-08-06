@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -221,16 +220,6 @@ func HighThroughputConfig() CometConfig {
 	cfg.Compression.MinCompressSize = 1024 * 1024 // Only compress very large entries
 	cfg.Indexing.BoundaryInterval = 1000          // Less frequent index entries
 	// Reader config is set to defaults in DefaultReaderConfig()
-	return cfg
-}
-
-// LowLatencyConfig returns a config optimized for low latency and durability
-func LowLatencyConfig() CometConfig {
-	cfg := DefaultCometConfig()
-	cfg.Storage.CheckpointTime = 500              // Checkpoint every 500ms
-	cfg.Storage.CheckpointEntries = 10000         // Checkpoint every 10k entries
-	cfg.Storage.FlushEntries = 5000               // Flush every 5k entries
-	cfg.Compression.MinCompressSize = 1024 * 1024 // Only compress very large entries (reduce CPU latency)
 	return cfg
 }
 
@@ -2957,18 +2946,8 @@ func (s *Shard) doRebuildIndex(config CometConfig, shardDir string) error {
 			totalEntries += fileInfo.Entries
 			totalBytes = fileInfo.EndOffset
 
-			// Add binary index nodes for this file
-			for i := int64(0); i < fileInfo.Entries; i++ {
-				entryNum := fileInfo.StartEntry + i
-				if entryNum%int64(newIndex.BoundaryInterval) == 0 {
-					// Approximate position (will be refined on actual read)
-					pos := EntryPosition{
-						FileIndex:  len(newIndex.Files) - 1,
-						ByteOffset: fileInfo.StartOffset + (i * 1024), // Rough estimate
-					}
-					newIndex.BinaryIndex.AddIndexNode(entryNum, pos)
-				}
-			}
+			// Don't add binary index nodes during rebuild - we don't have accurate positions
+			// The binary index will be rebuilt as entries are read
 		} else if s.logger != nil {
 			s.logger.Warn("Scanned file with 0 entries",
 				"file", filePath,
@@ -3363,7 +3342,7 @@ func (s *Shard) scanFileForEntries(filePath string, fileSize int64, startOffset 
 }
 
 // ensureWriter is a test helper that ensures the writer is properly initialized
-func (s *Shard) ensureWriter(config *CometConfig) error {
+func (s *Shard) ensureWriter() error {
 	// This is called during recovery - just ensure we have a valid writer
 	if s.writer == nil {
 		// Create a new buffered writer if needed
@@ -3372,30 +3351,4 @@ func (s *Shard) ensureWriter(config *CometConfig) error {
 		}
 	}
 	return nil
-}
-
-// handleMissingShardDirectory is a test helper for shard recovery scenarios
-func (s *Shard) handleMissingShardDirectory(err error) bool {
-	// Check if the error indicates a missing directory
-	if err == nil {
-		return false
-	}
-
-	errStr := err.Error()
-	if strings.Contains(errStr, "no such file or directory") && strings.Contains(errStr, "shard") {
-		// Create the shard directory if it doesn't exist
-		dir := filepath.Dir(s.indexPath)
-		if createErr := os.MkdirAll(dir, 0755); createErr == nil {
-			// Reset shard state when directory is missing
-			if s.index != nil {
-				s.index.Files = []FileInfo{}
-				s.index.CurrentFile = ""
-				s.index.CurrentEntryNumber = 0
-				s.index.CurrentWriteOffset = 0
-			}
-			return true // Successfully handled
-		}
-	}
-
-	return false // Not a directory error or failed to create
 }

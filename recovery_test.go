@@ -45,7 +45,7 @@ func TestEnsureWriterRecovery(t *testing.T) {
 	}
 
 	// Now call ensureWriter to recover
-	err = shard.ensureWriter(&config)
+	err = shard.ensureWriter()
 	shard.mu.Unlock()
 
 	if err != nil {
