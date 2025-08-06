@@ -3,7 +3,6 @@ package comet
 import (
 	"container/list"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -13,8 +12,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// ErrFileAwaitingData indicates a file exists but has no data yet (awaiting writer flush)
-var ErrFileAwaitingData = errors.New("file awaiting data")
+// Removed ErrFileAwaitingData - no longer needed with immutable cloned indexes
 
 // AtomicSlice provides atomic access to a byte slice using atomic.Value
 type AtomicSlice struct {
@@ -161,6 +159,7 @@ type Reader struct {
 	bufferPool           *sync.Pool
 	state                *CometState // Shared state for metrics (optional)
 	lastKnownIndexUpdate int64       // Last known index update timestamp for cache invalidation
+	client               *Client     // Reference to client for index refreshing (optional)
 }
 
 // NewReader creates a new bounded reader for a shard with smart file mapping
@@ -234,6 +233,33 @@ func (r *Reader) SetState(state *CometState) {
 		// Initialize the last known index update timestamp
 		atomic.StoreInt64(&r.lastKnownIndexUpdate, state.GetLastIndexUpdate())
 	}
+}
+
+// SetClient sets the client reference for index refreshing
+func (r *Reader) SetClient(client *Client) {
+	r.client = client
+}
+
+// refreshFromLiveIndex refreshes the reader's file info from the live shard index
+func (r *Reader) refreshFromLiveIndex() error {
+	if r.client == nil {
+		return fmt.Errorf("no client reference available for index refresh")
+	}
+
+	// Get the current shard
+	shard := r.client.getShard(r.shardID)
+	if shard == nil {
+		return fmt.Errorf("shard %d not found", r.shardID)
+	}
+
+	// Get a copy of the current files under read lock
+	shard.mu.RLock()
+	currentFiles := make([]FileInfo, len(shard.index.Files))
+	copy(currentFiles, shard.index.Files)
+	shard.mu.RUnlock()
+
+	// Update our file info with the fresh data
+	return r.UpdateFiles(&currentFiles)
 }
 
 // mapFile maps a single file into memory
@@ -355,8 +381,7 @@ func (r *Reader) ReadEntryAtPosition(pos EntryPosition) ([]byte, error) {
 
 		// If still empty, this is likely a new file awaiting its first flush
 		if len(data) == 0 {
-			// Return a specific error that consumers can handle with backoff
-			return nil, ErrFileAwaitingData
+			return nil, fmt.Errorf("file %d is empty or not yet mapped", pos.FileIndex)
 		}
 	}
 
@@ -554,8 +579,7 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 
 	// Check for overflow and bounds
 	if byteOffset >= fileSize || byteOffset > fileSize-headerSize {
-		// The offset points beyond the actual data - likely the writer hasn't flushed
-		return nil, ErrFileAwaitingData
+		return nil, fmt.Errorf("offset %d beyond file size %d", byteOffset, fileSize)
 	}
 
 	// Read header
@@ -566,8 +590,7 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 	dataStart := byteOffset + headerSize
 	dataEnd := dataStart + int64(length)
 	if dataEnd > int64(len(data)) {
-		// The entry data extends beyond file - likely incomplete write
-		return nil, ErrFileAwaitingData
+		return nil, fmt.Errorf("entry data extends beyond file: dataEnd=%d, fileSize=%d", dataEnd, len(data))
 	}
 
 	// Extract entry data
@@ -715,73 +738,24 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 		}
 
 		if currentIndexUpdate > lastKnown {
-			// Index has been updated, refresh our cached file infos
-			liveFiles := r.index.Files
-
+			// Reader index is stale - try to refresh from the live index
 			if IsDebug() {
-				fmt.Printf("[DEBUG] Reader cache refresh: entry=%d, liveFiles=%d, cachedFiles=%d\n",
-					entryNumber, len(liveFiles), len(r.fileInfos))
-
-				// Log first few live files
-				for i, file := range liveFiles {
-					if i < 3 {
-						fmt.Printf("[DEBUG]   LiveFile[%d]: path=%s, startEntry=%d, entries=%d\n",
-							i, file.Path, file.StartEntry, file.Entries)
-					}
-				}
+				fmt.Printf("[DEBUG] Reader index is stale: entry=%d, currentUpdate=%d > lastKnown=%d, attempting refresh\n",
+					entryNumber, currentIndexUpdate, lastKnown)
 			}
 
-			// Make a safe copy of the live files
-			r.mappingMu.Lock()
-			// Always update the cache when index has changed - file metadata can change without adding files
-			oldCount := len(r.fileInfos)
-			r.fileInfos = make([]FileInfo, len(liveFiles))
-			copy(r.fileInfos, liveFiles)
-			// Update our known timestamp only after successful update
+			if err := r.refreshFromLiveIndex(); err != nil {
+				if IsDebug() {
+					fmt.Printf("[DEBUG] Failed to refresh reader index: %v\n", err)
+				}
+				return nil, fmt.Errorf("reader index is stale and refresh failed: %w", err)
+			}
+
+			// Update our known index timestamp
 			atomic.StoreInt64(&r.lastKnownIndexUpdate, currentIndexUpdate)
 
-			if IsDebug() {
-				fmt.Printf("[DEBUG] Reader cache updated: entry=%d, files %d->%d, timestamp updated to %d\n",
-					entryNumber, oldCount, len(r.fileInfos), currentIndexUpdate)
-			}
-			r.mappingMu.Unlock()
-
-			// Try again with updated file infos
-			if IsDebug() {
-				fmt.Printf("[DEBUG] Searching updated files for entry %d:\n", entryNumber)
-			}
-
-			for fileIndex, fileInfo := range r.fileInfos {
-				if IsDebug() && fileIndex < 3 {
-					fmt.Printf("[DEBUG]   CachedFile[%d]: startEntry=%d, entries=%d, contains=%v\n",
-						fileIndex, fileInfo.StartEntry, fileInfo.Entries,
-						fileInfo.StartEntry <= entryNumber && entryNumber < fileInfo.StartEntry+fileInfo.Entries)
-				}
-
-				// Check if this entry falls within this file's range
-				if fileInfo.StartEntry <= entryNumber && entryNumber < fileInfo.StartEntry+fileInfo.Entries {
-					// Found the file - now we need to find the exact position within the file
-					relativeEntryNum := entryNumber - fileInfo.StartEntry
-
-					if IsDebug() {
-						fmt.Printf("[DEBUG] Found entry %d in file %d (relative entry %d)\n",
-							entryNumber, fileIndex, relativeEntryNum)
-					}
-
-					if relativeEntryNum == 0 {
-						// First entry in file - starts at offset 0
-						pos := EntryPosition{FileIndex: fileIndex, ByteOffset: 0}
-						return r.ReadEntryAtPosition(pos)
-					}
-
-					// For non-first entries, we need to scan from the beginning
-					return r.readEntryByScanning(fileIndex, relativeEntryNum)
-				}
-			}
-
-			if IsDebug() {
-				fmt.Printf("[DEBUG] Entry %d not found in any cached file after refresh\n", entryNumber)
-			}
+			// Try reading again with refreshed index
+			return r.ReadEntryByNumber(entryNumber)
 		}
 	}
 
@@ -802,9 +776,9 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 			if err == nil {
 				return data, nil
 			}
-			// If we get ErrFileAwaitingData, propagate it
-			if errors.Is(err, ErrFileAwaitingData) {
-				return nil, err
+			// Log read errors for debugging
+			if IsDebug() {
+				fmt.Printf("[DEBUG] Error reading entry 0 from file 0: %v\n", err)
 			}
 		}
 	}
@@ -843,8 +817,7 @@ func (r *Reader) readEntryByScanning(fileIndex int, relativeEntryNum int64) ([]b
 		// Read entry header to get length
 		if currentOffset+12 > int64(len(data)) {
 			// The index claims there are more entries than we have data for
-			// This can happen if the writer hasn't flushed yet
-			return nil, ErrFileAwaitingData
+			return nil, fmt.Errorf("file %d: insufficient data for entry %d (file too short)", fileIndex, relativeEntryNum)
 		}
 
 		// Extract length from header (first 4 bytes)
@@ -852,8 +825,7 @@ func (r *Reader) readEntryByScanning(fileIndex int, relativeEntryNum int64) ([]b
 
 		// Sanity check the length
 		if length > 10*1024*1024 { // 10MB max entry size
-			// Likely reading garbage data - the file might be incomplete
-			return nil, ErrFileAwaitingData
+			return nil, fmt.Errorf("file %d: invalid entry length %d at offset %d", fileIndex, length, currentOffset)
 		}
 
 		// Skip to next entry: header (12 bytes) + data length
@@ -862,8 +834,7 @@ func (r *Reader) readEntryByScanning(fileIndex int, relativeEntryNum int64) ([]b
 
 		// Safety check
 		if nextOffset > int64(len(data)) {
-			// The entry extends beyond the file - likely incomplete write
-			return nil, ErrFileAwaitingData
+			return nil, fmt.Errorf("file %d: entry at offset %d extends beyond file (need %d, have %d)", fileIndex, currentOffset, nextOffset, len(data))
 		}
 
 		currentOffset = nextOffset

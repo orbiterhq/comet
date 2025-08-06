@@ -71,6 +71,7 @@ The index should only be updated AFTER data is durable. Otherwise, we're lying a
 - Consumers = Read via Index (only see durable data)
 - Writers = Use `nextEntryNumber` (for volatile entry assignment)
 - File Rotation = Uses `pendingWriteOffset`, includes both synced and pending data
+- **Periodic Flush = Updates both data AND index (making data visible to consumers)**
 - Tests = Call `Sync()` explicitly when consumers need to read data, except when we're doing integration tests to simulate real flush and sync behaviors.
 
 This architecture ensures:

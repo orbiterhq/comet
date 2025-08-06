@@ -214,16 +214,6 @@ func TestReaderIndexUpdateDetection(t *testing.T) {
 	// Get the shard to access its index directly
 	shard, _ := client.getOrCreateShard(shardID)
 
-	// Create a reader directly on the shard
-	reader, err := NewReader(shardID, shard.index)
-	if err != nil {
-		t.Fatalf("Failed to create reader: %v", err)
-	}
-	defer reader.Close()
-
-	// Set the shard's state for the reader
-	reader.SetState(shard.state)
-
 	// Write initial message
 	entries := [][]byte{[]byte("test-message-0")}
 	if _, err := client.Append(ctx, stream, entries); err != nil {
@@ -238,6 +228,21 @@ func TestReaderIndexUpdateDetection(t *testing.T) {
 		t.Fatalf("Failed to sync: %v", err)
 	}
 
+	// Create a reader with cloned index after data is written (following our architecture)
+	shard.mu.RLock()
+	indexCopy := shard.cloneIndex()
+	shard.mu.RUnlock()
+
+	reader, err := NewReader(shardID, indexCopy)
+	if err != nil {
+		t.Fatalf("Failed to create reader: %v", err)
+	}
+	defer reader.Close()
+
+	// Set the shard's state and client reference for the reader
+	reader.SetState(shard.state)
+	reader.SetClient(client)
+
 	// Read the first message
 	data, err := reader.ReadEntryByNumber(0)
 	if err != nil {
@@ -245,7 +250,7 @@ func TestReaderIndexUpdateDetection(t *testing.T) {
 	}
 	t.Logf("Read entry 0: %s", string(data))
 
-	// Now write more messages in a loop and verify reader can see them
+	// Now write more messages in a loop and verify reader can refresh itself to read them
 	for i := 1; i <= 10; i++ {
 		// Write a new message
 		msg := fmt.Sprintf("test-message-%d", i)
@@ -261,40 +266,21 @@ func TestReaderIndexUpdateDetection(t *testing.T) {
 
 		t.Logf("Wrote message %d", i)
 
-		// Try to read it immediately
-		attempts := 0
-		maxAttempts := 20 // 2 seconds max
-		var readErr error
-		var readData []byte
-
-		for attempts < maxAttempts {
-			readData, readErr = reader.ReadEntryByNumber(int64(i))
-			if readErr == nil {
-				break
-			}
-			attempts++
-			time.Sleep(100 * time.Millisecond)
-		}
+		// Try to read the new message with the same reader - it should refresh itself
+		readData, readErr := reader.ReadEntryByNumber(int64(i))
 
 		if readErr != nil {
-			t.Errorf("Failed to read entry %d after %d attempts: %v", i, attempts, readErr)
+			t.Errorf("Failed to read entry %d with reader refresh: %v", i, readErr)
 
-			// Debug: Check what the reader thinks
+			// Debug: Check what the shard thinks
 			shard.mu.RLock()
 			currentEntries := shard.index.CurrentEntryNumber
 			fileCount := len(shard.index.Files)
 			shard.mu.RUnlock()
 
 			t.Logf("Debug: Index shows %d entries in %d files", currentEntries, fileCount)
-
-			// Check if reader's file info is stale
-			reader.mappingMu.RLock()
-			readerFileCount := len(reader.fileInfos)
-			reader.mappingMu.RUnlock()
-
-			t.Logf("Debug: Reader has %d files cached", readerFileCount)
 		} else {
-			t.Logf("Successfully read entry %d after %d attempts: %s", i, attempts, string(readData))
+			t.Logf("Successfully read entry %d after reader refresh: %s", i, string(readData))
 		}
 	}
 }

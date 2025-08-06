@@ -686,19 +686,21 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 		}
 	}
 
-	// Create new reader with a reference to the live index
-	// We need to hold the lock while creating the reader to avoid data races
+	// Create new reader with current index - reader will refresh itself when stale
 	shard.mu.RLock()
-	newReader, err := NewReader(shard.shardID, shard.index, c.client.config.Reader)
+	indexSnapshot := shard.cloneIndex()
 	shard.mu.RUnlock()
+
+	newReader, err := NewReader(shard.shardID, indexSnapshot, c.client.config.Reader)
 	if err != nil {
 		return nil, err
 	}
 
-	// Set the state for metrics tracking
+	// Set the state and client reference for metrics tracking and index refreshing
 	if state := shard.state; state != nil {
 		newReader.SetState(state)
 	}
+	newReader.SetClient(c.client)
 
 	// Use LoadOrStore to handle race where multiple goroutines try to create
 	if actual, loaded := c.readers.LoadOrStore(shard.shardID, newReader); loaded {
@@ -793,25 +795,13 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		// Use the new ReadEntryByNumber method which handles position finding internally
 		data, err := reader.ReadEntryByNumber(entryNum)
 		if err != nil {
-			// Handle transient conditions gracefully
-			if errors.Is(err, ErrFileAwaitingData) {
-				// File exists but has no data yet - this is normal during active writes
-				// Force reader to check for updates on next read by marking cache as stale
-				if reader.state != nil && shard.state != nil {
-					atomic.StoreInt64(&reader.lastKnownIndexUpdate, 0)
-				}
+			// With immutable cloned indexes, errors indicate either:
+			// 1. Entry doesn't exist yet (reading ahead)
+			// 2. Reader index is stale (needs fresh Reader)
+			// 3. Real file corruption issues
 
-				// Return what we have so far and let the consumer retry later
-				if len(messages) > 0 {
-					return messages, nil
-				}
-				// If we haven't read anything yet, return the error so consumer can backoff
-				return nil, err
-			}
-
-			// In multi-process mode, some entries might not exist due to gaps in the sequence
-			// Skip these entries instead of failing the entire read
-			if strings.Contains(err.Error(), "not found in any file") {
+			// For "not found" errors, skip the entry in multi-process scenarios
+			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "stale") {
 				// CRITICAL: Update memory offset even for skipped entries to prevent infinite loops
 				c.memOffsetsMu.Lock()
 				if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
