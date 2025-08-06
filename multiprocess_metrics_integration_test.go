@@ -5,7 +5,6 @@ package comet
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -109,12 +108,6 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 		for i := 0; i < 30; i++ { // Reduced iterations since we start later
 			messages, err := consumer.Read(ctx, []uint32{0}, 10)
 			if err != nil {
-				// Handle transient errors with backoff
-				if errors.Is(err, ErrFileAwaitingData) {
-					fileAwaitingCount++
-					time.Sleep(50 * time.Millisecond) // Back off a bit more for file flush
-					continue
-				}
 				errorCount++
 				t.Logf("Read error on iteration %d: %v", i, err)
 				continue
