@@ -12,7 +12,7 @@ func TestNewMultiProcessClient_Basic(t *testing.T) {
 	// Test basic creation and cleanup
 	tempDir := t.TempDir()
 	shmFile := filepath.Join(tempDir, "test-basic-slots")
-	
+
 	// Clean up any existing file
 	os.Remove(shmFile)
 
@@ -59,7 +59,7 @@ func TestNewMultiProcessClient_Basic(t *testing.T) {
 func TestNewMultiProcessClientWithFile(t *testing.T) {
 	tempDir := t.TempDir()
 	shmFile := filepath.Join(tempDir, "custom-slots")
-	
+
 	// Clean up any existing file
 	os.Remove(shmFile)
 
@@ -83,7 +83,7 @@ func TestNewMultiProcessClientWithFile(t *testing.T) {
 func TestNewMultiProcessClient_DefaultOptions(t *testing.T) {
 	tempDir := t.TempDir()
 	shmFile := filepath.Join(tempDir, "test-default-slots")
-	
+
 	// Clean up any existing file
 	os.Remove(shmFile)
 
@@ -109,7 +109,7 @@ func TestNewMultiProcessClient_FailureCleanup(t *testing.T) {
 	// Test that process ID is released even if client creation fails
 	tempDir := t.TempDir()
 	shmFile := filepath.Join(tempDir, "slots")
-	
+
 	// Clean up any existing file
 	os.Remove(shmFile)
 
@@ -141,7 +141,7 @@ func TestNewMultiProcessClient_FailureCleanup(t *testing.T) {
 func TestMultiProcessCometConfig(t *testing.T) {
 	tempDir := t.TempDir()
 	shmFile := filepath.Join(tempDir, "config-test-slots")
-	
+
 	// Clean up any existing file
 	os.Remove(shmFile)
 

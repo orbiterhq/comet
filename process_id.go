@@ -59,7 +59,10 @@ func GetProcessIDWithFile(shmFile string) int {
 
 	// Not cached, acquire a new process ID
 	result := doGetProcessID(shmFile)
-	processIDCache[shmFile] = result
+	// Only cache successful acquisitions
+	if result >= 0 {
+		processIDCache[shmFile] = result
+	}
 	return result
 }
 

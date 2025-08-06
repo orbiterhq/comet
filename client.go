@@ -438,7 +438,7 @@ type Client struct {
 	stopCh           chan struct{}
 	startTime        time.Time
 	sharedMemoryFile string // For automatic process ID cleanup
-	
+
 	// Multi-process optimization: cache owned shards per shard count
 	ownedShardsCache sync.Map // map[uint32][]uint32 - shardCount -> owned shard IDs
 }
@@ -2546,7 +2546,7 @@ func (c *Client) getOwnedShards(shardCount uint32) []uint32 {
 	if cached, ok := c.ownedShardsCache.Load(shardCount); ok {
 		return cached.([]uint32)
 	}
-	
+
 	// Build the list of owned shards
 	ownedShards := make([]uint32, 0, shardCount/uint32(c.config.Concurrency.ProcessCount)+1)
 	for i := uint32(0); i < shardCount; i++ {
@@ -2554,7 +2554,7 @@ func (c *Client) getOwnedShards(shardCount uint32) []uint32 {
 			ownedShards = append(ownedShards, i)
 		}
 	}
-	
+
 	// Store in cache
 	c.ownedShardsCache.Store(shardCount, ownedShards)
 	return ownedShards
@@ -2574,18 +2574,18 @@ func (c *Client) PickShardStream(prefix string, key string, shardCount uint32) s
 		if len(ownedShards) == 0 {
 			panic("no shards owned by this process")
 		}
-		
+
 		// Hash the key and pick from owned shards
 		h := uint32(2166136261) // FNV offset basis
 		for i := 0; i < len(key); i++ {
 			h ^= uint32(key[i])
 			h *= 16777619 // FNV prime
 		}
-		
-		shardID := ownedShards[h % uint32(len(ownedShards))]
+
+		shardID := ownedShards[h%uint32(len(ownedShards))]
 		return ShardStreamName(prefix, shardID)
 	}
-	
+
 	// Single-process mode: use regular shard picking
 	shardID := c.PickShard(key, shardCount)
 	return ShardStreamName(prefix, shardID)
