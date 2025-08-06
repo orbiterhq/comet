@@ -70,14 +70,17 @@ The index should only be updated AFTER data is durable. Otherwise, we're lying a
 - Index = Durable State (what's persisted to disk via index.CurrentEntryNumber)
 - Consumers = Read via Index (only see durable data)
 - Writers = Use `nextEntryNumber` (for volatile entry assignment)
+- File Rotation = Uses `pendingWriteOffset`, includes both synced and pending data
 - Tests = Call `Sync()` explicitly when consumers need to read data, except when we're doing integration tests to simulate real flush and sync behaviors.
 
-This approach ensures that:
+This architecture ensures:
 
-1. The system has clear semantics about what data is durable vs volatile
-2. Consumers never read inconsistent state
-3. Recovery scenarios are predictable and correct
-4. Tests explicitly declare their expectations about data durability
+- **Crash Safety**: Consumers never see data that could be lost on crash
+- **Consistency**: Index always reflects what's actually persisted
+- **Performance**: Writers don't block on disk I/O for each entry
+- **Reliability**: System can recover to last known good state
+
+For a more detailed explanation, please refer to the [Architecture](ARCHITECTURE.md) document.
 
 ## Configuration
 

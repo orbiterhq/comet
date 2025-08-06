@@ -13,6 +13,39 @@ Comet is a high-performance embedded segmented log designed for edge observabili
 - Zero-copy reads through memory-mapped files
 - Horizontal scaling through sharding
 
+## Core Architectural Principle: Durable vs Volatile State
+
+**CRITICAL**: Comet maintains a strict separation between durable (persisted) and volatile (in-memory) state:
+
+```
+┌─────────────────────┐    ┌──────────────────────┐
+│   Volatile State    │    │    Durable State     │
+├─────────────────────┤    ├──────────────────────┤
+│ - nextEntryNumber   │    │ - Index              │
+│ - pendingWrites     │    │ - Data Files         │
+│ - writeBuffers      │    │ - Consumer Offsets   │
+│ - fileSize          │    │ - State File         │
+└─────────────────────┘    └──────────────────────┘
+         │                           ▲
+         │                           │
+         └─────── Sync() ─────────────┘
+```
+
+**Key Rules:**
+
+- **Index = Durable State**: Only tracks entries that have been synced to disk
+- **Consumers = Read via Index**: Can only see data that exists in the index
+- **Writers = Use nextEntryNumber**: Track pending writes with volatile counters
+- **File Rotation = Uses pendingWriteOffset**: Includes both synced and pending data
+- **Explicit Sync Required**: `client.Sync()` makes volatile state durable
+
+This architecture ensures:
+
+- **Crash Safety**: Consumers never see data that could be lost on crash
+- **Consistency**: Index always reflects what's actually persisted
+- **Performance**: Writers don't block on disk I/O for each entry
+- **Reliability**: System can recover to last known good state
+
 ## Core Components
 
 ### 1. Client
@@ -45,30 +78,44 @@ Key responsibilities:
 
 ### 2. Shard
 
-Each shard represents an independent data stream partition:
+Each shard represents an independent data stream partition with strict state separation:
 
 ```
 ┌──────────────────────────────────────┐
 │               Shard                  │
 ├──────────────────────────────────────┤
-│ - Buffered file writer               │
+│ Volatile State:                      │
+│ - nextEntryNumber (next write)       │
+│ - pendingWriteOffset (file pos)      │
+│ - writesSinceCheckpoint              │
+│ - inMemoryBuffers                    │
+│                                      │
+│ Durable State:                       │
 │ - Binary searchable index            │
-│ - Memory-mapped state                │
-│ - Compression engine                 │
-│ - File rotation logic                │
+│ - Memory-mapped state file           │
+│ - Consumer offsets                   │
+│ - File metadata                      │
 └──────────────────────────────────────┘
-         │              │
-         ▼              ▼
-    Data Files     Index File
-   (.comet.data)  (.comet.index)
+         │              │              │
+         ▼              ▼              ▼
+    Data Files     Index File    State File
+    (.comet)       (.bin)        (.state)
 ```
 
-Design decisions:
+**Critical State Management:**
+
+- **nextEntryNumber**: Tracks next entry to assign (volatile)
+- **index.CurrentEntryNumber**: Last entry synced to disk (durable)
+- **pendingWriteOffset**: File position including buffered data (volatile)
+- **index.CurrentWriteOffset**: Last synced position (durable)
+
+**Design Decisions:**
 
 - **Memory alignment**: Structure optimized with 64-bit fields first
 - **Atomic operations**: Lock-free updates to shared state
 - **Buffered writes**: Reduces syscall overhead
-- **Automatic rotation**: Files capped at configurable size (default 1GB)
+- **Explicit sync**: Writers must call Sync() to make data durable
+- **Index isolation**: Index only reflects what consumers can safely read
 
 ### 3. Consumer
 
@@ -126,53 +173,86 @@ Performance optimizations:
 
 ## Data Flow
 
-### Write Path
+### Write Path (Volatile)
 
 ```
 Write Request
      │
      ▼
-Client.Write()
+Client.Append()
      │
      ├─→ Select shard (hash/round-robin)
      │
      ▼
-Shard.Write()
+Shard.Append()
      │
+     ├─→ Assign nextEntryNumber (volatile)
      ├─→ Compress if > threshold
      ├─→ Write to buffered file
-     ├─→ Update memory-mapped state
-     ├─→ Add to index (periodic)
-     └─→ Rotate file if > max size
+     ├─→ Update pendingWriteOffset
+     ├─→ Rotate file if > max size
+     │   (uses pendingWriteOffset for size check)
+     │
+     ▼
+Return EntryNumbers (pending, not durable)
 ```
 
-Latency breakdown:
+**Latency breakdown:**
 
 - Hash computation: ~10ns
+- Entry number assignment: ~5ns
 - Compression check: ~5ns
 - Buffer write: ~100ns
-- State update: ~50ns
+- Offset update: ~20ns
 - **Total: < 1μs typical**
 
-### Read Path
+### Sync Path (Make Durable)
+
+```
+Client.Sync()
+     │
+     ▼
+For each shard:
+     │
+     ├─→ Flush buffered writes to disk
+     ├─→ Update index.CurrentEntryNumber
+     ├─→ Update index.CurrentWriteOffset
+     ├─→ Persist index to disk
+     ├─→ Update memory-mapped state
+     └─→ Reset writesSinceCheckpoint
+```
+
+**Important**: Only after Sync() can consumers read the data!
+
+### Read Path (Durable Only)
 
 ```
 Read Request
      │
      ▼
-Consumer.ReadBatch()
+Consumer.Read()
      │
      ├─→ Determine assigned shards
+     ├─→ Check consumer offset vs index.CurrentEntryNumber
      │
      ▼
 For each shard:
      │
      ├─→ Get/create Reader
-     ├─→ Memory-map files
-     ├─→ Binary search index
-     ├─→ Read entries
-     └─→ Decompress if needed
+     ├─→ Check if reader cache is stale
+     ├─→ Refresh file mappings if needed
+     ├─→ Binary search index (durable entries only)
+     ├─→ Read entries from mapped files
+     ├─→ Decompress if needed
+     └─→ Update consumer offsets (on ACK)
 ```
+
+**Key Points:**
+
+- Consumers only see entries in index.CurrentEntryNumber
+- Reader cache automatically detects stale mappings
+- Consumer offsets are persisted with index
+- No unflushed/pending data is ever visible
 
 ### Retention Path
 
@@ -345,6 +425,19 @@ Binary format for fast lookups and persistence:
 └────────────────────────────┘
 ```
 
+## Thread Safety & Race Condition Prevention
+
+Comet employs several strategies to ensure thread safety and prevent race conditions:
+
+### Lock Hierarchy
+
+```
+Client.mu (RWMutex)
+    └─→ Shard.mu (RWMutex)
+        ├─→ Shard.writeMu (Mutex) - Write operations
+        └─→ Shard.indexMu (Mutex) - Index persistence
+```
+
 ## Key Design Decisions
 
 ### 1. Entry-Based Addressing
@@ -378,6 +471,82 @@ Binary format for fast lookups and persistence:
 - Shared memory state per shard
 - Process-based shard ownership
 - Process slot management
+
+## Crash Recovery & Index Rebuilding
+
+Comet provides robust crash recovery mechanisms to maintain data consistency:
+
+### Index Rebuilding Process
+
+When an index file is missing or corrupted:
+
+```
+Client Startup
+     │
+     ▼
+For each shard:
+     │
+     ├─→ Check index.bin exists
+     ├─→ If missing: Scan all .comet files
+     ├─→ Parse each file header by header
+     ├─→ Rebuild FileInfo metadata
+     ├─→ Create binary search index
+     ├─→ Restore consumer offsets
+     └─→ Persist rebuilt index
+```
+
+### Crash Detection & Recovery
+
+**Startup Process:**
+
+1. **State Validation**: Check state file consistency
+2. **File Scanning**: Verify data files match index
+3. **Corruption Handling**: Skip corrupted entries, log warnings
+4. **Index Rebuild**: Reconstruct from scratch if needed
+5. **Offset Recovery**: Restore consumer positions
+
+### Data Consistency Guarantees
+
+**After Normal Shutdown:**
+
+- All data flushed to disk
+- Index reflects actual state
+- Consumer offsets saved
+
+**After Crash:**
+
+- Only synced data is recoverable
+- Index rebuilt from actual files
+- Consumer offsets reset to last known good state
+- Unflushed writes are lost (by design)
+
+### Recovery Scenarios
+
+**1. Missing Index File**
+
+- Scan all data files sequentially
+- Rebuild complete index metadata
+- May be slow for large datasets but fully recovers
+
+**2. Corrupted Data File**
+
+- Skip corrupted entries
+- Continue with remaining valid data
+- Log corruption details for investigation
+
+**3. State File Corruption**
+
+- Reset to safe defaults
+- Rebuild from index and data files
+- May lose some metrics but preserves data
+
+**4. Process Crash During Write**
+
+- Truncate file to last valid entry
+- Update index to reflect actual state
+- Resume from consistent position
+
+This design ensures that even after catastrophic failures, Comet can recover to a consistent state where the index accurately reflects the data that consumers can safely read.
 
 ## Performance Characteristics
 
