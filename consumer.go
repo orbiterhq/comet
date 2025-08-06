@@ -636,54 +636,12 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 	if value, ok := c.readers.Load(shard.shardID); ok {
 		reader := value.(*Reader)
 
-		// Check if reader's cache is stale by comparing LastIndexUpdate timestamps
-		if reader.state != nil && shard.state != nil {
-			currentIndexUpdate := shard.state.GetLastIndexUpdate()
-			readerLastKnown := atomic.LoadInt64(&reader.lastKnownIndexUpdate)
-
-			if currentIndexUpdate > readerLastKnown {
-				// Reader cache is stale, need to refresh
-				if IsDebug() {
-					fmt.Printf("[DEBUG] Consumer detected stale reader cache: shard=%d, current=%d, reader=%d\n",
-						shard.shardID, currentIndexUpdate, readerLastKnown)
-				}
-
-				// Close the stale reader and create a new one
-				c.readers.Delete(shard.shardID)
-				reader.Close()
-				// Decrement active readers count
-				atomic.AddUint64(&shard.state.ActiveReaders, ^uint64(0)) // Decrement by 1
-				// Fall through to create a new reader
-			} else {
-				// Reader cache is up to date
-				// Track reader cache hit
-				atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
-				return reader, nil
-			}
-		} else {
-			// No state to check, use existing reader
-			// Update the reader with current files - the new Reader handles this efficiently
-			shard.mu.RLock()
-			// Make a copy to avoid race conditions
-			currentFiles := make([]FileInfo, len(shard.index.Files))
-			copy(currentFiles, shard.index.Files)
-			shard.mu.RUnlock()
-			if err := reader.UpdateFiles(&currentFiles); err != nil {
-				// If update fails, close the reader and create a new one
-				c.readers.Delete(shard.shardID)
-				reader.Close()
-				// Decrement active readers count
-				if state := shard.state; state != nil {
-					atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
-				}
-			} else {
-				// Track reader cache hit
-				if state := shard.state; state != nil {
-					atomic.AddUint64(&state.ReaderCacheHits, 1)
-				}
-				return reader, nil
-			}
+		// Reader exists - it will handle its own staleness detection and refresh
+		// Track reader cache hit
+		if shard.state != nil {
+			atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
 		}
+		return reader, nil
 	}
 
 	// Create new reader with current index - reader will refresh itself when stale
