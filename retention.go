@@ -303,10 +303,10 @@ func (c *Client) cleanupShard(shard *Shard) int64 {
 			if !oldestTime.IsZero() {
 				atomic.StoreInt64(&state.OldestEntryNanos, oldestTime.UnixNano())
 			}
-		} else if len(shard.index.Files) > 0 {
+		} else if len(files) > 0 {
 			// If we're keeping all files (no deletion), still update the metric
 			oldestTime := time.Time{}
-			for _, file := range shard.index.Files {
+			for _, file := range files {
 				if !file.StartTime.IsZero() && (oldestTime.IsZero() || file.StartTime.Before(oldestTime)) {
 					oldestTime = file.StartTime
 				}

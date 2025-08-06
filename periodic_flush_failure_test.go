@@ -235,7 +235,7 @@ func TestFlushIntervalConfigurationDetection(t *testing.T) {
 
 			config := DefaultCometConfig()
 			config.Storage.FlushInterval = tc.flushInterval
-			config.Storage.CheckpointTime = tc.checkpointTime
+			config.Storage.CheckpointInterval = tc.checkpointTime
 
 			client, err := NewClient(dataDir, config)
 			if err != nil {

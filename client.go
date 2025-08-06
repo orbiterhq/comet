@@ -74,11 +74,11 @@ type IndexingConfig struct {
 
 // StorageConfig controls file storage behavior
 type StorageConfig struct {
-	MaxFileSize       int64 `json:"max_file_size"`      // Maximum size per file before rotation
-	CheckpointTime    int   `json:"checkpoint_time_ms"` // Checkpoint every N milliseconds
-	CheckpointEntries int   `json:"checkpoint_entries"` // Checkpoint every N entries (default: 100000)
-	FlushInterval     int   `json:"flush_interval_ms"`  // Flush to OS cache every N ms (memory management, not durability)
-	FlushEntries      int   `json:"flush_entries"`      // Flush to OS cache every N entries (memory management, not durability)
+	MaxFileSize        int64 `json:"max_file_size"`      // Maximum size per file before rotation
+	CheckpointInterval int   `json:"checkpoint_time_ms"` // Checkpoint every N milliseconds
+	CheckpointEntries  int   `json:"checkpoint_entries"` // Checkpoint every N entries (default: 100000)
+	FlushInterval      int   `json:"flush_interval_ms"`  // Flush to OS cache every N ms (memory management, not durability)
+	FlushEntries       int   `json:"flush_entries"`      // Flush to OS cache every N entries (memory management, not durability)
 }
 
 // ConcurrencyConfig controls multi-process behavior
@@ -163,11 +163,11 @@ func DefaultCometConfig() CometConfig {
 
 		// Storage - optimized for 256MB files
 		Storage: StorageConfig{
-			MaxFileSize:       maxFileSize,
-			CheckpointTime:    2000,   // Checkpoint every 2 seconds
-			CheckpointEntries: 100000, // Checkpoint every 100k entries
-			FlushEntries:      50000,  // Flush every 50k entries (~5MB) - optimal for large batches
-			FlushInterval:     1000,   // Flush and make data visible every 1 second
+			MaxFileSize:        maxFileSize,
+			CheckpointInterval: 2000,   // Checkpoint every 2 seconds
+			CheckpointEntries:  100000, // Checkpoint every 100k entries
+			FlushEntries:       50000,  // Flush every 50k entries (~5MB) - optimal for large batches
+			FlushInterval:      1000,   // Flush and make data visible every 1 second
 		},
 
 		// Concurrency - single-process mode by default
@@ -229,7 +229,7 @@ func HighCompressionConfig() CometConfig {
 // HighThroughputConfig returns a config optimized for write throughput
 func HighThroughputConfig() CometConfig {
 	cfg := DefaultCometConfig()
-	cfg.Storage.CheckpointTime = 10000            // Less frequent checkpoints
+	cfg.Storage.CheckpointInterval = 10000        // Less frequent checkpoints
 	cfg.Storage.CheckpointEntries = 200000        // Checkpoint every 200k entries (infrequent syncs)
 	cfg.Storage.FlushEntries = 100000             // Flush every 100k entries for large batch throughput
 	cfg.Compression.MinCompressSize = 1024 * 1024 // Only compress very large entries
@@ -272,7 +272,7 @@ func OptimizedConfig(shardCount int, memoryBudget int) CometConfig {
 
 	// For high shard counts, reduce checkpoint time to avoid memory pressure
 	if shardCount >= 256 {
-		cfg.Storage.CheckpointTime = 5000 // 5 seconds for many shards
+		cfg.Storage.CheckpointInterval = 5000 // 5 seconds for many shards
 	}
 
 	return cfg
@@ -283,8 +283,8 @@ func validateConfig(cfg *CometConfig) error {
 	if cfg.Storage.MaxFileSize <= 0 {
 		cfg.Storage.MaxFileSize = 256 << 20 // 256MB default
 	}
-	if cfg.Storage.CheckpointTime <= 0 {
-		cfg.Storage.CheckpointTime = 2000 // 2 seconds default
+	if cfg.Storage.CheckpointInterval <= 0 {
+		cfg.Storage.CheckpointInterval = 2000 // 2 seconds default
 	}
 	if cfg.Storage.CheckpointEntries <= 0 {
 		cfg.Storage.CheckpointEntries = 100000 // 100k entries default
@@ -782,6 +782,21 @@ func (c *Client) getShard(shardID uint32) *Shard {
 	return shard
 }
 
+// getMaxShardID returns the highest shard ID that this client knows about.
+// Used by consumers for efficient shard discovery without filesystem scanning.
+func (c *Client) getMaxShardID() uint32 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var maxShardID uint32 = 0
+	for shardID := range c.shards {
+		if shardID > maxShardID {
+			maxShardID = shardID
+		}
+	}
+	return maxShardID
+}
+
 func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	processID := os.Getpid()
 	if IsDebug() && c.logger != nil {
@@ -949,6 +964,11 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	}
 
 	c.shards[shardID] = shard
+
+	// Update global max shard ID using shard's state file for cross-process coordination
+	if shard.state != nil {
+		shard.state.UpdateGlobalMaxShardID(shardID)
+	}
 
 	// Start periodic flush goroutine for this shard
 	shard.startPeriodicFlush(&c.config)
@@ -1449,7 +1469,7 @@ func (s *Shard) performPostWriteOperations(config *CometConfig, clientMetrics *C
 // shouldCheckpoint determines if checkpoint is needed
 func (s *Shard) shouldCheckpoint(config *CometConfig) bool {
 	// Time-based checkpoint
-	if time.Since(s.lastCheckpoint) > time.Duration(config.Storage.CheckpointTime)*time.Millisecond {
+	if time.Since(s.lastCheckpoint) > time.Duration(config.Storage.CheckpointInterval)*time.Millisecond {
 		return true
 	}
 
@@ -3423,7 +3443,7 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 	flushInterval := config.Storage.FlushInterval
 	if flushInterval <= 0 {
 		// Default to checkpoint interval if not specified
-		flushInterval = config.Storage.CheckpointTime
+		flushInterval = config.Storage.CheckpointInterval
 	}
 	if flushInterval <= 0 {
 		// No periodic flush needed

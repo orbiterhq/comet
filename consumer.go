@@ -111,6 +111,32 @@ func (c *Consumer) getAssignedShards(candidateShards []uint32) []uint32 {
 	return assigned
 }
 
+// findExistingShards scans filesystem for existing shard directories
+func (c *Consumer) findExistingShards() ([]uint32, error) {
+	var shards []uint32
+	
+	shardDirs, err := filepath.Glob(filepath.Join(c.client.dataDir, "shard-*"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan for shard directories: %w", err)
+	}
+
+	for _, shardDir := range shardDirs {
+		// Extract shard ID from directory name (e.g., "shard-0166" -> 166)
+		dirName := filepath.Base(shardDir)
+		if !strings.HasPrefix(dirName, "shard-") {
+			continue
+		}
+
+		shardIDStr := strings.TrimPrefix(dirName, "shard-")
+		var shardID uint64
+		if _, parseErr := fmt.Sscanf(shardIDStr, "%04d", &shardID); parseErr == nil {
+			shards = append(shards, uint32(shardID))
+		}
+	}
+	
+	return shards, nil
+}
+
 // ProcessFunc handles a batch of messages, returning error to trigger retry
 type ProcessFunc func(ctx context.Context, messages []StreamMessage) error
 
@@ -526,10 +552,11 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 
 	// Determine candidate shards to process
 	var candidateShards []uint32
+	
 	if len(cfg.shards) > 0 {
 		candidateShards = cfg.shards
 	} else if cfg.stream != "" {
-		// Auto-discover shards from stream pattern
+		// Auto-discover shards from stream pattern using systematic polling
 		discoveredShards, err := c.discoverShards(cfg.stream, cfg.consumerID, cfg.consumerCount)
 		if err != nil {
 			return fmt.Errorf("failed to discover shards: %w", err)
@@ -549,6 +576,23 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 
 		// Consumer group coordination: get deterministically assigned shards
 		shards := c.getAssignedShards(candidateShards)
+		
+		// Re-discover shards when we have no work - with systematic polling, catches new shards immediately
+		if cfg.stream != "" && len(shards) == 0 {
+			newShards, err := c.discoverShards(cfg.stream, cfg.consumerID, cfg.consumerCount)
+			if err == nil && len(newShards) > len(candidateShards) {
+				oldCount := len(candidateShards)
+				candidateShards = newShards
+				if IsDebug() && c.client.logger != nil {
+					c.client.logger.Debug("Systematic rediscovery found new shards",
+						"old_count", oldCount, 
+						"new_count", len(candidateShards),
+						"shards", candidateShards)
+				}
+				// Re-run shard assignment with new candidates
+				continue
+			}
+		}
 		if len(shards) == 0 {
 			// No shards available for this consumer group - wait and retry
 			select {
@@ -558,6 +602,10 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 				continue
 			}
 		}
+
+		// Proactively refresh indexes for all candidate shards to ensure real-time visibility
+		// This catches updates from other processes even when we're not actively reading from all shards
+		c.refreshShardIndexes(candidateShards)
 
 		start := time.Now()
 		messages, err := c.Read(ctx, shards, cfg.batchSize)
@@ -684,6 +732,10 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 
 // readFromShard reads entries from a single shard using entry-based positioning
 func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int) ([]StreamMessage, error) {
+	if IsDebug() && c.client.logger != nil {
+		c.client.logger.Debug("readFromShard called", "shardID", shard.shardID, "maxCount", maxCount)
+	}
+	
 	// Track this shard for persistence on close
 	c.shards.Store(shard.shardID, true)
 	// Lock-free reader tracking
@@ -695,20 +747,21 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	var needsReload bool
 	var lastKnownUpdate int64
 	
+	var currentIndexUpdate int64
 	if shard.state != nil {
-		currentIndexUpdate := shard.state.GetLastIndexUpdate()
+		currentIndexUpdate = shard.state.GetLastIndexUpdate()
 		lastKnownUpdate = shard.lastIndexReload.UnixNano()
 		needsReload = currentIndexUpdate > lastKnownUpdate
 		
-		if c.client.logger != nil && IsDebug() {
-			c.client.logger.Debug("Checking index update state",
-				"shard", shard.shardID,
-				"current_update", currentIndexUpdate,
-				"last_known", lastKnownUpdate,
-				"needs_reload", needsReload)
+		if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Index reload check",
+				"shardID", shard.shardID,
+				"currentIndexUpdate", currentIndexUpdate,
+				"lastKnownUpdate", lastKnownUpdate,
+				"needsReload", needsReload)
 		}
 		
-		if needsReload && c.client.logger != nil && IsDebug() {
+		if needsReload && IsDebug() && c.client.logger != nil {
 			c.client.logger.Debug("Index update detected via memory-mapped state",
 				"shard", shard.shardID,
 				"current_update", currentIndexUpdate,
@@ -733,7 +786,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 					"error", err)
 			}
 		} else {
-			shard.lastIndexReload = time.Now()
+			shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
 			newEntries := shard.index.CurrentEntryNumber
 			
 			if c.client.logger != nil && IsDebug() {
@@ -1223,63 +1276,50 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 			"Got: %s", streamPattern)
 	}
 
-	baseStream := strings.TrimSuffix(streamPattern, "*")
-
-	// Discover all available shards
-	// Discover shards by scanning existing shard directories
-	// This is much more efficient than checking every possible shard ID
+	// Adaptive discovery: start with existing shards, expand range if needed
 	var allShards []uint32
-
-	// Use filesystem-based discovery for efficiency - check for existing shard directories
-	// This is much faster than calling Len() on every possible shard
-	shardDirs, err := filepath.Glob(filepath.Join(c.client.dataDir, "shard-*"))
+	// First, find existing shards via filesystem scan
+	existingShards, err := c.findExistingShards()
 	if err != nil {
-		return nil, fmt.Errorf("failed to scan for shard directories: %w", err)
+		return nil, fmt.Errorf("failed to find existing shards: %w", err)
 	}
-
-	if IsDebug() && c.client.logger != nil {
-		c.client.logger.Debug("discoverShards: found shard directories",
-			"count", len(shardDirs),
-			"dirs", shardDirs,
-			"baseStream", baseStream)
-	}
-
-	for _, shardDir := range shardDirs {
-		// Extract shard ID from directory name (e.g., "shard-0166" -> 166)
-		dirName := filepath.Base(shardDir)
-		if !strings.HasPrefix(dirName, "shard-") {
-			continue
+	
+	// If no existing shards, generate a small initial range for on-demand creation
+	if len(existingShards) == 0 {
+		// Start with a reasonable initial range (0-31) for on-demand shard creation
+		for shardID := uint32(0); shardID < 32; shardID++ {
+			allShards = append(allShards, shardID)
 		}
-
-		shardIDStr := strings.TrimPrefix(dirName, "shard-")
-		var shardID uint64
-		if _, parseErr := fmt.Sscanf(shardIDStr, "%04d", &shardID); parseErr == nil {
-			// In multi-process mode, we need to check if ANY process might own this shard
-			// Since consumer groups can span multiple processes, we need to discover all shards
-			// that match our pattern, regardless of which process owns them
-
-			// For now, just check if the shard directory exists and matches our pattern
-			streamName := fmt.Sprintf("%s%04d", baseStream, shardID)
-
-			// Simple check: if shard directory exists and stream name matches pattern, include it
-			// This avoids the complexity of trying to read shards owned by other processes
-			allShards = append(allShards, uint32(shardID))
-
-			if IsDebug() && c.client.logger != nil {
-				c.client.logger.Debug("Shard discovery: found matching shard",
-					"shardDir", shardDir,
-					"shardID", shardID,
-					"streamName", streamName)
+		if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("No existing shards found, using initial range for on-demand creation",
+				"pattern", streamPattern,
+				"range", "0-31")
+		}
+	} else {
+		// Use existing shards as base, but expand range to catch potential gaps
+		allShards = existingShards
+		
+		// Find the max existing shard ID
+		var maxShardID uint32 = 0
+		for _, shardID := range existingShards {
+			if shardID > maxShardID {
+				maxShardID = shardID
 			}
-		} else if IsDebug() && c.client.logger != nil {
-			c.client.logger.Debug("Failed to parse shard ID",
-				"shardIDStr", shardIDStr,
-				"error", parseErr)
 		}
-	}
-
-	if len(allShards) == 0 {
-		return nil, fmt.Errorf("no shards found for pattern %s", streamPattern)
+		
+		// Add some buffer beyond max to catch new shards
+		bufferSize := uint32(16) // Add 16 more potential shards beyond the max
+		for shardID := maxShardID + 1; shardID <= maxShardID + bufferSize; shardID++ {
+			allShards = append(allShards, shardID)
+		}
+		
+		if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Found existing shards, expanded with buffer",
+				"existing_count", len(existingShards),
+				"max_existing", maxShardID,
+				"total_range", len(allShards),
+				"buffer", bufferSize)
+		}
 	}
 
 	// Sort shards for predictable assignment
@@ -1294,4 +1334,53 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 	}
 
 	return assignedShards, nil
+}
+
+// refreshShardIndexes proactively checks and reloads indexes for all candidate shards
+// This ensures real-time visibility of updates from other processes
+func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
+	for _, shardID := range candidateShards {
+		// Get or create the shard (this may trigger on-demand creation)
+		shard, err := c.client.getOrCreateShard(shardID)
+		if err != nil {
+			continue // Skip this shard on error
+		}
+
+		// Check if index needs reloading using the same logic as readFromShard
+		var needsReload bool
+		var currentIndexUpdate int64
+		var lastKnownUpdate int64
+
+		if shard.state != nil {
+			currentIndexUpdate = shard.state.GetLastIndexUpdate()
+			lastKnownUpdate = shard.lastIndexReload.UnixNano()
+			needsReload = currentIndexUpdate > lastKnownUpdate
+		}
+
+		if needsReload {
+			shard.mu.Lock()
+			oldEntries := shard.index.CurrentEntryNumber
+			
+			if err := shard.loadIndex(); err != nil {
+				// Log but don't fail - continue with current index
+				if c.client.logger != nil && IsDebug() {
+					c.client.logger.Debug("Failed to reload index during refresh, using cached state",
+						"shard", shard.shardID,
+						"error", err)
+				}
+			} else {
+				shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
+				newEntries := shard.index.CurrentEntryNumber
+				
+				if c.client.logger != nil && IsDebug() && newEntries > oldEntries {
+					c.client.logger.Debug("Proactively reloaded index with new entries",
+						"shard", shard.shardID,
+						"old_entries", oldEntries,
+						"new_entries", newEntries,
+						"entries_added", newEntries-oldEntries)
+				}
+			}
+			shard.mu.Unlock()
+		}
+	}
 }
