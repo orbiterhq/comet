@@ -48,6 +48,18 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "group-A"})
 	defer consumer1.Close()
 
+	// Debug: Check shard state before reading
+	shard := client1.getShard(0)
+	if shard == nil {
+		t.Log("ERROR: Shard 0 does not exist!")
+	} else {
+		shard.mu.RLock()
+		entries := shard.index.CurrentEntryNumber
+		files := len(shard.index.Files)
+		shard.mu.RUnlock()
+		t.Logf("Before Group-A read: shard has %d entries in %d files", entries, files)
+	}
+
 	msgs1, err := consumer1.Read(ctx, []uint32{0}, 3)
 	if err != nil {
 		t.Fatal(err)

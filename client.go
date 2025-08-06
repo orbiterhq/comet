@@ -764,6 +764,15 @@ func (c *Client) Sync(ctx context.Context) error {
 // loadExistingShard loads a shard that was created by another process
 
 // getOrCreateShard returns an existing shard or creates a new one
+// getShard retrieves an existing shard without creating it if it doesn't exist.
+// Returns nil if the shard doesn't exist.
+func (c *Client) getShard(shardID uint32) *Shard {
+	c.mu.RLock()
+	shard := c.shards[shardID]
+	c.mu.RUnlock()
+	return shard
+}
+
 func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	processID := os.Getpid()
 	if IsDebug() && c.logger != nil {

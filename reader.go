@@ -149,17 +149,18 @@ func (c *recentFileCache) contains(fileIndex int) bool {
 
 // Reader provides bounded memory-mapped read access to a shard with intelligent file management
 type Reader struct {
-	shardID      uint32
-	index        *ShardIndex
-	config       ReaderConfig
-	fileInfos    []FileInfo          // All file metadata (not necessarily mapped)
-	mappedFiles  map[int]*MappedFile // Currently mapped files
-	mappingMu    sync.RWMutex        // Protects mappedFiles
-	localMemory  int64               // Atomic counter for local memory usage
-	recentCache  *recentFileCache
-	decompressor *zstd.Decoder
-	bufferPool   *sync.Pool
-	state        *CometState // Shared state for metrics (optional)
+	shardID              uint32
+	index                *ShardIndex
+	config               ReaderConfig
+	fileInfos            []FileInfo          // All file metadata (not necessarily mapped)
+	mappedFiles          map[int]*MappedFile // Currently mapped files
+	mappingMu            sync.RWMutex        // Protects mappedFiles
+	localMemory          int64               // Atomic counter for local memory usage
+	recentCache          *recentFileCache
+	decompressor         *zstd.Decoder
+	bufferPool           *sync.Pool
+	state                *CometState // Shared state for metrics (optional)
+	lastKnownIndexUpdate int64       // Last known index update timestamp for cache invalidation
 }
 
 // NewReader creates a new bounded reader for a shard with smart file mapping
@@ -229,6 +230,9 @@ func (r *Reader) SetState(state *CometState) {
 		if mappedCount > 0 {
 			atomic.StoreUint64(&state.ReaderFileMaps, uint64(mappedCount))
 		}
+
+		// Initialize the last known index update timestamp
+		atomic.StoreInt64(&r.lastKnownIndexUpdate, state.GetLastIndexUpdate())
 	}
 }
 
@@ -673,7 +677,7 @@ func (r *Reader) GetMemoryUsage() (int64, int) {
 
 // ReadEntryByNumber reads an entry by its sequential entry number, using the file metadata to locate it
 func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
-	// Find which file contains this entry
+	// First try with cached file infos
 	for fileIndex, fileInfo := range r.fileInfos {
 		// Check if this entry falls within this file's range
 		if fileInfo.StartEntry <= entryNumber && entryNumber < fileInfo.StartEntry+fileInfo.Entries {
@@ -692,10 +696,92 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 		}
 	}
 
+	// Entry not found in cached files - check if index has been updated using LastIndexUpdate
+	if r.state != nil {
+		currentIndexUpdate := r.state.GetLastIndexUpdate()
+		lastKnown := atomic.LoadInt64(&r.lastKnownIndexUpdate)
+
+		if IsDebug() {
+			fmt.Printf("[DEBUG] Reader.ReadEntryByNumber: entry=%d, currentIndexUpdate=%d, lastKnown=%d, stale=%v\n",
+				entryNumber, currentIndexUpdate, lastKnown, currentIndexUpdate > lastKnown)
+		}
+
+		if currentIndexUpdate > lastKnown {
+			// Index has been updated, refresh our cached file infos
+			liveFiles := r.index.Files
+
+			if IsDebug() {
+				fmt.Printf("[DEBUG] Reader cache refresh: entry=%d, liveFiles=%d, cachedFiles=%d\n",
+					entryNumber, len(liveFiles), len(r.fileInfos))
+
+				// Log first few live files
+				for i, file := range liveFiles {
+					if i < 3 {
+						fmt.Printf("[DEBUG]   LiveFile[%d]: path=%s, startEntry=%d, entries=%d\n",
+							i, file.Path, file.StartEntry, file.Entries)
+					}
+				}
+			}
+
+			// Make a safe copy of the live files
+			r.mappingMu.Lock()
+			if len(liveFiles) >= len(r.fileInfos) {
+				// Only update if we got same or more files
+				oldCount := len(r.fileInfos)
+				r.fileInfos = make([]FileInfo, len(liveFiles))
+				copy(r.fileInfos, liveFiles)
+				// Update our known timestamp only after successful update
+				atomic.StoreInt64(&r.lastKnownIndexUpdate, currentIndexUpdate)
+
+				if IsDebug() {
+					fmt.Printf("[DEBUG] Reader cache updated: entry=%d, files %d->%d, timestamp updated to %d\n",
+						entryNumber, oldCount, len(r.fileInfos), currentIndexUpdate)
+				}
+			}
+			r.mappingMu.Unlock()
+
+			// Try again with updated file infos
+			if IsDebug() {
+				fmt.Printf("[DEBUG] Searching updated files for entry %d:\n", entryNumber)
+			}
+
+			for fileIndex, fileInfo := range r.fileInfos {
+				if IsDebug() && fileIndex < 3 {
+					fmt.Printf("[DEBUG]   CachedFile[%d]: startEntry=%d, entries=%d, contains=%v\n",
+						fileIndex, fileInfo.StartEntry, fileInfo.Entries,
+						fileInfo.StartEntry <= entryNumber && entryNumber < fileInfo.StartEntry+fileInfo.Entries)
+				}
+
+				// Check if this entry falls within this file's range
+				if fileInfo.StartEntry <= entryNumber && entryNumber < fileInfo.StartEntry+fileInfo.Entries {
+					// Found the file - now we need to find the exact position within the file
+					relativeEntryNum := entryNumber - fileInfo.StartEntry
+
+					if IsDebug() {
+						fmt.Printf("[DEBUG] Found entry %d in file %d (relative entry %d)\n",
+							entryNumber, fileIndex, relativeEntryNum)
+					}
+
+					if relativeEntryNum == 0 {
+						// First entry in file - starts at offset 0
+						pos := EntryPosition{FileIndex: fileIndex, ByteOffset: 0}
+						return r.ReadEntryAtPosition(pos)
+					}
+
+					// For non-first entries, we need to scan from the beginning
+					return r.readEntryByScanning(fileIndex, relativeEntryNum)
+				}
+			}
+
+			if IsDebug() {
+				fmt.Printf("[DEBUG] Entry %d not found in any cached file after refresh\n", entryNumber)
+			}
+		}
+	}
+
 	// Entry not found in any file - this could be because:
 	// 1. The entry doesn't exist yet (reading ahead of writes)
-	// 2. The file index is out of date
-	// 3. The entry was in a file that got deleted by retention
+	// 2. The entry was in a file that got deleted by retention
 
 	// If we're looking for entry 0 and have files, but none contain it,
 	// it might be in a newly created file that hasn't been written to yet

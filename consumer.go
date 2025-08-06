@@ -471,6 +471,7 @@ func (c *Consumer) Read(ctx context.Context, shards []uint32, count int) ([]Stre
 			break
 		}
 
+		// Use getOrCreateShard to ensure we can read from existing shards after restart
 		shard, err := c.client.getOrCreateShard(shardID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get shard %d: %w", shardID, err)
@@ -659,27 +660,9 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 		}
 	}
 
-	// Create new reader with a snapshot of the current index
-	shard.mu.RLock()
-	// Make a copy of the index to avoid race conditions
-	indexCopy := &ShardIndex{
-		Files:              make([]FileInfo, len(shard.index.Files)),
-		CurrentFile:        shard.index.CurrentFile,
-		CurrentWriteOffset: shard.index.CurrentWriteOffset,
-		CurrentEntryNumber: shard.index.CurrentEntryNumber,
-		ConsumerOffsets:    make(map[string]int64),
-		BinaryIndex: BinarySearchableIndex{
-			IndexInterval: shard.index.BinaryIndex.IndexInterval,
-			MaxNodes:      shard.index.BinaryIndex.MaxNodes,
-			Nodes:         make([]EntryIndexNode, len(shard.index.BinaryIndex.Nodes)),
-		},
-	}
-	copy(indexCopy.Files, shard.index.Files)
-	copy(indexCopy.BinaryIndex.Nodes, shard.index.BinaryIndex.Nodes)
-	maps.Copy(indexCopy.ConsumerOffsets, shard.index.ConsumerOffsets)
-	shard.mu.RUnlock()
-
-	newReader, err := NewReader(shard.shardID, indexCopy, c.client.config.Reader)
+	// Create new reader with a reference to the live index (not a copy)
+	// The reader will access the index under proper synchronization
+	newReader, err := NewReader(shard.shardID, shard.index, c.client.config.Reader)
 	if err != nil {
 		return nil, err
 	}
@@ -841,6 +824,12 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			// In multi-process mode, some entries might not exist due to gaps in the sequence
 			// Skip these entries instead of failing the entire read
 			if strings.Contains(err.Error(), "not found in any file") {
+				// CRITICAL: Update memory offset even for skipped entries to prevent infinite loops
+				c.memOffsetsMu.Lock()
+				if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
+					c.memOffsets[shard.shardID] = entryNum + 1 // Next entry to try
+				}
+				c.memOffsetsMu.Unlock()
 				continue
 			}
 			// Track read error in CometState
