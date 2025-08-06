@@ -52,6 +52,11 @@ func TestMixedBatchCompression(t *testing.T) {
 		t.Errorf("Expected %d IDs, got %d", len(entries), len(ids))
 	}
 
+	// Sync to make entries durable and trackable in index
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Get stats to verify compression happened
 	stats := client.GetStats()
 	t.Logf("Stats after mixed batch:")

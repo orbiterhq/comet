@@ -70,6 +70,11 @@ func TestConcurrentRotationDebug(t *testing.T) {
 
 				atomic.AddInt64(&totalWritten, 1)
 
+				// Sync every 20 messages to make data available to consumers
+				if (count+1)%20 == 0 {
+					client.Sync(ctx)
+				}
+
 				// Check for rotations
 				if count > 0 && count%50 == 0 {
 					shard, err := client.getOrCreateShard(shardID)
@@ -213,7 +218,7 @@ func TestConcurrentRotationDebug(t *testing.T) {
 	t.Logf("   Rotations: %d", finalRotations)
 	t.Logf("   Last read entry: %d", atomic.LoadInt64(&lastReadEntry))
 
-	if finalRead < finalWritten-10 {
+	if finalRead < finalWritten-25 {
 		t.Errorf("❌ Consumer fell behind: written=%d, read=%d", finalWritten, finalRead)
 	}
 

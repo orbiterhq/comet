@@ -43,8 +43,10 @@ func TestReaderCacheFileGrowth(t *testing.T) {
 	}
 	t.Logf("Appended %d initial messages with IDs: %v", len(ids), ids)
 
-	// Wait for flush interval plus buffer
-	time.Sleep(time.Duration(config.Storage.FlushInterval+50) * time.Millisecond)
+	// Sync to make initial messages durable and readable
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	// Read initial messages to establish position
 	messages, err := consumer.Read(ctx, []uint32{0}, 10)
@@ -84,6 +86,11 @@ func TestReaderCacheFileGrowth(t *testing.T) {
 			mu.Lock()
 			messagesSent++
 			mu.Unlock()
+
+			// Sync every few messages to make data available to reader
+			if (i+1)%5 == 0 {
+				client.Sync(ctx)
+			}
 
 			t.Logf("Writer: sent message %d", i)
 			time.Sleep(100 * time.Millisecond)

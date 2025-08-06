@@ -40,8 +40,10 @@ func TestConsumerMemoryOffset(t *testing.T) {
 		t.Fatalf("Failed to append initial messages: %v", err)
 	}
 
-	// Wait for flush
-	time.Sleep(100 * time.Millisecond)
+	// Sync to make data durable and readable by consumers
+	if err := client.Sync(ctx); err != nil {
+		t.Fatalf("Failed to sync initial messages: %v", err)
+	}
 
 	// Read initial messages
 	messages, err := consumer.Read(ctx, []uint32{shardID}, 10)
@@ -96,8 +98,10 @@ func TestConsumerMemoryOffset(t *testing.T) {
 		t.Fatalf("Failed to append new messages: %v", err)
 	}
 
-	// Wait for flush
-	time.Sleep(100 * time.Millisecond)
+	// Sync to make new data durable and readable by consumers
+	if err := client.Sync(ctx); err != nil {
+		t.Fatalf("Failed to sync new messages: %v", err)
+	}
 
 	// Check shard state after new writes
 	shard.mu.RLock()

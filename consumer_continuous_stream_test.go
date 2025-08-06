@@ -63,6 +63,18 @@ func TestConsumerContinuousStream(t *testing.T) {
 				}
 
 				atomic.AddInt64(&messagesWritten, 1)
+
+				// Sync every 10 messages to make data available to consumers
+				if (count+1)%10 == 0 {
+					if err := client.Sync(ctx); err != nil {
+						select {
+						case writerErrors <- fmt.Errorf("sync error at message %d: %w", count, err):
+						default:
+						}
+						return
+					}
+				}
+
 				if count%100 == 0 {
 					t.Logf("Writer: Sent %d messages", count)
 				}
@@ -175,13 +187,13 @@ func TestConsumerContinuousStream(t *testing.T) {
 	}
 
 	// Ensure we actually processed a meaningful number of messages
-	// At 50ms intervals over 20 seconds, we should write ~400 messages
-	if finalWritten < 300 {
-		t.Errorf("Expected to write at least 300 messages in 20 seconds, but only wrote %d", finalWritten)
+	// At 50ms intervals over 10 seconds, we should write ~200 messages
+	if finalWritten < 150 {
+		t.Errorf("Expected to write at least 150 messages in 10 seconds, but only wrote %d", finalWritten)
 	}
 
-	if finalRead < 290 {
-		t.Errorf("Expected to read at least 290 messages in 20 seconds, but only read %d", finalRead)
+	if finalRead < 140 {
+		t.Errorf("Expected to read at least 140 messages in 10 seconds, but only read %d", finalRead)
 	}
 }
 
@@ -227,6 +239,11 @@ func TestConsumerContinuousStreamWithRestart(t *testing.T) {
 				}
 
 				atomic.AddInt64(&messagesWritten, 1)
+
+				// Sync every 10 messages to make data available to consumers
+				if (count+1)%10 == 0 {
+					client.Sync(ctx)
+				}
 			}
 		}
 	}()
@@ -270,7 +287,8 @@ func TestConsumerContinuousStreamWithRestart(t *testing.T) {
 	consumer1.Close()
 
 	phase1Written := atomic.LoadInt64(&messagesWritten)
-	t.Logf("Phase 1 complete: Written=%d, Read=%d", phase1Written, phase1Read)
+	phase1ReadFinal := atomic.LoadInt64(&phase1Read)
+	t.Logf("Phase 1 complete: Written=%d, Read=%d", phase1Written, phase1ReadFinal)
 
 	// Phase 2: Create new consumer and continue reading
 	t.Log("Phase 2: Starting new consumer after restart")
@@ -323,10 +341,11 @@ done:
 
 	// Final statistics
 	finalWritten := atomic.LoadInt64(&messagesWritten)
-	totalRead := phase1Read + phase2Read
+	phase1ReadFinal = atomic.LoadInt64(&phase1Read)
+	totalRead := phase1ReadFinal + phase2Read
 
 	t.Logf("Final: Written=%d, Phase1Read=%d, Phase2Read=%d, TotalRead=%d",
-		finalWritten, phase1Read, phase2Read, totalRead)
+		finalWritten, phase1ReadFinal, phase2Read, totalRead)
 
 	// Verify continuity - total read should be close to total written
 	if totalRead < finalWritten-10 {

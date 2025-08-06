@@ -377,13 +377,21 @@ func (r *Reader) checkAndRemapIfGrown(fileIndex int, mapped *MappedFile) error {
 
 	currentSize := stat.Size()
 
-	// If file has grown, we need to remap it
-	if currentSize > mapped.lastSize {
+	// Check if we need to remap:
+	// 1. File has grown
+	// 2. Current mapping is empty but file now has data
+	currentData := mapped.data.Load().([]byte)
+	needsRemap := currentSize > mapped.lastSize || (len(currentData) == 0 && currentSize > 0)
+
+	// If file has grown or was empty but now has data, we need to remap it
+	if needsRemap {
 		r.mappingMu.Lock()
 		defer r.mappingMu.Unlock()
 
 		// Double-check under lock
-		if currentSize > mapped.lastSize {
+		currentData = mapped.data.Load().([]byte)
+		needsRemap = currentSize > mapped.lastSize || (len(currentData) == 0 && currentSize > 0)
+		if needsRemap {
 			// Unmap old mapping
 			if data := mapped.data.Load(); data != nil {
 				if dataBytes, ok := data.([]byte); ok && len(dataBytes) > 0 {
@@ -725,18 +733,16 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 
 			// Make a safe copy of the live files
 			r.mappingMu.Lock()
-			if len(liveFiles) >= len(r.fileInfos) {
-				// Only update if we got same or more files
-				oldCount := len(r.fileInfos)
-				r.fileInfos = make([]FileInfo, len(liveFiles))
-				copy(r.fileInfos, liveFiles)
-				// Update our known timestamp only after successful update
-				atomic.StoreInt64(&r.lastKnownIndexUpdate, currentIndexUpdate)
+			// Always update the cache when index has changed - file metadata can change without adding files
+			oldCount := len(r.fileInfos)
+			r.fileInfos = make([]FileInfo, len(liveFiles))
+			copy(r.fileInfos, liveFiles)
+			// Update our known timestamp only after successful update
+			atomic.StoreInt64(&r.lastKnownIndexUpdate, currentIndexUpdate)
 
-				if IsDebug() {
-					fmt.Printf("[DEBUG] Reader cache updated: entry=%d, files %d->%d, timestamp updated to %d\n",
-						entryNumber, oldCount, len(r.fileInfos), currentIndexUpdate)
-				}
+			if IsDebug() {
+				fmt.Printf("[DEBUG] Reader cache updated: entry=%d, files %d->%d, timestamp updated to %d\n",
+					entryNumber, oldCount, len(r.fileInfos), currentIndexUpdate)
 			}
 			r.mappingMu.Unlock()
 

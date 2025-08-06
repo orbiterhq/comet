@@ -50,6 +50,35 @@ High-performance embedded segmented log for edge observability. Built for single
 - **Retention Management** - Configurable time and size-based retention with protection for unconsumed data
 - **Metrics** - Comprehensive metrics tracking including write latency, compression ratios, and consumer lag
 
+### Architectural Clarity
+
+From a clean architecture perspective:
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Writer    │────▶│   Buffer    │────▶│    Disk     │
+└─────────────┘     └─────────────┘     └─────────────┘
+                                               │
+                                               ▼
+                                        ┌─────────────┐
+                                        │    Index    │
+                                        └─────────────┘
+```
+
+The index should only be updated AFTER data is durable. Otherwise, we're lying about the system state.
+
+- Index = Durable State (what's persisted to disk via index.CurrentEntryNumber)
+- Consumers = Read via Index (only see durable data)
+- Writers = Use `nextEntryNumber` (for volatile entry assignment)
+- Tests = Call `Sync()` explicitly when consumers need to read data, except when we're doing integration tests to simulate real flush and sync behaviors.
+
+This approach ensures that:
+
+1. The system has clear semantics about what data is durable vs volatile
+2. Consumers never read inconsistent state
+3. Recovery scenarios are predictable and correct
+4. Tests explicitly declare their expectations about data durability
+
 ## Configuration
 
 The package uses a hierarchical configuration structure:

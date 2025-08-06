@@ -564,6 +564,11 @@ func TestACKPersistenceMemoryPressure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Sync to make messages durable before closing
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
 	client.Close()
 
 	// Process with memory constraints

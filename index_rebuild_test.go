@@ -34,6 +34,11 @@ func TestIndexRebuild(t *testing.T) {
 		}
 	}
 
+	// Sync to persist data before getting totalEntries
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Force file rotation to create multiple files
 	shard, _ := client.getOrCreateShard(0)
 
@@ -64,10 +69,15 @@ func TestIndexRebuild(t *testing.T) {
 		}
 	}
 
-	// Verify we have multiple files
+	// Sync the additional data
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify we have multiple files and capture final entry count
 	shard.mu.RLock()
 	fileCount := len(shard.index.Files)
-	totalEntries := shard.index.CurrentEntryNumber
+	totalEntries := shard.index.CurrentEntryNumber // Now captures all 60 entries (50 + 10)
 	shard.mu.RUnlock()
 
 	if fileCount < 2 {
