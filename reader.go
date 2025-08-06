@@ -191,8 +191,10 @@ func NewReader(shardID uint32, index *ShardIndex, config ...ReaderConfig) (*Read
 		},
 	}
 
-	// Copy file infos
-	copy(r.fileInfos, index.Files)
+	// Deep copy file infos to avoid data races
+	for i := range index.Files {
+		r.fileInfos[i] = index.Files[i]
+	}
 
 	// Create decompressor
 	dec, err := zstd.NewReader(nil)

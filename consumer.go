@@ -660,9 +660,11 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 		}
 	}
 
-	// Create new reader with a reference to the live index (not a copy)
-	// The reader will access the index under proper synchronization
+	// Create new reader with a reference to the live index
+	// We need to hold the lock while creating the reader to avoid data races
+	shard.mu.RLock()
 	newReader, err := NewReader(shard.shardID, shard.index, c.client.config.Reader)
+	shard.mu.RUnlock()
 	if err != nil {
 		return nil, err
 	}
@@ -739,22 +741,27 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	if shard.state != nil {
 		totalWrites := atomic.LoadUint64(&shard.state.TotalWrites)
 		if totalWrites > uint64(endEntryNum) {
-			// Need write lock for rebuild
-			shard.mu.Lock()
+			// Prepare to force a rebuild
 			shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
-			// Force a full rebuild by manually updating the rebuild trigger
+
 			// Temporarily modify the file end offset to trigger a rebuild
+			shard.mu.Lock()
 			oldEndOffset := int64(0)
+			needsRestore := false
 			if len(shard.index.Files) > 0 {
 				oldEndOffset = shard.index.Files[len(shard.index.Files)-1].EndOffset
 				// Set end offset to 0 to force rebuild detection
 				shard.index.Files[len(shard.index.Files)-1].EndOffset = 0
+				needsRestore = true
 			}
+			shard.mu.Unlock()
 
+			// Call rebuild without holding the lock to avoid deadlock
 			shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
 
 			// Restore if rebuild didn't happen (shouldn't occur)
-			if len(shard.index.Files) > 0 && shard.index.Files[len(shard.index.Files)-1].EndOffset == 0 {
+			shard.mu.Lock()
+			if needsRestore && len(shard.index.Files) > 0 && shard.index.Files[len(shard.index.Files)-1].EndOffset == 0 {
 				shard.index.Files[len(shard.index.Files)-1].EndOffset = oldEndOffset
 			}
 			// Reload the updated values

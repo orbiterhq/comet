@@ -677,10 +677,13 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 	// Handle potential index rebuild in multi-process mode
 	if shard.state != nil && shard.checkIfRebuildNeeded() {
 		shard.mu.Lock()
-		if shard.checkIfRebuildNeeded() {
+		needsRebuild := shard.checkIfRebuildNeeded()
+		shard.mu.Unlock()
+
+		if needsRebuild {
+			// Call rebuild without holding the lock to avoid deadlock
 			shard.lazyRebuildIndexIfNeeded(c.config, filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shard.shardID)))
 		}
-		shard.mu.Unlock()
 	}
 
 	// Now get the length with read lock
@@ -3069,8 +3072,10 @@ func (s *Shard) doRebuildIndex(config CometConfig, shardDir string) error {
 		newIndex.CurrentFile = newIndex.Files[len(newIndex.Files)-1].Path
 	}
 
-	// Replace index
+	// Replace index under write lock
+	s.mu.Lock()
 	s.index = newIndex
+	s.mu.Unlock()
 
 	// Update state to match
 	if s.state != nil && totalEntries > 0 {
@@ -3079,7 +3084,7 @@ func (s *Shard) doRebuildIndex(config CometConfig, shardDir string) error {
 		atomic.AddUint64(&s.state.RecoverySuccesses, 1)
 	}
 
-	// Persist rebuilt index
+	// Persist rebuilt index (this will take its own read lock as needed)
 	if err := s.persistIndex(); err != nil {
 		if s.logger != nil {
 			s.logger.Error("Failed to persist rebuilt index",

@@ -160,15 +160,13 @@ func TestProcessStatePersistence(t *testing.T) {
 
 					totalRead.Add(int64(len(messages)))
 
-					// ACK periodically (not every message for performance)
-					if totalRead.Load()%10 == 0 {
-						messageIDs := make([]MessageID, len(messages))
-						for i, msg := range messages {
-							messageIDs[i] = msg.ID
-						}
-						if err := consumer.Ack(ctx, messageIDs...); err != nil {
-							t.Logf("ACK error: %v", err)
-						}
+					// ACK all messages in the batch
+					messageIDs := make([]MessageID, len(messages))
+					for i, msg := range messages {
+						messageIDs[i] = msg.ID
+					}
+					if err := consumer.Ack(ctx, messageIDs...); err != nil {
+						t.Logf("ACK error: %v", err)
 					}
 
 					// Log progress
@@ -201,7 +199,56 @@ func TestProcessStatePersistence(t *testing.T) {
 	pauseRead := totalRead.Load()
 	t.Logf("Before restart: Written=%d, Read=%d, Rotations=%d", pauseWritten, pauseRead, rotations.Load())
 
-	// Close consumer but keep writer running
+	// Stop writer goroutine first to avoid data race
+	cancel()       // This will stop both goroutines
+	<-writerDone   // Wait for writer to exit
+	<-consumerDone // Wait for consumer reader to exit
+
+	// Create new context for phase 3 and 4
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel2()
+
+	// Restart writer with new context
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx2.Done():
+				return
+			case <-ticker.C:
+				count := totalWritten.Load()
+				msg := fmt.Sprintf("production-message-%06d-payload-%s", count,
+					"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+				entries := [][]byte{[]byte(msg)}
+
+				_, err := writerClient.Append(ctx2, stream, entries)
+				if err != nil {
+					writeErrors.Add(1)
+					if ctx2.Err() == nil {
+						t.Logf("Write error at message %d: %v", count, err)
+					}
+					continue
+				}
+
+				totalWritten.Add(1)
+
+				// Log progress every 100 messages
+				if count > 0 && count%100 == 0 {
+					shard := writerClient.getShard(shardID)
+					if shard != nil {
+						shard.mu.RLock()
+						fileCount := len(shard.index.Files)
+						shard.mu.RUnlock()
+						t.Logf("Writer (phase 3/4): %d messages, %d files", count, fileCount)
+					}
+				}
+			}
+		}
+	}()
+
+	// Now close consumer safely
 	consumer.Close()
 
 	// Create new client to simulate full process restart
@@ -224,7 +271,7 @@ func TestProcessStatePersistence(t *testing.T) {
 
 	// Continue reading with new consumer
 	restartRead := int64(0)
-	phase3Ctx, phase3Cancel := context.WithTimeout(ctx, 10*time.Second)
+	phase3Ctx, phase3Cancel := context.WithTimeout(ctx2, 10*time.Second)
 	defer phase3Cancel()
 
 	for {
@@ -266,8 +313,8 @@ phase4:
 	t.Log("\n=== PHASE 4: Final verification ===")
 
 	// Stop writer
-	cancel()
-	<-writerDone
+	cancel2()
+	// Note: writer goroutine from phase 3 will exit on context cancellation
 	writerClient.Close()
 
 	// Do final reads to catch up
