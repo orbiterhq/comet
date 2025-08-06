@@ -552,28 +552,49 @@ type FileInfo struct {
 //	}
 //	defer client.Close() // Automatically releases process ID
 func NewMultiProcessClient(dataDir string, cfg ...CometConfig) (*Client, error) {
-	mpCfg := MultiProcessConfig()
-	config := mpCfg
-	if len(cfg) > 0 {
+	var config CometConfig
+
+	if len(cfg) > 0 && cfg[0].Concurrency.IsMultiProcess() {
+		// Use the provided multi-process config
 		config = cfg[0]
-		shmFile := config.Concurrency.SHMFile
-		config.Concurrency = mpCfg.Concurrency
-		if shmFile != "" {
-			config.Concurrency.SHMFile = shmFile
+	} else {
+		// Create a new multi-process config
+		var shmFile string
+		if len(cfg) > 0 && cfg[0].Concurrency.SHMFile != "" {
+			shmFile = cfg[0].Concurrency.SHMFile
 		}
-		if config.Concurrency.SHMFile == "" {
-			config.Concurrency.SHMFile = filepath.Join(os.TempDir(), "comet-worker-slots")
+
+		if shmFile == "" {
+			config = MultiProcessConfig()
+		} else {
+			config = MultiProcessConfig(shmFile)
+		}
+
+		// Copy other settings from provided config
+		if len(cfg) > 0 {
+			providedCfg := cfg[0]
+			config.Compression = providedCfg.Compression
+			config.Indexing = providedCfg.Indexing
+			config.Storage = providedCfg.Storage
+			config.Retention = providedCfg.Retention
+			config.Reader = providedCfg.Reader
+			config.Log = providedCfg.Log
 		}
 	}
+
 	client, err := NewClient(dataDir, config)
 	if err != nil {
 		// Release process ID on failure
-		ReleaseProcessID()
+		if config.Concurrency.SHMFile != "" {
+			ReleaseProcessID(config.Concurrency.SHMFile)
+		} else {
+			ReleaseProcessID()
+		}
 		return nil, err
 	}
 
 	// Mark that this client should auto-release the process ID
-	client.sharedMemoryFile = "" // Empty means use default file
+	client.sharedMemoryFile = config.Concurrency.SHMFile
 
 	return client, nil
 }

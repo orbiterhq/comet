@@ -8,6 +8,32 @@ import (
 	"testing"
 )
 
+func TestDebugMultiProcessConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	shmFile := filepath.Join(tempDir, "debug-slots")
+
+	// Clean up any existing file
+	os.Remove(shmFile)
+
+	// Try to get a process ID directly
+	id := GetProcessID(shmFile)
+	t.Logf("Direct GetProcessID returned: %d", id)
+
+	if id >= 0 {
+		// Release it
+		ReleaseProcessID(shmFile)
+		t.Log("Released process ID")
+	}
+
+	// Now try MultiProcessConfig
+	config := MultiProcessConfig(shmFile)
+	t.Logf("MultiProcessConfig returned ProcessID: %d, ProcessCount: %d",
+		config.Concurrency.ProcessID, config.Concurrency.ProcessCount)
+
+	// Clean up
+	ReleaseProcessID(shmFile)
+}
+
 func TestNewMultiProcessClient_Basic(t *testing.T) {
 	// Test basic creation and cleanup
 	tempDir := t.TempDir()
