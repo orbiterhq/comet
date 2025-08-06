@@ -137,7 +137,7 @@ func TestIndexRebuild(t *testing.T) {
 		t.Errorf("Expected to read 60 messages after rebuild, got %d", len(messages))
 	}
 
-	// Verify binary index was rebuilt
+	// Verify binary index was rebuilt with accurate positions
 	shard2.mu.RLock()
 	indexNodes := len(shard2.index.BinaryIndex.Nodes)
 	shard2.mu.RUnlock()

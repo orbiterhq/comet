@@ -2946,8 +2946,15 @@ func (s *Shard) doRebuildIndex(config CometConfig, shardDir string) error {
 			totalEntries += fileInfo.Entries
 			totalBytes = fileInfo.EndOffset
 
-			// Don't add binary index nodes during rebuild - we don't have accurate positions
-			// The binary index will be rebuilt as entries are read
+			// Rebuild binary index with accurate positions by scanning the file
+			fileIndex := len(newIndex.Files) - 1
+			if err := s.rebuildBinaryIndexForFile(fileIndex, fileInfo, newIndex); err != nil {
+				if s.logger != nil {
+					s.logger.Warn("Failed to rebuild binary index for file",
+						"file", fileInfo.Path,
+						"error", err)
+				}
+			}
 		} else if s.logger != nil {
 			s.logger.Warn("Scanned file with 0 entries",
 				"file", filePath,
@@ -2986,6 +2993,76 @@ func (s *Shard) doRebuildIndex(config CometConfig, shardDir string) error {
 			"files", len(newIndex.Files),
 			"entries", totalEntries,
 			"bytes", totalBytes)
+	}
+
+	return nil
+}
+
+// rebuildBinaryIndexForFile rebuilds binary index entries for a single file by scanning it
+func (s *Shard) rebuildBinaryIndexForFile(fileIndex int, fileInfo FileInfo, index *ShardIndex) error {
+	// Open the file for scanning
+	file, err := os.Open(fileInfo.Path)
+	if err != nil {
+		return fmt.Errorf("failed to open file for binary index rebuild: %w", err)
+	}
+	defer file.Close()
+
+	// Get file size
+	stat, err := file.Stat()
+	if err != nil {
+		return err
+	}
+
+	if stat.Size() == 0 {
+		// Empty file, nothing to index
+		return nil
+	}
+
+	// Read the entire file into memory for scanning
+	data := make([]byte, stat.Size())
+	if _, err := file.Read(data); err != nil {
+		return fmt.Errorf("failed to read file for scanning: %w", err)
+	}
+
+	// Scan through the file to find entry positions
+	offset := int64(0)
+	entryCount := int64(0)
+
+	for offset < int64(len(data)) {
+		// Check if we have enough data for a header
+		if offset+12 > int64(len(data)) {
+			break // Incomplete entry at end of file
+		}
+
+		// Read entry header
+		length := binary.LittleEndian.Uint32(data[offset : offset+4])
+
+		// Validate the length is reasonable
+		if length > 10*1024*1024 { // 10MB max entry size
+			break // Likely corrupted data
+		}
+
+		// Calculate entry number for this entry
+		entryNum := fileInfo.StartEntry + entryCount
+
+		// Add to binary index if this entry is at a boundary
+		if entryNum%int64(index.BinaryIndex.IndexInterval) == 0 {
+			pos := EntryPosition{
+				FileIndex:  fileIndex,
+				ByteOffset: offset,
+			}
+			index.BinaryIndex.AddIndexNode(entryNum, pos)
+		}
+
+		// Move to next entry
+		entrySize := 12 + int64(length) // header + data
+		offset += entrySize
+		entryCount++
+
+		// Safety check to prevent infinite loops
+		if offset > int64(len(data)) {
+			break
+		}
 	}
 
 	return nil
