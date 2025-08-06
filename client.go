@@ -194,7 +194,7 @@ func DefaultCometConfig() CometConfig {
 		},
 	}
 
-	if os.Getenv("FIBER_PREFORK_CHILD") == "1" {
+	if isFiberChild == envPreforkChildVal {
 		// We're in a Fiber worker - enable multi-process coordination
 		processID := GetProcessID() // Use default shared memory
 		if processID >= 0 {
