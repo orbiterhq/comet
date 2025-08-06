@@ -167,6 +167,7 @@ func DefaultCometConfig() CometConfig {
 			CheckpointTime:    2000,   // Checkpoint every 2 seconds
 			CheckpointEntries: 100000, // Checkpoint every 100k entries
 			FlushEntries:      50000,  // Flush every 50k entries (~5MB) - optimal for large batches
+			FlushInterval:     1000,   // Flush and make data visible every 1 second
 		},
 
 		// Concurrency - single-process mode by default
@@ -3439,18 +3440,62 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 		for {
 			select {
 			case <-ticker.C:
-				// Flush buffered writes
-				s.writeMu.Lock()
+				// Perform both data flush AND index update to make data visible to consumers
+				s.mu.Lock()
+
+				// Flush buffered writes first
 				if s.writer != nil {
+					s.writeMu.Lock()
 					if err := s.writer.Flush(); err != nil {
+						s.writeMu.Unlock()
+						s.mu.Unlock()
 						if s.logger != nil {
 							s.logger.Error("Periodic flush failed",
 								"shard", s.shardID,
 								"error", err)
 						}
+						continue
+					}
+					s.writeMu.Unlock()
+				}
+
+				// Critical: Update index to make flushed data visible to consumers
+				// This is what was missing - periodic flush wasn't updating the index!
+				oldCurrentEntry := s.index.CurrentEntryNumber
+				s.index.CurrentEntryNumber = s.nextEntryNumber
+
+				// Update offsets to reflect actual file state
+				if s.dataFile != nil {
+					if stat, err := s.dataFile.Stat(); err == nil {
+						actualSize := stat.Size()
+						s.index.CurrentWriteOffset = actualSize
+						s.pendingWriteOffset = actualSize
+
+						// Update current file metadata
+						if len(s.index.Files) > 0 {
+							current := &s.index.Files[len(s.index.Files)-1]
+							current.EndOffset = s.index.CurrentWriteOffset
+							current.EndTime = time.Now()
+							current.Entries = s.index.CurrentEntryNumber - current.StartEntry
+						}
 					}
 				}
-				s.writeMu.Unlock()
+
+				// Update memory-mapped state to notify other processes
+				s.updateMmapState()
+
+				s.mu.Unlock()
+
+				// Persist index if entries were made durable
+				if s.index.CurrentEntryNumber > oldCurrentEntry {
+					if err := s.persistIndex(); err != nil {
+						if s.logger != nil {
+							s.logger.Error("Periodic index persistence failed",
+								"shard", s.shardID,
+								"error", err)
+						}
+					}
+				}
 
 			case <-s.stopFlush:
 				// Shutdown requested
