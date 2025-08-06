@@ -3,6 +3,7 @@ package comet
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -259,5 +260,258 @@ func TestFlushIntervalConfigurationDetection(t *testing.T) {
 			// We can't easily test it without exposing internals, but this documents the behavior
 			_ = shard
 		})
+	}
+}
+
+// TestPeriodicFlushObservability verifies we can actually observe periodic flush behavior
+func TestPeriodicFlushObservability(t *testing.T) {
+	dataDir := t.TempDir()
+
+	// Use a very short flush interval for precise testing
+	config := DefaultCometConfig()
+	config.Storage.FlushInterval = 50 // 50ms for fast testing
+
+	client, err := NewClient(dataDir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	stream := "test:v1:shard:0000"
+
+	// Write data but don't sync
+	messages := [][]byte{[]byte("observable-test")}
+	_, err = client.Append(ctx, stream, messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	consumer := NewConsumer(client, ConsumerOptions{Group: "observability-test"})
+	defer consumer.Close()
+
+	// Verify data starts invisible
+	messages1, err := consumer.Read(ctx, []uint32{0}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages1) != 0 {
+		t.Fatal("Data should start invisible")
+	}
+	t.Log("✓ Data starts invisible (expected)")
+
+	// Get shard to observe state transitions
+	shard, err := client.getOrCreateShard(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Track state changes by polling rapidly
+	var observedFlush bool
+	start := time.Now()
+
+	for time.Since(start) < 200*time.Millisecond { // Poll for up to 200ms
+		// Check current state
+		shard.mu.RLock()
+		volatile := shard.nextEntryNumber
+		durable := shard.index.CurrentEntryNumber
+		shard.mu.RUnlock()
+
+		// If index was updated, we caught the periodic flush
+		if durable > 0 {
+			observedFlush = true
+			t.Logf("✓ OBSERVED PERIODIC FLUSH at %v", time.Since(start))
+			t.Logf("  Volatile: %d -> Durable: %d", volatile, durable)
+			break
+		}
+
+		time.Sleep(5 * time.Millisecond) // Poll every 5ms
+	}
+
+	if !observedFlush {
+		t.Fatal("Never observed periodic flush updating index within 200ms")
+	}
+
+	// Verify data is now visible to consumer
+	messages2, err := consumer.Read(ctx, []uint32{0}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(messages2) != 1 {
+		t.Errorf("Expected 1 message after observed flush, got %d", len(messages2))
+	} else {
+		t.Log("✓ Data became visible immediately after periodic flush")
+	}
+}
+
+// TestPeriodicFlushTimingPrecision measures the actual flush timing
+func TestPeriodicFlushTimingPrecision(t *testing.T) {
+	dataDir := t.TempDir()
+
+	config := DefaultCometConfig()
+	config.Storage.FlushInterval = 100 // 100ms interval
+
+	client, err := NewClient(dataDir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	stream := "test:v1:shard:0000"
+
+	shard, err := client.getOrCreateShard(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Write multiple batches and measure when they become visible
+	var flushTimes []time.Duration
+	baseTime := time.Now()
+
+	for i := 0; i < 3; i++ {
+		// Write a batch
+		message := fmt.Sprintf("timing-test-%d", i)
+		_, err = client.Append(ctx, stream, [][]byte{[]byte(message)})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		writeTime := time.Since(baseTime)
+		t.Logf("Wrote batch %d at %v", i, writeTime)
+
+		// Poll until this batch becomes visible
+		var flushTime time.Duration
+		for {
+			shard.mu.RLock()
+			durableEntries := shard.index.CurrentEntryNumber
+			shard.mu.RUnlock()
+
+			if durableEntries > int64(i) {
+				flushTime = time.Since(baseTime)
+				t.Logf("Batch %d became visible at %v (delay: %v)",
+					i, flushTime, flushTime-writeTime)
+				flushTimes = append(flushTimes, flushTime-writeTime)
+				break
+			}
+
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		// Wait before next batch to avoid overlap
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	// Analyze timing precision
+	t.Log("Flush timing analysis:")
+	for i, delay := range flushTimes {
+		t.Logf("  Batch %d: %v delay", i, delay)
+
+		// Should be roughly 100ms ± some tolerance
+		// Note: timing can vary due to scheduling, so allow wide tolerance
+		if delay < 25*time.Millisecond || delay > 250*time.Millisecond {
+			t.Errorf("Batch %d flush delay %v outside expected range (25-250ms)", i, delay)
+		}
+	}
+
+	t.Log("✓ Periodic flush timing within expected bounds")
+}
+
+// TestConcurrentWritesDuringPeriodicFlush tests behavior with concurrent writes
+func TestConcurrentWritesDuringPeriodicFlush(t *testing.T) {
+	dataDir := t.TempDir()
+
+	config := DefaultCometConfig()
+	config.Storage.FlushInterval = 200 // 200ms to give time for concurrent writes
+
+	client, err := NewClient(dataDir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	stream := "test:v1:shard:0000"
+
+	// Start concurrent writer
+	var totalWrites int64
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(10 * time.Millisecond) // Write every 10ms
+		defer ticker.Stop()
+
+		for i := 0; i < 30; i++ { // Write for ~300ms
+			message := fmt.Sprintf("concurrent-%d", i)
+			client.Append(ctx, stream, [][]byte{[]byte(message)})
+			atomic.AddInt64(&totalWrites, 1)
+			<-ticker.C
+		}
+	}()
+
+	// Monitor visibility
+	consumer := NewConsumer(client, ConsumerOptions{Group: "concurrent-test"})
+	defer consumer.Close()
+
+	var visibilityEvents []struct {
+		time    time.Duration
+		visible int64
+		total   int64
+	}
+
+	start := time.Now()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			goto analyze
+		case <-ticker.C:
+			messages, _ := consumer.Read(ctx, []uint32{0}, 100)
+			currentTotal := atomic.LoadInt64(&totalWrites)
+
+			event := struct {
+				time    time.Duration
+				visible int64
+				total   int64
+			}{
+				time:    time.Since(start),
+				visible: int64(len(messages)),
+				total:   currentTotal,
+			}
+			visibilityEvents = append(visibilityEvents, event)
+
+			t.Logf("At %v: %d/%d messages visible",
+				event.time, event.visible, event.total)
+		}
+	}
+
+analyze:
+	// Final check
+	finalMessages, err := consumer.Read(ctx, []uint32{0}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	finalWrites := atomic.LoadInt64(&totalWrites)
+	t.Logf("Final: %d messages visible out of %d written",
+		len(finalMessages), finalWrites)
+
+	// Should see periodic visibility increases
+	var hasProgressiveVisibility bool
+	for i := 1; i < len(visibilityEvents); i++ {
+		if visibilityEvents[i].visible > visibilityEvents[i-1].visible {
+			hasProgressiveVisibility = true
+			break
+		}
+	}
+
+	if !hasProgressiveVisibility {
+		t.Error("Expected to see progressive visibility increases during concurrent writes")
+	} else {
+		t.Log("✓ Observed progressive visibility during concurrent writes")
 	}
 }
