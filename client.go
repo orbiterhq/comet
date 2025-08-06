@@ -3484,10 +3484,13 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 				// Update memory-mapped state to notify other processes
 				s.updateMmapState()
 
+				// Capture the current entry count while holding the lock to avoid race conditions
+				currentEntryNumber := s.index.CurrentEntryNumber
+
 				s.mu.Unlock()
 
 				// Persist index if entries were made durable
-				if s.index.CurrentEntryNumber > oldCurrentEntry {
+				if currentEntryNumber > oldCurrentEntry {
 					if err := s.persistIndex(); err != nil {
 						if s.logger != nil {
 							s.logger.Error("Periodic index persistence failed",
