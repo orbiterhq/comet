@@ -27,8 +27,8 @@ func TestConsumerContinuousStream(t *testing.T) {
 	consumer := NewConsumer(client, ConsumerOptions{Group: "continuous-test"})
 	defer consumer.Close()
 
-	// Create a context that will cancel after 20 seconds
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// Create a context that will cancel after 10 seconds
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	stream := "test:v1:shard:0000"
