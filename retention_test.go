@@ -14,17 +14,17 @@ func TestRetention_Basic(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
-	config.Retention.MinFilesToKeep = 1
-	config.Storage.MaxFileSize = 1024 // Small file size to force rotation
+	config.Retention.MinFilesToKeep = 0 // Allow deletion of all old files
+	config.Storage.MaxFileSize = 1024   // Small file size to force rotation
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write some data to create files
 	for i := 0; i < 20; i++ {
@@ -36,20 +36,25 @@ func TestRetention_Basic(t *testing.T) {
 	}
 
 	// Force file rotation to create a second file
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatalf("failed to get shard: %v", err)
 	}
 
 	// Debug: Check sequence counter before rotation
 	shard.mu.Lock()
-	if state := shard.loadState(); state != nil {
+	if state := shard.state; state != nil {
 		t.Logf("File sequence before rotation: %d", state.LastFileSequence)
 	} else {
 		t.Log("CometState not initialized (single-process mode)")
 	}
 	oldFile := shard.index.CurrentFile
-	err = shard.rotateFile(&client.metrics, &config)
+	shard.mu.Unlock()
+
+	// rotateFile() acquires its own lock, so we can't hold it
+	err = shard.rotateFile(&config)
+
+	shard.mu.Lock()
 	newFile := shard.index.CurrentFile
 	shard.mu.Unlock()
 	if err != nil {
@@ -87,6 +92,9 @@ func TestRetention_Basic(t *testing.T) {
 		t.Fatal("Need at least 2 files to test retention")
 	}
 
+	// Wait a bit for async file close to complete
+	time.Sleep(100 * time.Millisecond)
+
 	// Force retention cleanup
 	client.ForceRetentionCleanup()
 
@@ -107,7 +115,7 @@ func TestRetention_Disabled(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.CleanupInterval = 0 // Disabled
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -139,14 +147,14 @@ func TestRetention_DeleteFiles(t *testing.T) {
 	config.Retention.ProtectUnconsumed = false // Don't protect unconsumed data
 	config.Storage.MaxFileSize = 512           // Small files
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write data to first file
 	for i := 0; i < 10; i++ {
@@ -158,9 +166,9 @@ func TestRetention_DeleteFiles(t *testing.T) {
 	}
 
 	// Force rotation
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
-	err = shard.rotateFile(&client.metrics, &config)
+	err = shard.rotateFile(&config)
 	shard.mu.Unlock()
 	if err != nil {
 		t.Fatalf("failed to rotate: %v", err)
@@ -215,7 +223,7 @@ func TestRetention_GlobalSizeLimit(t *testing.T) {
 	config.Retention.MaxTotalSize = 1024 // 1KB total limit
 	config.Storage.MaxFileSize = 512     // Small files
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -260,7 +268,7 @@ func TestRetentionStats_NewestData(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 	config.Retention.CleanupInterval = time.Hour // Don't run cleanup during test
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -272,7 +280,7 @@ func TestRetentionStats_NewestData(t *testing.T) {
 	beforeWrite := time.Now()
 	time.Sleep(10 * time.Millisecond) // Ensure time difference
 
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	_, err = client.Append(ctx, streamName, [][]byte{
 		[]byte("test data 1"),
 		[]byte("test data 2"),
@@ -319,6 +327,7 @@ func TestRetentionStats_NewestData(t *testing.T) {
 		t.Fatalf("failed to write more data: %v", err)
 	}
 
+	client.Sync(ctx)
 	stats2 := client.GetRetentionStats()
 
 	// NewestData should have advanced

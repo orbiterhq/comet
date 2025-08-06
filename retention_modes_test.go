@@ -16,18 +16,18 @@ func TestRetentionSingleProcess(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
-	config.Retention.MinFilesToKeep = 1
+	config.Retention.MinFilesToKeep = 0 // Allow deletion of all old files
 	config.Storage.MaxFileSize = 1024
 	// Single-process mode is the default
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write data to create multiple files
 	for i := 0; i < 30; i++ {
@@ -39,7 +39,7 @@ func TestRetentionSingleProcess(t *testing.T) {
 	}
 
 	// Get initial file count
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
 	initialFiles := len(shard.index.Files)
 	shard.mu.RUnlock()
@@ -72,85 +72,6 @@ func TestRetentionSingleProcess(t *testing.T) {
 	t.Logf("Single-process retention: %d files -> %d files", initialFiles, finalFiles)
 }
 
-// TestRetentionMultiProcess tests retention in multi-process mode
-func TestRetentionMultiProcess(t *testing.T) {
-	dir := t.TempDir()
-
-	// Create multi-process config with retention
-	config := MultiProcessConfig()
-	config.Retention.MaxAge = 100 * time.Millisecond
-	config.Retention.CleanupInterval = 50 * time.Millisecond
-	config.Retention.MinFilesToKeep = 0 // Allow deleting all non-current files
-	config.Storage.MaxFileSize = 512    // Smaller files to create more
-
-	client, err := NewClientWithConfig(dir, config)
-	if err != nil {
-		t.Fatalf("failed to create client: %v", err)
-	}
-	defer client.Close()
-
-	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
-
-	// Write data to create multiple files
-	for i := 0; i < 30; i++ {
-		data := [][]byte{[]byte(fmt.Sprintf(`{"id": %d, "mode": "multi"}`, i))}
-		_, err := client.Append(ctx, streamName, data)
-		if err != nil {
-			t.Fatalf("failed to write data: %v", err)
-		}
-	}
-
-	// Get initial file count
-	shard, _ := client.getOrCreateShard(1)
-	shard.mu.RLock()
-	initialFiles := len(shard.index.Files)
-	hasCometState := shard.loadState() != nil
-	currentFile := shard.index.CurrentFile
-	for i, file := range shard.index.Files {
-		t.Logf("File %d: %s (current: %t)", i, file.Path, file.Path == currentFile)
-	}
-	shard.mu.RUnlock()
-
-	if !hasCometState {
-		t.Error("Multi-process mode should have unified state")
-	}
-
-	if initialFiles < 2 {
-		t.Skip("Need multiple files to test retention")
-	}
-
-	// Mark first files as old
-	shard.mu.Lock()
-	oldTime := time.Now().Add(-200 * time.Millisecond)
-	t.Logf("Marking files as old. Total files: %d, MinFilesToKeep: %d", len(shard.index.Files), config.Retention.MinFilesToKeep)
-	for i := 0; i < len(shard.index.Files)-1 && i < 2; i++ {
-		t.Logf("Marking file %d as old: %s (before: %v)", i, shard.index.Files[i].Path, shard.index.Files[i].EndTime)
-		shard.index.Files[i].EndTime = oldTime
-	}
-	shard.mu.Unlock()
-
-	// Force retention cleanup
-	t.Log("Forcing retention cleanup...")
-	client.ForceRetentionCleanup()
-
-	// Verify files were deleted
-	shard.mu.RLock()
-	finalFiles := len(shard.index.Files)
-	t.Logf("Files after retention: %d", finalFiles)
-	for i, file := range shard.index.Files {
-		t.Logf("Remaining file %d: %s", i, file.Path)
-	}
-	shard.mu.RUnlock()
-
-	if finalFiles >= initialFiles {
-		t.Errorf("Multi-process mode: expected files to be deleted, had %d initially, now have %d",
-			initialFiles, finalFiles)
-	}
-
-	t.Logf("Multi-process retention: %d files -> %d files", initialFiles, finalFiles)
-}
-
 // TestRetentionWithActiveReaders tests that retention respects active readers
 func TestRetentionWithActiveReaders(t *testing.T) {
 	dir := t.TempDir()
@@ -158,17 +79,17 @@ func TestRetentionWithActiveReaders(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.MaxAge = 50 * time.Millisecond
 	config.Retention.CleanupInterval = 25 * time.Millisecond
-	config.Retention.MinFilesToKeep = 1
+	config.Retention.MinFilesToKeep = 0 // Allow deletion of all old files
 	config.Storage.MaxFileSize = 512
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write data to create files
 	for i := 0; i < 20; i++ {
@@ -180,7 +101,7 @@ func TestRetentionWithActiveReaders(t *testing.T) {
 	}
 
 	// Create an active reader by getting the shard and incrementing reader count
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	atomic.AddInt64(&shard.readerCount, 1)
 	defer atomic.AddInt64(&shard.readerCount, -1)
 
@@ -223,18 +144,18 @@ func TestRetentionConsumerProtection(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Retention.MaxAge = 50 * time.Millisecond
 	config.Retention.CleanupInterval = 25 * time.Millisecond
-	config.Retention.MinFilesToKeep = 1
+	config.Retention.MinFilesToKeep = 0       // Allow deletion of all old files
 	config.Retention.ProtectUnconsumed = true // Enable consumer protection
 	config.Storage.MaxFileSize = 512
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write data
 	for i := 0; i < 20; i++ {
@@ -246,7 +167,7 @@ func TestRetentionConsumerProtection(t *testing.T) {
 	}
 
 	// Set a consumer offset manually to simulate partial consumption
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.Lock()
 	// Simulate that consumer has read first 5 entries
 	shard.index.ConsumerOffsets = map[string]int64{

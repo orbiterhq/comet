@@ -9,7 +9,7 @@ import (
 func TestStructAlignment(t *testing.T) {
 	tests := []struct {
 		name string
-		obj  interface{}
+		obj  any
 	}{
 		// Core structs
 		{"MessageID", MessageID{}},
@@ -29,7 +29,6 @@ func TestStructAlignment(t *testing.T) {
 		// Frequently allocated structs
 		{"AtomicSlice", AtomicSlice{}},
 		{"CometState", CometState{}},
-		{"MmapWriter", MmapWriter{}},
 		{"EntryIndexNode", EntryIndexNode{}},
 		{"BinarySearchableIndex", BinarySearchableIndex{}},
 		// Hot path structs

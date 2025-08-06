@@ -13,22 +13,22 @@ import (
 func TestEnsureWriterRecovery(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false // Test non-mmap path
+	config.Concurrency.ProcessCount = 0 // Test non-mmap path
 
 	// Create initial client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestEnsureWriterRecovery(t *testing.T) {
 	}
 
 	// Now call ensureWriter to recover
-	err = shard.ensureWriter(&config)
+	err = shard.ensureWriter()
 	shard.mu.Unlock()
 
 	if err != nil {
@@ -53,7 +53,7 @@ func TestEnsureWriterRecovery(t *testing.T) {
 	}
 
 	// Verify we can write after recovery
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after recovery")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after recovery")})
 	if err != nil {
 		t.Fatalf("Write after recovery failed: %v", err)
 	}
@@ -64,50 +64,50 @@ func TestEnsureWriterRecovery(t *testing.T) {
 // TestInitializeMmapWriterRecovery tests the initializeMmapWriter recovery function
 func TestInitializeMmapWriterRecovery(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig() // Use multi-process mode to test mmap path
+	config := DeprecatedMultiProcessConfig(0, 2) // Use multi-process mode to test mmap path
 
 	// Create initial client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Simulate a corrupted state by closing the mmap writer
+	// Simulate a corrupted state by closing the data file
 	shard.mu.Lock()
-	if shard.mmapWriter != nil {
-		shard.mmapWriter.Close()
-		shard.mmapWriter = nil
+	if shard.dataFile != nil {
+		shard.dataFile.Close()
+		shard.dataFile = nil
 	}
 
 	// Make sure we have state initialized before recovery
-	if shard.loadState() == nil {
+	if shard.state == nil {
 		shard.mu.Unlock()
 		t.Skip("State not available in test environment")
 		return
 	}
 
-	// Now call initializeMmapWriter to recover
-	err = shard.initializeMmapWriter(&config)
+	// Now recover by reopening the data file
+	err = shard.openDataFileWithConfig(filepath.Join(dir, "shard-0000"))
 	shard.mu.Unlock()
 
 	if err != nil {
-		t.Fatalf("initializeMmapWriter failed: %v", err)
+		t.Fatalf("openDataFileWithConfig failed: %v", err)
 	}
 
 	// Verify we can write after recovery
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after recovery")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after recovery")})
 	if err != nil {
 		t.Fatalf("Write after recovery failed: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestScanDataFilesForEntryFallback(t *testing.T) {
 	config := DefaultCometConfig()
 
 	// Create client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestScanDataFilesForEntryFallback(t *testing.T) {
 
 	// Write multiple entries to ensure we have something to scan
 	for i := 0; i < 10; i++ {
-		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
+		_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +141,7 @@ func TestScanDataFilesForEntryFallback(t *testing.T) {
 	defer consumer.Close()
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,25 +184,27 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 		config CometConfig
 	}{
 		{"SingleProcess", DefaultCometConfig()},
-		{"MultiProcess", MultiProcessConfig()},
+		{"MultiProcess", DeprecatedMultiProcessConfig(0, 2)},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create client and write data
-			client, err := NewClientWithConfig(dir+"/"+tc.name, tc.config)
+			client, err := NewClient(dir+"/"+tc.name, tc.config)
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			ctx := context.Background()
-			_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("before deletion")})
+			_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("before deletion")})
 			if err != nil {
 				t.Fatal(err)
 			}
 
+			client.Sync(ctx)
+
 			// Get the shard
-			shard, err := client.getOrCreateShard(1)
+			shard, err := client.getOrCreateShard(0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -219,16 +221,21 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 			}
 
 			// Recreate client - this should trigger recovery
-			client2, err := NewClientWithConfig(dir+"/"+tc.name, tc.config)
+			client2, err := NewClient(dir+"/"+tc.name, tc.config)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer client2.Close()
 
 			// Try to write - this should trigger handleMissingShardDirectory and recovery
-			_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after deletion")})
+			_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after deletion")})
 			if err != nil {
 				t.Fatalf("Write after directory deletion failed: %v", err)
+			}
+
+			// Sync to ensure data is written to disk
+			if err := client2.Sync(ctx); err != nil {
+				t.Fatal(err)
 			}
 
 			// Verify the shard directory was recreated
@@ -240,7 +247,7 @@ func TestHandleMissingShardDirectoryWithRecovery(t *testing.T) {
 			consumer := NewConsumer(client2, ConsumerOptions{Group: "test"})
 			defer consumer.Close()
 
-			messages, err := consumer.Read(ctx, []uint32{1}, 10)
+			messages, err := consumer.Read(ctx, []uint32{0}, 10)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -273,7 +280,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 	config := DefaultCometConfig()
 
 	// Create client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +289,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 
 	// Write some entries
 	for i := 0; i < 5; i++ {
-		_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
+		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -292,7 +299,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 	client.Sync(ctx)
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +318,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 	}
 
 	// Create a new client - this should handle the corruption
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		// Recovery might fail, but shouldn't panic
 		t.Logf("Client creation after corruption failed (expected): %v", err)
@@ -320,7 +327,7 @@ func TestRecoveryWithCorruptedDataFile(t *testing.T) {
 	defer client2.Close()
 
 	// Try to write new data
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after corruption")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after corruption")})
 	if err != nil {
 		t.Logf("Write after corruption failed (might be expected): %v", err)
 	}
@@ -333,11 +340,11 @@ func TestConcurrentRecovery(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Retention.CleanupInterval = 50 * time.Millisecond
 
 	// Create initial client
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,13 +353,13 @@ func TestConcurrentRecovery(t *testing.T) {
 	ctx := context.Background()
 
 	// Write initial data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("initial")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("initial")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Get shard directory
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shardDir := filepath.Dir(shard.indexPath)
 
 	// Close the client before deleting directory to avoid races
@@ -364,14 +371,14 @@ func TestConcurrentRecovery(t *testing.T) {
 	}
 
 	// Create a new client - this should trigger recovery
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client2.Close()
 
 	// Verify we can write after recovery
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after recovery")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after recovery")})
 	if err != nil {
 		t.Fatalf("Write after recovery failed: %v", err)
 	}

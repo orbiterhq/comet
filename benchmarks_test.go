@@ -19,6 +19,11 @@ import (
 // Write Benchmarks
 // ============================================================================
 
+// ShardStreamName generates a stream name for the given prefix, version, and shard ID
+func ShardStreamName(prefix, version string, shardID uint32) string {
+	return fmt.Sprintf("%s:%s:shard:%04d", prefix, version, shardID)
+}
+
 // BenchmarkWrite_SingleEntry measures single entry write performance
 func BenchmarkWrite_SingleEntry(b *testing.B) {
 	dir := b.TempDir()
@@ -29,7 +34,7 @@ func BenchmarkWrite_SingleEntry(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Typical log entry (~100 bytes)
 	entry := []byte(`{"level":"INFO","timestamp":"2024-01-01T10:00:00Z","msg":"Request processed","request_id":"abc123","duration_ms":45}`)
@@ -63,7 +68,7 @@ func BenchmarkWrite_SmallBatch(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Batch of 10 typical log entries
 	batch := make([][]byte, 10)
@@ -90,14 +95,16 @@ func BenchmarkWrite_SmallBatch(b *testing.B) {
 // BenchmarkWrite_LargeBatch measures large batch performance (100 entries)
 func BenchmarkWrite_LargeBatch(b *testing.B) {
 	dir := b.TempDir()
-	client, err := NewClient(dir)
+	// Use HighThroughputConfig for large batches to avoid checkpoint on every batch
+	config := HighThroughputConfig()
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Batch of 100 entries
 	batch := make([][]byte, 100)
@@ -128,14 +135,16 @@ func BenchmarkWrite_LargeBatch(b *testing.B) {
 // BenchmarkWrite_HugeBatch measures very large batch performance (1000 entries)
 func BenchmarkWrite_HugeBatch(b *testing.B) {
 	dir := b.TempDir()
-	client, err := NewClient(dir)
+	// Use HighThroughputConfig to avoid triggering checkpoint on 1000 entry batch
+	config := HighThroughputConfig()
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Batch of 1000 entries for maximum throughput
 	batch := make([][]byte, 1000)
@@ -169,14 +178,16 @@ func BenchmarkWrite_HugeBatch(b *testing.B) {
 // BenchmarkWrite_MegaBatch measures extremely large batch performance (10000 entries)
 func BenchmarkWrite_MegaBatch(b *testing.B) {
 	dir := b.TempDir()
-	client, err := NewClient(dir)
+	// Use HighThroughputConfig to handle 10k entry batch efficiently
+	config := HighThroughputConfig()
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Batch of 10,000 entries for extreme throughput testing
 	batch := make([][]byte, 10000)
@@ -215,14 +226,14 @@ func BenchmarkWrite_CompressibleEntries(b *testing.B) {
 	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 256 // Compress logs larger than 256 bytes
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Create realistic JSON logs that might come from a web service
 	logTemplates := []string{
@@ -324,15 +335,19 @@ func BenchmarkWrite_CompressionComparison(b *testing.B) {
 			dir := b.TempDir()
 			config := DefaultCometConfig()
 			config.Compression.MinCompressSize = scenario.compressionSize
+			// For batch100, increase checkpoint threshold to avoid triggering
+			if scenario.batchSize >= 100 {
+				config.Storage.CheckpointEntries = 10000
+			}
 
-			client, err := NewClientWithConfig(dir, config)
+			client, err := NewClient(dir, config)
 			if err != nil {
 				b.Fatalf("failed to create client: %v", err)
 			}
 			defer client.Close()
 
 			ctx := context.Background()
-			streamName := "events:v1:shard:0001"
+			streamName := "events:v1:shard:0000"
 
 			// Prepare batch
 			batch := make([][]byte, scenario.batchSize)
@@ -377,7 +392,7 @@ func BenchmarkWrite_Concurrent(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Typical log entry
 	logEntry := []byte(`{"level":"INFO","msg":"Request processed","request_id":"abc123","duration_ms":45}`)
@@ -445,7 +460,7 @@ func BenchmarkWrite_ConcurrentBatched(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Create batch of 5 entries (realistic batch size for logging)
 	batch := make([][]byte, 5)
@@ -481,7 +496,7 @@ func BenchmarkWrite_ConcurrentReadWrite(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	logEntry := []byte(`{"level":"INFO","msg":"Mixed workload","request_id":"mixed123","duration_ms":15}`)
 
 	// Pre-populate some data for readers
@@ -511,7 +526,7 @@ func BenchmarkWrite_ConcurrentReadWrite(b *testing.B) {
 			if writeCount%10 == 0 {
 				// Read operation - just check that we can read existing data
 				// Get shard directly for reading without consumer offset complexity
-				shard, err := client.getOrCreateShard(1)
+				shard, err := client.getOrCreateShard(0)
 				if err != nil {
 					b.Errorf("failed to get shard: %v", err)
 					continue
@@ -557,14 +572,16 @@ func BenchmarkWrite_ConcurrentReadWrite(b *testing.B) {
 // BenchmarkConsumer_SequentialRead measures consumer sequential read performance
 func BenchmarkConsumer_SequentialRead(b *testing.B) {
 	dir := b.TempDir()
-	client, err := NewClient(dir)
+	// Use HighThroughputConfig since we're writing 1000 entries in setup
+	config := HighThroughputConfig()
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Pre-populate with test data
 	entries := make([][]byte, 1000)
@@ -601,7 +618,7 @@ func BenchmarkConsumer_SequentialRead(b *testing.B) {
 		// Read all entries
 		var totalRead int
 		for totalRead < 1000 {
-			messages, err := consumer.Read(ctx, []uint32{1}, 50)
+			messages, err := consumer.Read(ctx, []uint32{0}, 50)
 			if err != nil {
 				b.Fatalf("failed to read entries: %v", err)
 			}
@@ -635,7 +652,7 @@ func BenchmarkConsumer_RandomAccess(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Pre-populate with test data
 	entries := make([][]byte, 500)
@@ -671,7 +688,7 @@ func BenchmarkConsumer_RandomAccess(b *testing.B) {
 		}
 
 		// Read a small batch from that position
-		messages, err := consumer.Read(ctx, []uint32{1}, 5)
+		messages, err := consumer.Read(ctx, []uint32{0}, 5)
 		if err != nil {
 			b.Fatalf("failed to read entries: %v", err)
 		}
@@ -695,7 +712,7 @@ func BenchmarkConsumer_LagMeasurement(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Pre-populate with test data
 	entries := make([][]byte, 1000)
@@ -714,8 +731,14 @@ func BenchmarkConsumer_LagMeasurement(b *testing.B) {
 	})
 	defer consumer.Close()
 
+	// Parse shard ID from stream name
+	parsedShardID, err := parseShardFromStream(streamName)
+	if err != nil {
+		b.Fatalf("failed to parse shard ID: %v", err)
+	}
+
 	// Set consumer behind by 500 entries
-	err = consumer.ResetOffset(ctx, 1, 500)
+	err = consumer.ResetOffset(ctx, parsedShardID, 500)
 	if err != nil {
 		b.Fatalf("failed to set initial offset: %v", err)
 	}
@@ -725,7 +748,7 @@ func BenchmarkConsumer_LagMeasurement(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// Measure lag
-		lag, err := consumer.GetLag(ctx, 1)
+		lag, err := consumer.GetLag(ctx, parsedShardID)
 		if err != nil {
 			b.Fatalf("failed to get lag: %v", err)
 		}
@@ -749,7 +772,7 @@ func BenchmarkConsumer_MultiConsumer(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Pre-populate with test data
 	entries := make([][]byte, 1000)
@@ -785,7 +808,7 @@ func BenchmarkConsumer_MultiConsumer(b *testing.B) {
 		consumerIdx := i % 3
 		consumer := consumers[consumerIdx]
 
-		messages, err := consumer.Read(ctx, []uint32{1}, 10)
+		messages, err := consumer.Read(ctx, []uint32{0}, 10)
 		if err != nil {
 			b.Fatalf("failed to read entries: %v", err)
 		}
@@ -806,16 +829,16 @@ func BenchmarkConsumer_MultiConsumer(b *testing.B) {
 func BenchmarkSimpleConsumerRead(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0 // Single-process mode
 	config.Indexing.BoundaryInterval = 100
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "bench:v1:shard:0001"
+	streamName := "bench:v1:shard:0000"
 
 	// Pre-populate with entries
 	const numEntries = 1000
@@ -845,7 +868,7 @@ func BenchmarkSimpleConsumerRead(b *testing.B) {
 	const batchSize = 100
 	for i := 0; i < b.N; i++ {
 		// Read a batch
-		messages, err := consumer.Read(ctx, []uint32{1}, batchSize)
+		messages, err := consumer.Read(ctx, []uint32{0}, batchSize)
 		if err != nil {
 			b.Fatalf("failed to read entries: %v", err)
 		}
@@ -881,8 +904,8 @@ func BenchmarkSimpleConsumerRead(b *testing.B) {
 func BenchmarkConsumerAck(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
-	client, err := NewClientWithConfig(dir, config)
+	config.Concurrency.ProcessCount = 0 // Single-process mode
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -961,7 +984,7 @@ func BenchmarkACKPerformance(b *testing.B) {
 		defer client.Close()
 
 		// Add test data
-		streamName := "test:v1:shard:0001"
+		streamName := "test:v1:shard:0000"
 		entries := make([][]byte, 1000)
 		for i := range entries {
 			entries[i] = []byte(fmt.Sprintf(`{"id":%d}`, i))
@@ -985,7 +1008,7 @@ func BenchmarkACKPerformance(b *testing.B) {
 		b.StopTimer()
 
 		// Report index size
-		shard, _ := client.getOrCreateShard(1)
+		shard, _ := client.getOrCreateShard(0)
 		shard.mu.RLock()
 		indexCopy := shard.cloneIndex()
 		shard.mu.RUnlock()
@@ -1026,7 +1049,7 @@ func BenchmarkBinarySearchableIndex_DirectOperation(b *testing.B) {
 	// Benchmark lookups
 	for i := 0; i < b.N; i++ {
 		entryNum := int64(i % (numNodes * 100))
-		_, _ = bi.FindEntry(entryNum)
+		_, _ = bi.FindEntryPosition(entryNum)
 	}
 
 	b.ReportMetric(float64(numNodes), "index_nodes")
@@ -1230,7 +1253,7 @@ func BenchmarkAllocation_DetailedTracking(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Different entry sizes to test allocation behavior
 	sizes := []int{50, 100, 500, 1000, 2000} // bytes per entry
@@ -1289,7 +1312,7 @@ func BenchmarkAllocation_BatchSizeImpact(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Standard log entry
 	logEntry := []byte(`{"level":"INFO","msg":"Test log entry","request_id":"test123","duration_ms":42}`)
@@ -1345,14 +1368,14 @@ func BenchmarkAllocation_CompressionImpact(b *testing.B) {
 		cfg.Indexing.BoundaryInterval = 100
 		cfg.Storage.MaxFileSize = 1 << 30
 		cfg.Storage.CheckpointTime = 2000
-		client, err := NewClientWithConfig(dir, cfg)
+		client, err := NewClient(dir, cfg)
 		if err != nil {
 			b.Fatalf("failed to create client: %v", err)
 		}
 
 		b.Run(config.name, func(b *testing.B) {
 			ctx := context.Background()
-			streamName := "events:v1:shard:0001"
+			streamName := "events:v1:shard:0000"
 
 			// Create large compressible entry (3KB)
 			largeEntry := []byte(fmt.Sprintf(`{"level":"INFO","msg":"Large compressible entry","data":"%s"}`,
@@ -1392,7 +1415,7 @@ func BenchmarkAllocation_GarbageCollection(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Standard log entry
 	logEntry := []byte(`{"level":"INFO","msg":"GC test entry","request_id":"gc123","duration_ms":15}`)
@@ -1444,7 +1467,7 @@ func BenchmarkAllocation_MemoryLeaks(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	logEntry := []byte(`{"level":"INFO","msg":"Memory leak test","request_id":"leak123"}`)
 
@@ -1502,8 +1525,8 @@ func BenchmarkAllocation_MemoryLeaks(b *testing.B) {
 func BenchmarkFileLocking_Enabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = true // Explicitly enable for clarity
-	client, err := NewClientWithConfig(dir, config)
+	config.Concurrency.ProcessCount = 2 // Multi-process mode // Explicitly enable for clarity
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1533,15 +1556,15 @@ func BenchmarkFileLocking_Enabled(b *testing.B) {
 func BenchmarkFileLocking_Disabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false // Disable file locking
-	client, err := NewClientWithConfig(dir, config)
+	config.Concurrency.ProcessCount = 0 // Single-process mode // Disable file locking
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "benchmark:v1:shard:0001"
+	streamName := "benchmark:v1:shard:0000"
 
 	// Pre-generate test data
 	data := make([][]byte, b.N)
@@ -1564,8 +1587,8 @@ func BenchmarkFileLocking_Disabled(b *testing.B) {
 func BenchmarkFileLocking_ConcurrentEnabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = true
-	client, err := NewClientWithConfig(dir, config)
+	config.Concurrency.ProcessCount = 2 // Multi-process mode
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1604,8 +1627,8 @@ func BenchmarkFileLocking_ConcurrentEnabled(b *testing.B) {
 func BenchmarkFileLocking_ConcurrentDisabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
-	client, err := NewClientWithConfig(dir, config)
+	config.Concurrency.ProcessCount = 0 // Single-process mode
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1644,8 +1667,8 @@ func BenchmarkFileLocking_ConcurrentDisabled(b *testing.B) {
 func BenchmarkFileLocking_BatchWrites_Enabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = true
-	client, err := NewClientWithConfig(dir, config)
+	config.Concurrency.ProcessCount = 2 // Multi-process mode
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1682,8 +1705,8 @@ func BenchmarkFileLocking_BatchWrites_Enabled(b *testing.B) {
 func BenchmarkFileLocking_BatchWrites_Disabled(b *testing.B) {
 	dir := b.TempDir()
 	config := DefaultCometConfig()
-	config.Concurrency.EnableMultiProcessMode = false
-	client, err := NewClientWithConfig(dir, config)
+	config.Concurrency.ProcessCount = 0 // Single-process mode
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatalf("failed to create client: %v", err)
 	}
@@ -1725,7 +1748,7 @@ func BenchmarkMultiWriter_FileLocking(b *testing.B) {
 	dir := b.TempDir()
 
 	// Create lock file
-	lockPath := fmt.Sprintf("%s/shard-0001.lock", dir)
+	lockPath := fmt.Sprintf("%s/shard-0000.lock", dir)
 	lockFile, err := os.Create(lockPath)
 	if err != nil {
 		b.Fatalf("failed to create lock file: %v", err)
@@ -1739,7 +1762,7 @@ func BenchmarkMultiWriter_FileLocking(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	logEntry := []byte(`{"level":"INFO","msg":"Lock test","request_id":"lock123"}`)
 
 	b.ResetTimer()
@@ -1769,7 +1792,7 @@ func BenchmarkMultiWriter_Contention(b *testing.B) {
 	dir := b.TempDir()
 
 	// Create lock file
-	lockPath := fmt.Sprintf("%s/shard-0001.lock", dir)
+	lockPath := fmt.Sprintf("%s/shard-0000.lock", dir)
 	lockFile, err := os.Create(lockPath)
 	if err != nil {
 		b.Fatalf("failed to create lock file: %v", err)
@@ -1787,7 +1810,7 @@ func BenchmarkMultiWriter_Contention(b *testing.B) {
 			defer client.Close()
 
 			ctx := context.Background()
-			streamName := "events:v1:shard:0001"
+			streamName := "events:v1:shard:0000"
 			logEntry := []byte(`{"level":"INFO","msg":"Contention test","request_id":"cont123"}`)
 
 			b.ResetTimer()
@@ -1838,7 +1861,7 @@ func BenchmarkMultiWriter_NoLocking(b *testing.B) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	logEntry := []byte(`{"level":"INFO","msg":"No lock test","request_id":"nolock123"}`)
 
 	b.ResetTimer()
@@ -1859,17 +1882,17 @@ func BenchmarkMultiWriter_NoLocking(b *testing.B) {
 // BenchmarkMultiProcessMode_MmapWriter benchmarks the memory-mapped writer performance
 func BenchmarkMultiProcessMode_MmapWriter(b *testing.B) {
 	dir := b.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create client which will use mmap writer in multi-process mode
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	data := []byte(`{"id":123,"message":"benchmark test entry"}`)
 
 	b.ResetTimer()
@@ -1887,13 +1910,13 @@ func BenchmarkMultiProcessMode_MmapWriter(b *testing.B) {
 func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 	data := []byte(`{"id":123,"message":"benchmark test entry"}`)
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	b.Run("SingleProcess", func(b *testing.B) {
 		dir := b.TempDir()
 		config := DefaultCometConfig()
 
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1912,20 +1935,15 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 
 	b.Run("MultiProcess_AsyncCheckpoint", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := DeprecatedMultiProcessConfig(0, 2)
 
 		// Temporarily disable mmap writer to test async checkpoint only
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
 
-		// Force disable mmap writer for this test
-		shard, _ := client.getOrCreateShard(1)
-		if shard.mmapWriter != nil {
-			shard.mmapWriter.Close()
-			shard.mmapWriter = nil
-		}
+		// No longer need to disable mmap writer since we use buffered writes everywhere
 
 		b.ResetTimer()
 		b.ReportAllocs()
@@ -1942,9 +1960,9 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 
 	b.Run("MultiProcess_MmapWriter", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
+		config := DeprecatedMultiProcessConfig(0, 2)
 
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1965,13 +1983,13 @@ func BenchmarkMultiProcessMode_Comparison(b *testing.B) {
 // BenchmarkMultiProcessThroughput shows how batching dramatically improves multi-process throughput
 func BenchmarkMultiProcessThroughput(b *testing.B) {
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	entry := []byte(`{"level":"INFO","msg":"test entry","id":123}`)
 
 	b.Run("SingleEntry", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
-		client, err := NewClientWithConfig(dir, config)
+		config := DeprecatedMultiProcessConfig(0, 2)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1994,8 +2012,8 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("SmallBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
-		client, err := NewClientWithConfig(dir, config)
+		config := DeprecatedMultiProcessConfig(0, 2)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2024,8 +2042,8 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("LargeBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
-		client, err := NewClientWithConfig(dir, config)
+		config := DeprecatedMultiProcessConfig(0, 2)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2054,8 +2072,8 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("HugeBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
-		client, err := NewClientWithConfig(dir, config)
+		config := DeprecatedMultiProcessConfig(0, 2)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2084,8 +2102,8 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 
 	b.Run("MegaBatch", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
-		client, err := NewClientWithConfig(dir, config)
+		config := DeprecatedMultiProcessConfig(0, 2)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2116,7 +2134,7 @@ func BenchmarkMultiProcessThroughput(b *testing.B) {
 // BenchmarkThroughputComparison directly compares single vs multi-process throughput
 func BenchmarkThroughputComparison(b *testing.B) {
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	entry := []byte(`{"level":"INFO","msg":"test entry","id":123}`)
 
 	// Test with 1000-entry batches to show where multi-process wins
@@ -2128,7 +2146,7 @@ func BenchmarkThroughputComparison(b *testing.B) {
 	b.Run("SingleProcess_Batch1000", func(b *testing.B) {
 		dir := b.TempDir()
 		config := DefaultCometConfig()
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2151,8 +2169,8 @@ func BenchmarkThroughputComparison(b *testing.B) {
 
 	b.Run("MultiProcess_Batch1000", func(b *testing.B) {
 		dir := b.TempDir()
-		config := MultiProcessConfig()
-		client, err := NewClientWithConfig(dir, config)
+		config := DeprecatedMultiProcessConfig(0, 2)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -2191,7 +2209,7 @@ func BenchmarkMultiProcess(b *testing.B) {
 
 	for _, numProcs := range []int{1, 2, 4} {
 		b.Run(fmt.Sprintf("procs_%d", numProcs), func(b *testing.B) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			var wg sync.WaitGroup
@@ -2209,16 +2227,21 @@ func BenchmarkMultiProcess(b *testing.B) {
 						fmt.Sprintf("COMET_BENCH_WORKER=%d", id),
 						fmt.Sprintf("COMET_BENCH_DIR=%s", dir),
 						fmt.Sprintf("COMET_BENCH_N=%d", b.N),
+						fmt.Sprintf("COMET_BENCH_TOTAL_PROCS=%d", numProcs),
 					)
-					cmd.Run()
+					cmd.Stdout = os.Stdout
+					cmd.Stderr = os.Stderr
+					if err := cmd.Run(); err != nil {
+						b.Errorf("Worker %d failed: %v", id, err)
+					}
 				}(i)
 			}
 
 			wg.Wait()
 
 			// Read final stats
-			config := DefaultCometConfig()
-			client, err := NewClientWithConfig(dir, config)
+			config := DeprecatedMultiProcessConfig(0, numProcs)
+			client, err := NewClient(dir, config)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -2233,20 +2256,35 @@ func BenchmarkMultiProcess(b *testing.B) {
 
 func runBenchmarkWorker(b *testing.B) {
 	dir := os.Getenv("COMET_BENCH_DIR")
+	workerID, _ := strconv.Atoi(os.Getenv("COMET_BENCH_WORKER"))
+	totalProcs, _ := strconv.Atoi(os.Getenv("COMET_BENCH_TOTAL_PROCS"))
 	n, _ := strconv.Atoi(os.Getenv("COMET_BENCH_N"))
 	if n == 0 {
 		n = b.N
 	}
 
-	config := MultiProcessConfig()
-	client, err := NewClientWithConfig(dir, config)
+	// Debug output
+	fmt.Fprintf(os.Stderr, "Worker %d starting (total procs: %d, n: %d)\n", workerID, totalProcs, n)
+
+	// Each worker needs its own process ID and total process count
+	config := DeprecatedMultiProcessConfig(workerID, totalProcs)
+	client, err := NewClient(dir, config)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Worker %d failed to create client: %v\n", workerID, err)
 		b.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "bench:v1:shard:0001"
+
+	// In multi-process mode, each process writes to shards it owns
+	// Use multiple stream names to distribute across shards
+	streamNames := []string{
+		"bench:v1:user:0",
+		"bench:v1:user:1",
+		"bench:v1:user:2",
+		"bench:v1:user:3",
+	}
 
 	batch := make([][]byte, 100)
 	for i := 0; i < 100; i++ {
@@ -2254,6 +2292,13 @@ func runBenchmarkWorker(b *testing.B) {
 	}
 
 	for i := 0; i < n; i++ {
-		client.Append(ctx, streamName, batch)
+		// Round-robin across stream names to hit different shards
+		streamName := streamNames[i%len(streamNames)]
+		if _, err := client.Append(ctx, streamName, batch); err != nil {
+			fmt.Fprintf(os.Stderr, "Worker %d append failed on stream %s: %v\n", workerID, streamName, err)
+			b.Fatal(err)
+		}
 	}
+
+	fmt.Fprintf(os.Stderr, "Worker %d completed %d iterations\n", workerID, n)
 }

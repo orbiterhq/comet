@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -36,7 +37,10 @@ const (
 func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
 	// Create temp file with unique name to avoid race conditions
 	// Use process ID and timestamp to ensure uniqueness
-	tempPath := fmt.Sprintf("%s.tmp.%d.%d", s.indexPath, os.Getpid(), time.Now().UnixNano())
+	// Build path efficiently without fmt.Sprintf
+	pid := strconv.Itoa(os.Getpid())
+	nano := strconv.FormatInt(time.Now().UnixNano(), 10)
+	tempPath := s.indexPath + ".tmp." + pid + "." + nano
 	f, err := os.Create(tempPath)
 	if err != nil {
 		return fmt.Errorf("failed to create temp index: %w", err)
@@ -170,6 +174,13 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 		return nil, err
 	}
 
+	if IsDebug() && s.logger != nil {
+		s.logger.Debug("Loading binary index",
+			"shardID", s.shardID,
+			"indexPath", s.indexPath,
+			"fileSize", len(data))
+	}
+
 	if len(data) < 32 { // Minimum header size
 		return nil, fmt.Errorf("index file too small")
 	}
@@ -210,17 +221,6 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 	index.CurrentWriteOffset = int64(binary.LittleEndian.Uint64(data[offset:]))
 	offset += 8
 
-	// Detect corruption: 341 is the 0x0155 uninitialized memory pattern
-	if index.CurrentEntryNumber == 341 {
-		if s.logger != nil {
-			s.logger.Error("Detected 341 corruption pattern in index file, triggering rebuild",
-				"shardID", s.shardID,
-				"indexPath", s.indexPath,
-				"currentEntryNumber", index.CurrentEntryNumber)
-		}
-		return nil, fmt.Errorf("corrupted index detected: CurrentEntryNumber=341 (uninitialized memory pattern)")
-	}
-
 	consumerCount := binary.LittleEndian.Uint32(data[offset:])
 	offset += 4
 	nodeCount := binary.LittleEndian.Uint32(data[offset:])
@@ -232,7 +232,7 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 	}
 
 	// Read consumer offsets
-	for i := uint32(0); i < consumerCount; i++ {
+	for range consumerCount {
 		if offset >= len(data) {
 			return nil, io.ErrUnexpectedEOF
 		}
@@ -253,9 +253,15 @@ func (s *Shard) loadBinaryIndexWithConfig(boundaryInterval, maxNodes int) (*Shar
 		index.ConsumerOffsets[group] = consumerOffset
 	}
 
+	if IsDebug() && s.logger != nil && len(index.ConsumerOffsets) > 0 {
+		s.logger.Debug("Loaded consumer offsets from index",
+			"shardID", s.shardID,
+			"offsets", index.ConsumerOffsets)
+	}
+
 	// Read binary index nodes
 	index.BinaryIndex.Nodes = make([]EntryIndexNode, 0, nodeCount)
-	for i := uint32(0); i < nodeCount; i++ {
+	for range nodeCount {
 		if offset+20 > len(data) {
 			return nil, io.ErrUnexpectedEOF
 		}

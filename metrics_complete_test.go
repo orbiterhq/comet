@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,9 +12,9 @@ import (
 // TestAllInternalMetrics tests all internal state metrics
 func TestAllInternalMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,31 +23,27 @@ func TestAllInternalMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write some data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
+	client.Sync(ctx)
+	shard, _ := client.getOrCreateShard(0)
 	// Test Version
-	version := atomic.LoadUint64(&state.Version)
+	version := atomic.LoadUint64(&shard.state.Version)
 	if version != CometStateVersion1 {
 		t.Errorf("Version = %d, want %d", version, CometStateVersion1)
 	}
 
 	// Test LastEntryNumber
-	lastEntryNumber := atomic.LoadInt64(&state.LastEntryNumber)
+	lastEntryNumber := atomic.LoadInt64(&shard.state.LastEntryNumber)
 	if lastEntryNumber < 0 {
 		t.Errorf("LastEntryNumber = %d, want >= 0", lastEntryNumber)
 	}
 
 	// Test ActiveFileIndex
-	activeFileIndex := atomic.LoadUint64(&state.ActiveFileIndex)
+	activeFileIndex := atomic.LoadUint64(&shard.state.ActiveFileIndex)
 	shard.mu.RLock()
 	expectedIndex := uint64(len(shard.index.Files) - 1)
 	shard.mu.RUnlock()
@@ -57,13 +52,13 @@ func TestAllInternalMetrics(t *testing.T) {
 	}
 
 	// Test FileSize
-	fileSize := atomic.LoadUint64(&state.FileSize)
+	fileSize := atomic.LoadUint64(&shard.state.FileSize)
 	if fileSize == 0 {
 		t.Error("FileSize = 0, want > 0")
 	}
 
 	// Test LastFileSequence
-	lastFileSeq := atomic.LoadUint64(&state.LastFileSequence)
+	lastFileSeq := atomic.LoadUint64(&shard.state.LastFileSequence)
 	// Note: LastFileSequence starts at 0 for the first file
 	t.Logf("LastFileSequence: %d (starts at 0 for first file)", lastFileSeq)
 
@@ -78,10 +73,10 @@ func TestAllInternalMetrics(t *testing.T) {
 // TestCompressionEdgeCaseMetrics tests best/worst compression metrics
 func TestCompressionEdgeCaseMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 10 // Low threshold
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,38 +97,28 @@ func TestCompressionEdgeCaseMetrics(t *testing.T) {
 	}
 
 	// Write both types
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{compressible, incompressible})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{compressible, incompressible})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
-	// Check best/worst compression
-	bestCompression := atomic.LoadUint64(&state.BestCompression)
-	worstCompression := atomic.LoadUint64(&state.WorstCompression)
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
+	// Check compression metrics
+	compressionRatio := atomic.LoadUint64(&state.CompressionRatio)
 
 	// These may be 0 if compression tracking isn't fully implemented
 	t.Logf("Compression edge case metrics:")
-	t.Logf("  Best compression ratio: %d%%", bestCompression)
-	t.Logf("  Worst compression ratio: %d%%", worstCompression)
-
-	// At minimum, verify they're accessible
-	_ = bestCompression
-	_ = worstCompression
+	t.Logf("  Average compression ratio: %d%%", compressionRatio)
 }
 
 // TestCheckpointMetrics tests checkpoint-related metrics
 func TestCheckpointMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.CheckpointTime = 10 // Short interval
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +128,7 @@ func TestCheckpointMetrics(t *testing.T) {
 
 	// Write data
 	for i := 0; i < 10; i++ {
-		_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("checkpoint test")})
+		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("checkpoint test")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,12 +138,8 @@ func TestCheckpointMetrics(t *testing.T) {
 	// Force checkpoint
 	client.Sync(ctx)
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	// Check checkpoint metrics
 	checkpointCount := atomic.LoadUint64(&state.CheckpointCount)
 	lastCheckpointNanos := atomic.LoadInt64(&state.LastCheckpointNanos)
@@ -174,9 +155,9 @@ func TestCheckpointMetrics(t *testing.T) {
 // TestSyncLatencyMetrics tests sync latency tracking
 func TestSyncLatencyMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +166,7 @@ func TestSyncLatencyMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write and sync
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("sync test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("sync test")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,29 +174,29 @@ func TestSyncLatencyMetrics(t *testing.T) {
 	// Force sync
 	client.Sync(ctx)
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
-	// Check sync latency
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
+	// Check sync metrics
 	syncLatencyNanos := atomic.LoadInt64(&state.SyncLatencyNanos)
+	syncCount := atomic.LoadUint64(&state.SyncCount)
 
 	t.Logf("Sync metrics:")
 	t.Logf("  Sync latency: %d ns", syncLatencyNanos)
+	t.Logf("  Sync count: %d", syncCount)
 
-	// Verify it's accessible (may be 0 if not tracked)
-	_ = syncLatencyNanos
+	// Should have at least one sync from client.Sync() call
+	if syncCount == 0 {
+		t.Error("Expected SyncCount > 0 after calling Sync()")
+	}
 }
 
 // TestRotationFailureMetrics tests failed rotation tracking
 func TestRotationFailureMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Storage.MaxFileSize = 100 // Small files
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,17 +205,13 @@ func TestRotationFailureMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write data to trigger rotation
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{make([]byte, 50)})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{make([]byte, 50)})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	// Check rotation metrics
 	rotationTimeNanos := atomic.LoadInt64(&state.RotationTimeNanos)
 	failedRotations := atomic.LoadUint64(&state.FailedRotations)
@@ -247,9 +224,9 @@ func TestRotationFailureMetrics(t *testing.T) {
 // TestIndexErrorMetrics tests index persistence error tracking
 func TestIndexErrorMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,32 +235,26 @@ func TestIndexErrorMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("index test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("index test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	// Check index metrics
 	indexPersistErrors := atomic.LoadUint64(&state.IndexPersistErrors)
-	indexSizeBytes := atomic.LoadUint64(&state.IndexSizeBytes)
 
 	t.Logf("Index error metrics:")
 	t.Logf("  Index persist errors: %d", indexPersistErrors)
-	t.Logf("  Index size bytes: %d", indexSizeBytes)
 }
 
 // TestCorruptionMetrics tests corruption detection metrics
 func TestCorruptionMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,20 +262,15 @@ func TestCorruptionMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Write data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("corruption test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("corruption test")})
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	shard, _ := client.getOrCreateShard(1)
-	if shard.loadState() == nil {
-		t.Skip("State not available in non-mmap mode")
 	}
 
 	client.Close()
 
 	// Corrupt a data file
-	dataFiles, _ := filepath.Glob(filepath.Join(dir, "shard-0001", "log-*.comet"))
+	dataFiles, _ := filepath.Glob(filepath.Join(dir, "shard-0000", "log-*.comet"))
 	if len(dataFiles) > 0 {
 		// Write garbage to the middle of the file
 		f, err := os.OpenFile(dataFiles[0], os.O_WRONLY, 0644)
@@ -316,7 +282,7 @@ func TestCorruptionMetrics(t *testing.T) {
 	}
 
 	// Reopen client - should detect corruption during recovery
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		// Error is expected but we want to check metrics
 		t.Logf("Expected error on corrupted data: %v", err)
@@ -326,9 +292,9 @@ func TestCorruptionMetrics(t *testing.T) {
 
 	// Try to get shard to check metrics
 	if client2 != nil {
-		shard2, _ := client2.getOrCreateShard(1)
+		shard2, _ := client2.getOrCreateShard(0)
 		if shard2 != nil {
-			if state := shard2.loadState(); state != nil {
+			if state := shard2.state; state != nil {
 				corruptionDetected := atomic.LoadUint64(&state.CorruptionDetected)
 				partialWrites := atomic.LoadUint64(&state.PartialWrites)
 
@@ -343,12 +309,12 @@ func TestCorruptionMetrics(t *testing.T) {
 // TestRetentionDetailedMetrics tests detailed retention metrics
 func TestRetentionDetailedMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Retention.MaxAge = 1 * time.Millisecond
 	config.Retention.CleanupInterval = 10 * time.Millisecond
 	config.Retention.ProtectUnconsumed = true
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +324,7 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 
 	// Write data
 	for i := 0; i < 5; i++ {
-		_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("retention test")})
+		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("retention test")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -369,18 +335,14 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 	defer consumer.Close()
 
 	// Read but don't ack - this should protect entries
-	consumer.Read(ctx, []uint32{1}, 2)
+	consumer.Read(ctx, []uint32{0}, 2)
 
 	// Wait and force retention
 	time.Sleep(20 * time.Millisecond)
 	client.ForceRetentionCleanup()
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
 	// Check detailed retention metrics
 	lastRetentionNanos := atomic.LoadInt64(&state.LastRetentionNanos)
 	retentionTimeNanos := atomic.LoadInt64(&state.RetentionTimeNanos)
@@ -394,85 +356,12 @@ func TestRetentionDetailedMetrics(t *testing.T) {
 	t.Logf("  Protected by consumers: %d", protectedByConsumers)
 }
 
-// TestMultiProcessDetailedMetrics tests detailed multi-process metrics
-func TestMultiProcessDetailedMetrics(t *testing.T) {
-	dir := t.TempDir()
-	config := MultiProcessConfig()
-
-	// Create first client
-	client1, err := NewClientWithConfig(dir, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client1.Close()
-
-	ctx := context.Background()
-
-	// Write with first client
-	_, err = client1.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("process1")})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	shard1, _ := client1.getOrCreateShard(1)
-	if shard1.loadState() == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
-	// Update process count and heartbeat
-	atomic.AddUint64(&shard1.state.ProcessCount, 1)
-	atomic.StoreInt64(&shard1.state.LastProcessHeartbeat, time.Now().UnixNano())
-
-	// Create second client
-	client2, err := NewClientWithConfig(dir, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client2.Close()
-
-	// Simulate some contention
-	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
-		wg.Add(2) // Add 2 for each iteration (one for each goroutine)
-		go func() {
-			defer wg.Done()
-			client1.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("concurrent1")})
-		}()
-		go func() {
-			defer wg.Done()
-			client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("concurrent2")})
-		}()
-	}
-
-	// Wait for all goroutines to complete
-	wg.Wait()
-
-	// Check multi-process metrics
-	processCount := atomic.LoadUint64(&shard1.state.ProcessCount)
-	lastHeartbeat := atomic.LoadInt64(&shard1.state.LastProcessHeartbeat)
-	contentionCount := atomic.LoadUint64(&shard1.state.ContentionCount)
-	lockWaitNanos := atomic.LoadInt64(&shard1.state.LockWaitNanos)
-	falseShareCount := atomic.LoadUint64(&shard1.state.FalseShareCount)
-
-	t.Logf("Detailed multi-process metrics:")
-	t.Logf("  Process count: %d", processCount)
-	t.Logf("  Last heartbeat: %v", time.Unix(0, lastHeartbeat))
-	t.Logf("  Contention count: %d", contentionCount)
-	t.Logf("  Lock wait time: %d ns", lockWaitNanos)
-	t.Logf("  False share count: %d", falseShareCount)
-
-	// Verify all are accessible
-	if processCount > 0 {
-		t.Log("Process tracking is working")
-	}
-}
-
-// TestMetricsCompleteness verifies all 70 metrics are accessible
+// TestMetricsCompleteness verifies all 66 metrics are accessible
 func TestMetricsCompleteness(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,19 +370,15 @@ func TestMetricsCompleteness(t *testing.T) {
 	ctx := context.Background()
 
 	// Create shard
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, _ := client.getOrCreateShard(1)
-	state := shard.loadState()
-	if state == nil {
-		t.Skip("State not available in non-mmap mode")
-	}
-
-	// Access ALL 70 metrics to ensure they don't panic
-	metrics := map[string]interface{}{
+	shard, _ := client.getOrCreateShard(0)
+	state := shard.state
+	// Access ALL 66 metrics to ensure they don't panic
+	metrics := map[string]any{
 		"Version":              atomic.LoadUint64(&state.Version),
 		"WriteOffset":          atomic.LoadUint64(&state.WriteOffset),
 		"LastEntryNumber":      atomic.LoadInt64(&state.LastEntryNumber),
@@ -513,14 +398,10 @@ func TestMetricsCompleteness(t *testing.T) {
 		"SkippedCompression":   atomic.LoadUint64(&state.SkippedCompression),
 		"CompressionRatio":     atomic.LoadUint64(&state.CompressionRatio),
 		"CompressionTimeNanos": atomic.LoadInt64(&state.CompressionTimeNanos),
-		"BestCompression":      atomic.LoadUint64(&state.BestCompression),
-		"WorstCompression":     atomic.LoadUint64(&state.WorstCompression),
 		"WriteLatencySum":      atomic.LoadUint64(&state.WriteLatencySum),
 		"WriteLatencyCount":    atomic.LoadUint64(&state.WriteLatencyCount),
 		"MinWriteLatency":      atomic.LoadUint64(&state.MinWriteLatency),
 		"MaxWriteLatency":      atomic.LoadUint64(&state.MaxWriteLatency),
-		"P50WriteLatency":      atomic.LoadUint64(&state.P50WriteLatency),
-		"P99WriteLatency":      atomic.LoadUint64(&state.P99WriteLatency),
 		"SyncLatencyNanos":     atomic.LoadInt64(&state.SyncLatencyNanos),
 		"FilesCreated":         atomic.LoadUint64(&state.FilesCreated),
 		"FilesDeleted":         atomic.LoadUint64(&state.FilesDeleted),
@@ -529,12 +410,12 @@ func TestMetricsCompleteness(t *testing.T) {
 		"CurrentFiles":         atomic.LoadUint64(&state.CurrentFiles),
 		"TotalFileBytes":       atomic.LoadUint64(&state.TotalFileBytes),
 		"FailedRotations":      atomic.LoadUint64(&state.FailedRotations),
+		"SyncCount":            atomic.LoadUint64(&state.SyncCount),
 		"CheckpointCount":      atomic.LoadUint64(&state.CheckpointCount),
 		"LastCheckpointNanos":  atomic.LoadInt64(&state.LastCheckpointNanos),
 		"CheckpointTimeNanos":  atomic.LoadInt64(&state.CheckpointTimeNanos),
 		"IndexPersistCount":    atomic.LoadUint64(&state.IndexPersistCount),
 		"IndexPersistErrors":   atomic.LoadUint64(&state.IndexPersistErrors),
-		"IndexSizeBytes":       atomic.LoadUint64(&state.IndexSizeBytes),
 		"BinaryIndexNodes":     atomic.LoadUint64(&state.BinaryIndexNodes),
 		"ActiveReaders":        atomic.LoadUint64(&state.ActiveReaders),
 		"TotalReaders":         atomic.LoadUint64(&state.TotalReaders),
@@ -558,17 +439,18 @@ func TestMetricsCompleteness(t *testing.T) {
 		"OldestEntryNanos":     atomic.LoadInt64(&state.OldestEntryNanos),
 		"RetentionErrors":      atomic.LoadUint64(&state.RetentionErrors),
 		"ProtectedByConsumers": atomic.LoadUint64(&state.ProtectedByConsumers),
-		"ProcessCount":         atomic.LoadUint64(&state.ProcessCount),
-		"LastProcessHeartbeat": atomic.LoadInt64(&state.LastProcessHeartbeat),
-		"ContentionCount":      atomic.LoadUint64(&state.ContentionCount),
-		"LockWaitNanos":        atomic.LoadInt64(&state.LockWaitNanos),
-		"MMAPRemapCount":       atomic.LoadUint64(&state.MMAPRemapCount),
-		"FalseShareCount":      atomic.LoadUint64(&state.FalseShareCount),
+		"ReaderFileMaps":       atomic.LoadUint64(&state.ReaderFileMaps),
+		"ReaderFileUnmaps":     atomic.LoadUint64(&state.ReaderFileUnmaps),
+		"ReaderCacheBytes":     atomic.LoadUint64(&state.ReaderCacheBytes),
+		"ReaderMappedFiles":    atomic.LoadUint64(&state.ReaderMappedFiles),
+		"ReaderFileRemaps":     atomic.LoadUint64(&state.ReaderFileRemaps),
+		"ReaderCacheEvicts":    atomic.LoadUint64(&state.ReaderCacheEvicts),
 	}
 
 	// Count how many metrics we accessed
-	if len(metrics) != 70 {
-		t.Errorf("Expected to access 70 metrics, got %d", len(metrics))
+	// Original 70 - 3 removed (BestCompression, WorstCompression, IndexSizeBytes) + 1 added (SyncCount) - 2 removed (P50, P99) = 66
+	if len(metrics) != 66 {
+		t.Errorf("Expected to access 66 metrics, got %d", len(metrics))
 	}
 
 	t.Logf("Successfully accessed all %d metrics without panic", len(metrics))

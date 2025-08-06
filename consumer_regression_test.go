@@ -13,16 +13,16 @@ func TestConsumerReadNoInterference(t *testing.T) {
 
 	config := DefaultCometConfig()
 	// Explicitly ensure single-process mode
-	config.Concurrency.EnableMultiProcessMode = false
+	config.Concurrency.ProcessCount = 0
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000" // Process 0 owns shard 0
 
 	// Write 20 entries
 	for i := 0; i < 20; i++ {
@@ -31,6 +31,11 @@ func TestConsumerReadNoInterference(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// Sync to ensure data is visible
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// Verify initial state - should have 20 entries
@@ -46,7 +51,7 @@ func TestConsumerReadNoInterference(t *testing.T) {
 	consumer := NewConsumer(client, ConsumerOptions{Group: "test-group"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 5)
+	messages, err := consumer.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +83,7 @@ func TestConsumerReadNoInterference(t *testing.T) {
 
 	// Final check: multiple consumer reads should not cause issues
 	for i := 0; i < 3; i++ {
-		_, err := consumer.Read(ctx, []uint32{1}, 2)
+		_, err := consumer.Read(ctx, []uint32{0}, 2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,16 +107,17 @@ func TestConsumerReadMultiProcessMode(t *testing.T) {
 
 	config := DefaultCometConfig()
 	// Enable multi-process mode
-	config.Concurrency.EnableMultiProcessMode = true
+	config.Concurrency.ProcessCount = 2
+	config.Concurrency.ProcessID = 0
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000" // Process 0 owns shard 0
 
 	// Write entries
 	for i := 0; i < 10; i++ {
@@ -120,6 +126,11 @@ func TestConsumerReadMultiProcessMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	// Sync to ensure data is visible
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// Verify initial count
@@ -134,7 +145,7 @@ func TestConsumerReadMultiProcessMode(t *testing.T) {
 	consumer := NewConsumer(client, ConsumerOptions{Group: "test-group"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 5)
+	messages, err := consumer.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		t.Fatal(err)
 	}

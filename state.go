@@ -38,44 +38,39 @@ type CometState struct {
 	_pad1            [8]byte // 120-127: Padding
 
 	// ======== Cache Line 2 (128-191): Compression metrics ========
-	TotalCompressed      uint64  // 128-135: Total compressed bytes
-	CompressedEntries    uint64  // 136-143: Number of compressed entries
-	SkippedCompression   uint64  // 144-151: Entries too small to compress
-	CompressionRatio     uint64  // 152-159: Average ratio * 100
-	CompressionTimeNanos int64   // 160-167: Total time compressing
-	BestCompression      uint64  // 168-175: Best ratio seen * 100
-	WorstCompression     uint64  // 176-183: Worst ratio seen * 100
-	_pad2                [8]byte // 184-191: Padding
+	TotalCompressed      uint64   // 128-135: Total compressed bytes
+	CompressedEntries    uint64   // 136-143: Number of compressed entries
+	SkippedCompression   uint64   // 144-151: Entries too small to compress
+	CompressionRatio     uint64   // 152-159: Average ratio * 100
+	CompressionTimeNanos int64    // 160-167: Total time compressing
+	_pad2                [24]byte // 168-191: Padding
 
 	// ======== Cache Line 3 (192-255): Latency metrics ========
-	WriteLatencySum   uint64  // 192-199: Sum for averaging
-	WriteLatencyCount uint64  // 200-207: Count for averaging
-	MinWriteLatency   uint64  // 208-215: Minimum seen
-	MaxWriteLatency   uint64  // 216-223: Maximum seen
-	P50WriteLatency   uint64  // 224-231: Median estimate
-	P99WriteLatency   uint64  // 232-239: 99th percentile estimate
-	SyncLatencyNanos  int64   // 240-247: Time spent in fsync
-	_pad3             [8]byte // 248-255: Padding
+	WriteLatencySum   uint64   // 192-199: Sum for averaging
+	WriteLatencyCount uint64   // 200-207: Count for averaging
+	MinWriteLatency   uint64   // 208-215: Minimum seen
+	MaxWriteLatency   uint64   // 216-223: Maximum seen
+	SyncLatencyNanos  int64    // 224-231: Time spent in fsync
+	_pad3             [24]byte // 232-255: Padding
 
 	// ======== Cache Line 4 (256-319): File operation metrics ========
-	FilesCreated      uint64  // 256-263: Total files created
-	FilesDeleted      uint64  // 264-271: Files removed by retention
-	FileRotations     uint64  // 272-279: Successful rotations
-	RotationTimeNanos int64   // 280-287: Time spent rotating
-	CurrentFiles      uint64  // 288-295: Current file count
-	TotalFileBytes    uint64  // 296-303: Total size on disk
-	FailedRotations   uint64  // 304-311: Rotation failures
-	_pad4             [8]byte // 312-319: Padding
+	FilesCreated      uint64 // 256-263: Total files created
+	FilesDeleted      uint64 // 264-271: Files removed by retention
+	FileRotations     uint64 // 272-279: Successful rotations
+	RotationTimeNanos int64  // 280-287: Time spent rotating
+	CurrentFiles      uint64 // 288-295: Current file count
+	TotalFileBytes    uint64 // 296-303: Total size on disk
+	FailedRotations   uint64 // 304-311: Rotation failures
+	SyncCount         uint64 // 312-319: Total sync operations
 
 	// ======== Cache Line 5 (320-383): Checkpoint/Index metrics ========
-	CheckpointCount     uint64  // 320-327: Total checkpoints
-	LastCheckpointNanos int64   // 328-335: Last checkpoint time
-	CheckpointTimeNanos int64   // 336-343: Total checkpoint time
-	IndexPersistCount   uint64  // 344-351: Index saves
-	IndexPersistErrors  uint64  // 352-359: Failed index saves
-	IndexSizeBytes      uint64  // 360-367: Current index size
-	BinaryIndexNodes    uint64  // 368-375: Nodes in binary index
-	_pad5               [8]byte // 376-383: Padding
+	CheckpointCount     uint64   // 320-327: Total checkpoints
+	LastCheckpointNanos int64    // 328-335: Last checkpoint time
+	CheckpointTimeNanos int64    // 336-343: Total checkpoint time
+	IndexPersistCount   uint64   // 344-351: Index saves
+	IndexPersistErrors  uint64   // 352-359: Failed index saves
+	BinaryIndexNodes    uint64   // 360-367: Nodes in binary index
+	_pad5               [16]byte // 368-383: Padding
 
 	// ======== Cache Line 6 (384-447): Consumer metrics ========
 	ActiveReaders    uint64  // 384-391: Current reader count
@@ -108,26 +103,17 @@ type CometState struct {
 	ProtectedByConsumers uint64   // 568-575: Files kept for consumers
 	_pad8                [64]byte // 576-639: Full line padding
 
-	// ======== Cache Lines 10-11 (640-767): Multi-process coordination ========
-	ProcessCount         uint64   // 640-647: Active processes
-	LastProcessHeartbeat int64    // 648-655: Latest heartbeat
-	ContentionCount      uint64   // 656-663: Lock contentions
-	LockWaitNanos        int64    // 664-671: Time waiting for locks
-	MMAPRemapCount       uint64   // 672-679: File remappings
-	FalseShareCount      uint64   // 680-687: Detected false sharing
-	_pad9                [80]byte // 688-767: Padding
+	// ======== Cache Lines 10-11 (640-767): Reader cache metrics ========
+	ReaderFileMaps    uint64   // 640-647: Files mapped into memory
+	ReaderFileUnmaps  uint64   // 648-655: Files unmapped from memory
+	ReaderCacheBytes  uint64   // 656-663: Current cache memory usage
+	ReaderMappedFiles uint64   // 664-671: Current number of mapped files
+	ReaderFileRemaps  uint64   // 672-679: File remappings due to growth
+	ReaderCacheEvicts uint64   // 680-687: Files evicted due to pressure
+	_pad9             [80]byte // 688-767: Padding to end of cache line 11
 
-	// ======== Cache Lines 12 (768-831): Reader cache metrics ========
-	ReaderFileMaps    uint64   // 768-775: Files mapped into memory
-	ReaderFileUnmaps  uint64   // 776-783: Files unmapped from memory
-	ReaderCacheBytes  uint64   // 784-791: Current cache memory usage
-	ReaderMappedFiles uint64   // 792-799: Current number of mapped files
-	ReaderFileRemaps  uint64   // 800-807: File remappings due to growth
-	ReaderCacheEvicts uint64   // 808-815: Files evicted due to pressure
-	_pad10            [16]byte // 816-831: Padding
-
-	// ======== Cache Lines 13-15 (832-1023): Reserved for future ========
-	_reserved [192]byte // 832-1023: Future expansion space
+	// ======== Cache Lines 12-15 (768-1023): Reserved for future ========
+	_reserved [256]byte // 768-1023: Future expansion space
 }
 
 // Compile-time checks
@@ -158,16 +144,15 @@ func (s *CometState) GetLastEntryNumber() int64 {
 }
 
 func (s *CometState) IncrementLastEntryNumber() int64 {
-	// Use a compare-and-swap loop to ensure atomic increment across processes
-	// This handles the case where multiple processes have different memory mappings
-	// of the same file but need to coordinate atomic updates
-	for {
-		oldVal := atomic.LoadInt64(&s.LastEntryNumber)
-		newVal := oldVal + 1
-		if atomic.CompareAndSwapInt64(&s.LastEntryNumber, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddInt64(&s.LastEntryNumber, 1)
+}
+
+// AllocateEntryNumbers atomically reserves a batch of entry numbers
+func (s *CometState) AllocateEntryNumbers(count int) int64 {
+	// Reserve 'count' entry numbers and return the first one
+	// This does a single atomic operation instead of count operations
+	return atomic.AddInt64(&s.LastEntryNumber, int64(count)) - int64(count) + 1
 }
 
 func (s *CometState) GetLastIndexUpdate() int64 {
@@ -218,20 +203,14 @@ func (s *CometState) AddLastFileSequence(delta uint64) uint64 {
 	return atomic.AddUint64(&s.LastFileSequence, delta)
 }
 
-// TotalWrites methods - use CAS for multi-process accuracy in observability
+// TotalWrites methods - simple atomics since processes own shards exclusively
 func (s *CometState) GetTotalWrites() uint64 {
 	return atomic.LoadUint64(&s.TotalWrites)
 }
 
 func (s *CometState) AddTotalWrites(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - write metrics are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.TotalWrites)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.TotalWrites, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.TotalWrites, delta)
 }
 
 // LastWriteNanos methods
@@ -243,52 +222,28 @@ func (s *CometState) StoreLastWriteNanos(val int64) {
 	atomic.StoreInt64(&s.LastWriteNanos, val)
 }
 
-// TotalEntries methods - use CAS for multi-process accuracy in observability
+// TotalEntries methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddTotalEntries(delta int64) int64 {
-	// Use CAS loop for multi-process accuracy - entry counts are critical for observability
-	for {
-		oldVal := atomic.LoadInt64(&s.TotalEntries)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapInt64(&s.TotalEntries, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddInt64(&s.TotalEntries, delta)
 }
 
-// TotalBytes methods - use CAS for multi-process accuracy in observability
+// TotalBytes methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddTotalBytes(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - byte counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.TotalBytes)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.TotalBytes, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.TotalBytes, delta)
 }
 
-// FileRotations methods - use CAS for multi-process accuracy in observability
+// FileRotations methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddFileRotations(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - file rotation counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.FileRotations)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.FileRotations, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.FileRotations, delta)
 }
 
-// FilesCreated methods - use CAS for multi-process accuracy in observability
+// FilesCreated methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddFilesCreated(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - file creation counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.FilesCreated)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.FilesCreated, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.FilesCreated, delta)
 }
 
 // MinWriteLatency methods
@@ -296,17 +251,9 @@ func (s *CometState) GetMinWriteLatency() uint64 {
 	return atomic.LoadUint64(&s.MinWriteLatency)
 }
 
-func (s *CometState) CompareAndSwapMinWriteLatency(old, new uint64) bool {
-	return atomic.CompareAndSwapUint64(&s.MinWriteLatency, old, new)
-}
-
 // MaxWriteLatency methods
 func (s *CometState) GetMaxWriteLatency() uint64 {
 	return atomic.LoadUint64(&s.MaxWriteLatency)
-}
-
-func (s *CometState) CompareAndSwapMaxWriteLatency(old, new uint64) bool {
-	return atomic.CompareAndSwapUint64(&s.MaxWriteLatency, old, new)
 }
 
 // WriteLatencySum methods
@@ -337,28 +284,16 @@ func (s *CometState) GetCompressionRatioFloat() float64 {
 	return float64(compressed) / float64(original)
 }
 
-// ErrorCount methods - critical for error rate calculations
+// ErrorCount methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddErrorCount(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - error counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.ErrorCount)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.ErrorCount, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.ErrorCount, delta)
 }
 
-// FailedWrites methods - critical for error rate calculations
+// FailedWrites methods - simple atomics since processes own shards exclusively
 func (s *CometState) AddFailedWrites(delta uint64) uint64 {
-	// Use CAS loop for multi-process accuracy - failed write counts are critical for observability
-	for {
-		oldVal := atomic.LoadUint64(&s.FailedWrites)
-		newVal := oldVal + delta
-		if atomic.CompareAndSwapUint64(&s.FailedWrites, oldVal, newVal) {
-			return newVal
-		}
-	}
+	// Since processes own their shards exclusively, simple atomic add is sufficient
+	return atomic.AddUint64(&s.FailedWrites, delta)
 }
 
 func (s *CometState) GetErrorRate() float64 {
@@ -368,84 +303,6 @@ func (s *CometState) GetErrorRate() float64 {
 		return 0.0
 	}
 	return float64(errors) / float64(writes)
-}
-
-// UpdateWriteLatency updates latency metrics with a new sample
-// Note: nanos should be uint64 since latencies are always positive
-func (s *CometState) UpdateWriteLatency(nanos uint64) {
-	atomic.AddUint64(&s.WriteLatencySum, nanos)
-	atomic.AddUint64(&s.WriteLatencyCount, 1)
-
-	// Update min
-	for {
-		min := atomic.LoadUint64(&s.MinWriteLatency)
-		if min > 0 && min <= nanos {
-			break
-		}
-		if atomic.CompareAndSwapUint64(&s.MinWriteLatency, min, nanos) {
-			break
-		}
-	}
-
-	// Update max
-	for {
-		max := atomic.LoadUint64(&s.MaxWriteLatency)
-		if max >= nanos {
-			break
-		}
-		if atomic.CompareAndSwapUint64(&s.MaxWriteLatency, max, nanos) {
-			break
-		}
-	}
-
-	// Update approximate percentiles using exponential weighted moving average
-	// This is a simple approximation - for accurate percentiles, use a histogram
-	// Note: This uses integer arithmetic to avoid floating point in atomic operations
-
-	// Update P50 (median approximation)
-	currentP50 := atomic.LoadUint64(&s.P50WriteLatency)
-	if currentP50 == 0 {
-		// Initialize with first value
-		atomic.StoreUint64(&s.P50WriteLatency, nanos)
-	} else {
-		// EWMA with alpha=0.05: new = 0.05 * current + 0.95 * old
-		// Using integer math: new = (5 * current + 95 * old) / 100
-		newP50 := (5*nanos + 95*currentP50) / 100
-		atomic.StoreUint64(&s.P50WriteLatency, newP50)
-	}
-
-	// Update P99 (99th percentile approximation)
-	// For P99, we maintain a high watermark that decays slowly
-	currentP99 := atomic.LoadUint64(&s.P99WriteLatency)
-	if currentP99 == 0 {
-		// Initialize with first value, but higher than P50
-		initialP99 := nanos * 2 // Start with 2x the first value
-		if initialP99 < nanos {
-			initialP99 = nanos // Handle overflow
-		}
-		atomic.StoreUint64(&s.P99WriteLatency, initialP99)
-	} else {
-		// Always ensure P99 >= P50
-		currentP50Again := atomic.LoadUint64(&s.P50WriteLatency)
-
-		if nanos > currentP99 {
-			// New high value - this becomes our new P99
-			atomic.StoreUint64(&s.P99WriteLatency, nanos)
-		} else {
-			// Decay P99 very slowly (0.999 factor)
-			newP99 := (currentP99 * 999) / 1000
-
-			// But ensure P99 never goes below P50
-			if newP99 < currentP50Again {
-				newP99 = currentP50Again * 2  // Keep P99 at least 2x P50
-				if newP99 < currentP50Again { // Handle overflow
-					newP99 = currentP50Again
-				}
-			}
-
-			atomic.StoreUint64(&s.P99WriteLatency, newP99)
-		}
-	}
 }
 
 // Constants for the unified state

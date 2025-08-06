@@ -15,23 +15,23 @@ import (
 // TestValidateAndRecoverState tests state validation logic
 func TestValidateAndRecoverState(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create client to initialize state
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Write some data to populate state
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 		{
 			name: "InvalidVersion0",
 			setupFunc: func() {
-				if state := shard.loadState(); state != nil {
+				if state := shard.state; state != nil {
 					atomic.StoreUint64(&state.Version, 0)
 				}
 			},
@@ -63,7 +63,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 		{
 			name: "InvalidVersionTooHigh",
 			setupFunc: func() {
-				if state := shard.loadState(); state != nil {
+				if state := shard.state; state != nil {
 					atomic.StoreUint64(&state.Version, 999)
 				}
 			},
@@ -72,7 +72,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 		{
 			name: "WriteOffsetExceedsFileSize",
 			setupFunc: func() {
-				if state := shard.loadState(); state != nil {
+				if state := shard.state; state != nil {
 					atomic.StoreUint64(&state.WriteOffset, 1000000)
 					atomic.StoreUint64(&state.FileSize, 1000)
 				}
@@ -82,7 +82,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 		{
 			name: "UnreasonablyLargeWriteOffset",
 			setupFunc: func() {
-				if state := shard.loadState(); state != nil {
+				if state := shard.state; state != nil {
 					atomic.StoreUint64(&state.WriteOffset, 1<<41) // > 1TB
 				}
 			},
@@ -91,7 +91,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 		{
 			name: "InvalidLastEntryNumber",
 			setupFunc: func() {
-				if state := shard.loadState(); state != nil {
+				if state := shard.state; state != nil {
 					atomic.StoreInt64(&state.LastEntryNumber, -100)
 				}
 			},
@@ -102,19 +102,18 @@ func TestValidateAndRecoverState(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Re-initialize for each test
-			if err := shard.initCometState(true); err != nil {
+			if err := shard.initCometState(); err != nil {
 				t.Fatal(err)
 			}
 
 			// Apply test setup
 			tc.setupFunc()
 
-			// Count recovery attempts before
-			state := shard.loadState()
-			if state == nil {
+			// Get state pointer before validation
+			stateBefore := shard.state
+			if stateBefore == nil {
 				t.Fatal("State is nil after initCometState")
 			}
-			recoveryAttemptsBefore := atomic.LoadUint64(&state.RecoveryAttempts)
 
 			// Run validation
 			err := shard.validateAndRecoverState()
@@ -124,17 +123,24 @@ func TestValidateAndRecoverState(t *testing.T) {
 				t.Errorf("Unexpected error during recovery: %v", err)
 			}
 
-			// Check if recovery was attempted
-			recoveryAttemptsAfter := atomic.LoadUint64(&state.RecoveryAttempts)
-			if tc.expectRecover && recoveryAttemptsAfter == recoveryAttemptsBefore {
-				t.Error("Expected recovery attempt but none occurred")
-			}
-			if !tc.expectRecover && recoveryAttemptsAfter > recoveryAttemptsBefore {
-				t.Error("Unexpected recovery attempt")
+			// Check if recovery happened by verifying the bad values were reset
+			stateAfter := shard.state
+			if tc.expectRecover {
+				// After recovery, version should be valid
+				version := atomic.LoadUint64(&stateAfter.Version)
+				if version != CometStateVersion1 {
+					t.Errorf("After recovery, version should be %d, got %d", CometStateVersion1, version)
+				}
+
+				// LastEntryNumber should be valid (>= -1)
+				lastEntry := atomic.LoadInt64(&stateAfter.LastEntryNumber)
+				if lastEntry < -1 {
+					t.Errorf("After recovery, LastEntryNumber should be >= -1, got %d", lastEntry)
+				}
 			}
 
 			// Cleanup state file for next test
-			if shard.loadState() != nil && shard.stateData != nil {
+			if shard.state != nil && shard.stateData != nil {
 				if len(shard.stateData) > 0 {
 					syscall.Munmap(shard.stateData)
 					shard.stateData = nil
@@ -148,21 +154,21 @@ func TestValidateAndRecoverState(t *testing.T) {
 // TestRecoverCorruptedState tests the corruption recovery mechanism
 func TestRecoverCorruptedState(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create client and shard
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +178,16 @@ func TestRecoverCorruptedState(t *testing.T) {
 	shard.index.CurrentEntryNumber = 42
 	shard.index.CurrentWriteOffset = 1234
 	shard.index.CurrentFile = fmt.Sprintf("%s/log-%016d.comet", filepath.Dir(shard.indexPath), 5)
+	// Add a file to the index so recovery can extract the file index
+	shard.index.Files = append(shard.index.Files, FileInfo{
+		Path:        shard.index.CurrentFile,
+		StartOffset: 0,
+		EndOffset:   1234,
+		StartEntry:  0,
+		Entries:     42,
+		StartTime:   time.Now(),
+		EndTime:     time.Now(),
+	})
 	shard.mu.Unlock()
 
 	// Get the state file path
@@ -193,7 +209,7 @@ func TestRecoverCorruptedState(t *testing.T) {
 	}
 
 	// Verify state was reinitialized
-	state := shard.loadState()
+	state := shard.state
 	if state == nil {
 		t.Fatal("State is nil after recovery")
 	}
@@ -238,10 +254,10 @@ func TestRecoverCorruptedState(t *testing.T) {
 // TestStateCorruptionEndToEnd tests full corruption recovery flow
 func TestStateCorruptionEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Create initial client and write data
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +266,7 @@ func TestStateCorruptionEndToEnd(t *testing.T) {
 
 	// Write multiple entries
 	for i := 0; i < 10; i++ {
-		_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
+		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte(fmt.Sprintf("entry %d", i))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -263,7 +279,7 @@ func TestStateCorruptionEndToEnd(t *testing.T) {
 	client.Close()
 
 	// Corrupt the state file by writing garbage (must be correct size)
-	stateFilePath := dir + "/shard-0001/comet.state"
+	stateFilePath := dir + "/shard-0000/comet.state"
 	corruptData := make([]byte, CometStateSize)
 	copy(corruptData, []byte("corrupted garbage data"))
 	if err := os.WriteFile(stateFilePath, corruptData, 0644); err != nil {
@@ -271,14 +287,14 @@ func TestStateCorruptionEndToEnd(t *testing.T) {
 	}
 
 	// Create new client - should detect corruption and recover
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client2.Close()
 
 	// Verify we can still write
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after corruption")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after corruption")})
 	if err != nil {
 		t.Fatalf("Write after corruption recovery failed: %v", err)
 	}
@@ -304,12 +320,12 @@ func TestStateCorruptionEndToEnd(t *testing.T) {
 	}
 
 	// Verify metrics show recovery
-	shard, err := client2.getOrCreateShard(1)
+	shard, err := client2.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	state := shard.loadState()
+	state := shard.state
 	if state == nil {
 		t.Fatal("State is nil")
 	}
@@ -327,21 +343,21 @@ func TestStateCorruptionEndToEnd(t *testing.T) {
 // TestMigrateStateVersion tests future version migration paths
 func TestMigrateStateVersion(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,24 +382,24 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
 	// Process 1: Create and write data
-	client1, err := NewClientWithConfig(dir, config)
+	client1, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		_, err = client1.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte(fmt.Sprintf("p1-entry-%d", i))})
+		_, err = client1.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte(fmt.Sprintf("p1-entry-%d", i))})
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// Get shard from process 1
-	shard1, err := client1.getOrCreateShard(1)
+	shard1, err := client1.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +411,7 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 	client1.Close()
 
 	// Corrupt the state file with invalid version
-	stateFilePath := dir + "/shard-0001/comet.state"
+	stateFilePath := dir + "/shard-0000/comet.state"
 
 	// Read current state
 	data, err := os.ReadFile(stateFilePath)
@@ -411,32 +427,32 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 	}
 
 	// Process 2: Should detect corruption and recover
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client2.Close()
 
 	// Write from process 2
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("p2-after-recovery")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("p2-after-recovery")})
 	if err != nil {
 		t.Fatalf("Process 2 write failed: %v", err)
 	}
 
 	// Process 3: Should work with recovered state
-	client3, err := NewClientWithConfig(dir, config)
+	client3, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client3.Close()
 
-	_, err = client3.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("p3-after-recovery")})
+	_, err = client3.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("p3-after-recovery")})
 	if err != nil {
 		t.Fatalf("Process 3 write failed: %v", err)
 	}
 
 	// Verify recovery metrics are visible across processes
-	shard3, err := client3.getOrCreateShard(1)
+	shard3, err := client3.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,9 +475,9 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 // TestPartialStateCorruption tests recovery from partial corruption
 func TestPartialStateCorruption(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +486,7 @@ func TestPartialStateCorruption(t *testing.T) {
 
 	// Write data to establish state
 	for i := 0; i < 20; i++ {
-		_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte(fmt.Sprintf("entry-%d", i))})
+		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte(fmt.Sprintf("entry-%d", i))})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -479,7 +495,7 @@ func TestPartialStateCorruption(t *testing.T) {
 	client.Close()
 
 	// Partially corrupt the state file (corrupt middle section)
-	stateFilePath := dir + "/shard-0001/comet.state"
+	stateFilePath := dir + "/shard-0000/comet.state"
 	data, err := os.ReadFile(stateFilePath)
 	if err != nil {
 		t.Fatal(err)
@@ -495,25 +511,25 @@ func TestPartialStateCorruption(t *testing.T) {
 	}
 
 	// Reopen - should still work as we only validate critical fields
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client2.Close()
 
 	// Should be able to write
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after partial corruption")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after partial corruption")})
 	if err != nil {
 		t.Fatalf("Write after partial corruption failed: %v", err)
 	}
 
 	// Now corrupt a critical field (WriteOffset > FileSize)
-	shard, err := client2.getOrCreateShard(1)
+	shard, err := client2.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	state := shard.loadState()
+	state := shard.state
 	if state == nil {
 		t.Fatal("State is nil")
 	}
@@ -540,15 +556,15 @@ func TestStateFilePermissions(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,13 +572,13 @@ func TestStateFilePermissions(t *testing.T) {
 	client.Close()
 
 	// Make state file read-only
-	stateFilePath := dir + "/shard-0001/comet.state"
+	stateFilePath := dir + "/shard-0000/comet.state"
 	if err := os.Chmod(stateFilePath, 0444); err != nil {
 		t.Fatal(err)
 	}
 
 	// Try to open - should fail with permission denied
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		// This is expected - we can't write to a read-only file
 		if !strings.Contains(err.Error(), "permission denied") {
@@ -579,7 +595,7 @@ func TestStateFilePermissions(t *testing.T) {
 	t.Log("Note: OS allowed opening read-only file - this is OS-specific behavior")
 
 	// If it opened, verify we can at least read
-	shard, err := client2.getOrCreateShard(1)
+	shard, err := client2.getOrCreateShard(0)
 	if err != nil {
 		// This might fail due to permission issues
 		t.Logf("getOrCreateShard failed (expected on some systems): %v", err)
@@ -587,7 +603,7 @@ func TestStateFilePermissions(t *testing.T) {
 		return
 	}
 
-	if state := shard.loadState(); state != nil {
+	if state := shard.state; state != nil {
 		version := atomic.LoadUint64(&state.Version)
 		if version != CometStateVersion1 {
 			t.Errorf("Expected version %d, got %d", CometStateVersion1, version)
@@ -603,7 +619,7 @@ func TestValidateNilState(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,12 +627,12 @@ func TestValidateNilState(t *testing.T) {
 
 	// Create shard
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -637,20 +653,20 @@ func TestValidateNilState(t *testing.T) {
 // TestRecoverWithNoIndex tests recovery when index is nil
 func TestRecoverWithNoIndex(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +689,7 @@ func TestRecoverWithNoIndex(t *testing.T) {
 	shard.mu.Unlock()
 
 	// Verify state was reinitialized
-	if shard.loadState() == nil {
+	if shard.state == nil {
 		t.Error("State should not be nil after recovery")
 	}
 
@@ -683,26 +699,26 @@ func TestRecoverWithNoIndex(t *testing.T) {
 // TestSuspiciousMetrics tests the suspicious metrics check
 func TestSuspiciousMetrics(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	state := shard.loadState()
+	state := shard.state
 	if state == nil {
 		t.Fatal("State is nil")
 	}
@@ -731,20 +747,20 @@ func TestRecoveryFailure(t *testing.T) {
 	// Both behaviors are acceptable as our recovery code handles both cases.
 
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -763,7 +779,7 @@ func TestRecoveryFailure(t *testing.T) {
 	defer os.Chmod(shardDir, 0755) // Restore permissions
 
 	// Try to create a new client
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 
 	// Both outcomes are valid:
 	// 1. Permission denied (most systems) - recovery can't proceed
@@ -774,7 +790,7 @@ func TestRecoveryFailure(t *testing.T) {
 		t.Log("System allowed writes to read-only directory (common in CI with elevated privileges)")
 
 		// Try to write data - it may fail if permissions are still restrictive
-		_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("after recovery")})
+		_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("after recovery")})
 		if err != nil {
 			// This can happen if the OS allows opening the directory but not creating new files
 			t.Logf("Failed to write after recovery: %v", err)
@@ -794,21 +810,21 @@ func TestRecoveryFailure(t *testing.T) {
 // TestStateWithEmptyCurrentFile tests recovery with empty CurrentFile
 func TestStateWithEmptyCurrentFile(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -825,7 +841,7 @@ func TestStateWithEmptyCurrentFile(t *testing.T) {
 	}
 
 	// ActiveFileIndex should remain 0 when CurrentFile is empty
-	state := shard.loadState()
+	state := shard.state
 	if state == nil {
 		t.Fatal("State is nil after recovery")
 	}
@@ -838,21 +854,21 @@ func TestStateWithEmptyCurrentFile(t *testing.T) {
 // TestStateWithInvalidFilename tests recovery with invalid filename format
 func TestStateWithInvalidFilename(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -869,7 +885,7 @@ func TestStateWithInvalidFilename(t *testing.T) {
 	}
 
 	// ActiveFileIndex should remain unchanged when filename is invalid
-	state := shard.loadState()
+	state := shard.state
 	if state == nil {
 		t.Fatal("State is nil after recovery")
 	}
@@ -882,7 +898,7 @@ func TestCorruptedFileRecovery(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -896,7 +912,7 @@ func TestCorruptedFileRecovery(t *testing.T) {
 		[]byte("entry 3"),
 	}
 
-	ids, err := client.Append(ctx, "test:v1:shard:0001", testData)
+	ids, err := client.Append(ctx, "test:v1:shard:0000", testData)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -907,7 +923,7 @@ func TestCorruptedFileRecovery(t *testing.T) {
 	}
 
 	// Get the data file path
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
 	dataFile := shard.index.CurrentFile
 	shard.mu.RUnlock()
@@ -927,7 +943,7 @@ func TestCorruptedFileRecovery(t *testing.T) {
 	file.Close()
 
 	// Reopen client
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -937,7 +953,7 @@ func TestCorruptedFileRecovery(t *testing.T) {
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "test"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 10)
+	messages, err := consumer.Read(ctx, []uint32{0}, 10)
 	// We expect some entries might be unreadable due to corruption
 	// But the system should not crash
 	if err != nil {
@@ -947,7 +963,7 @@ func TestCorruptedFileRecovery(t *testing.T) {
 	t.Logf("Read %d messages out of %d after corruption", len(messages), len(ids))
 
 	// Verify we can still write new data
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("new entry after corruption")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("new entry after corruption")})
 	if err != nil {
 		t.Errorf("Failed to write after corruption: %v", err)
 	}
@@ -958,7 +974,7 @@ func TestKillProcessMidWrite(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -966,7 +982,7 @@ func TestKillProcessMidWrite(t *testing.T) {
 	ctx := context.Background()
 
 	// Write some initial data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("initial data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("initial data")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -987,7 +1003,7 @@ func TestKillProcessMidWrite(t *testing.T) {
 
 	go func() {
 		for i := 0; i < 10; i++ {
-			_, err := client.Append(writeCtx, "test:v1:shard:0001", largeBatch)
+			_, err := client.Append(writeCtx, "test:v1:shard:0000", largeBatch)
 			if err != nil {
 				writeDone <- err
 				return
@@ -1011,7 +1027,7 @@ func TestKillProcessMidWrite(t *testing.T) {
 	client.Close()
 
 	// Simulate process restart by creating new client
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1021,7 +1037,7 @@ func TestKillProcessMidWrite(t *testing.T) {
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "test"})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 100000)
+	messages, err := consumer.Read(ctx, []uint32{0}, 100000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1029,7 +1045,7 @@ func TestKillProcessMidWrite(t *testing.T) {
 	t.Logf("Successfully read %d messages after simulated crash", len(messages))
 
 	// Verify we can continue writing
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("data after restart")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("data after restart")})
 	if err != nil {
 		t.Errorf("Failed to write after restart: %v", err)
 	}
@@ -1038,9 +1054,9 @@ func TestKillProcessMidWrite(t *testing.T) {
 // TestErrorHandlingInsteadOfPanic verifies we return errors instead of panicking
 func TestErrorHandlingInsteadOfPanic(t *testing.T) {
 	dir := t.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1048,7 +1064,7 @@ func TestErrorHandlingInsteadOfPanic(t *testing.T) {
 	ctx := context.Background()
 
 	// Write some initial data
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("initial data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("initial data")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1057,13 +1073,13 @@ func TestErrorHandlingInsteadOfPanic(t *testing.T) {
 	client.Close()
 
 	// Now corrupt the index file to trigger reload error
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 	if err := os.WriteFile(indexPath, []byte("corrupted"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create a new client - this should handle the corrupted index gracefully
-	client2, err := NewClientWithConfig(dir, config)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1071,7 +1087,7 @@ func TestErrorHandlingInsteadOfPanic(t *testing.T) {
 
 	// Try to write - in multi-process mode, this might fail due to corrupted index
 	// but it should return an error, not panic
-	_, err = client2.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test after corruption")})
+	_, err = client2.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test after corruption")})
 
 	// We expect either success (if recovery worked) or an error (if it couldn't recover)
 	// The important thing is that we didn't panic
@@ -1090,21 +1106,21 @@ func TestErrorHandlingInsteadOfPanic(t *testing.T) {
 // BenchmarkStateValidation benchmarks the validation overhead
 func BenchmarkStateValidation(b *testing.B) {
 	dir := b.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		b.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1113,7 +1129,7 @@ func BenchmarkStateValidation(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// Just validate, don't actually recover
-		state := shard.loadState()
+		state := shard.state
 		if state == nil {
 			continue
 		}

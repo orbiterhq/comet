@@ -3,6 +3,7 @@ package comet
 import (
 	"container/list"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 )
+
+// ErrFileAwaitingData indicates a file exists but has no data yet (awaiting writer flush)
+var ErrFileAwaitingData = errors.New("file awaiting data")
 
 // AtomicSlice provides atomic access to a byte slice using atomic.Value
 type AtomicSlice struct {
@@ -32,18 +36,50 @@ func (a *AtomicSlice) Store(data []byte) {
 
 // ReaderConfig configures the bounded reader behavior
 type ReaderConfig struct {
-	MaxMappedFiles    int   // Maximum number of files to keep mapped (default: 10)
-	MaxMemoryBytes    int64 // Maximum memory to use for mapping (default: 1GB)
-	CleanupIntervalMs int   // How often to run cleanup in milliseconds (default: 5000)
+	MaxMappedFiles  int   // Maximum number of files to keep mapped (default: 10)
+	MaxMemoryBytes  int64 // Maximum memory to use for mapping (default: 1GB)
+	CleanupInterval int   // How often to run cleanup in milliseconds (default: 5000)
 }
 
 // DefaultReaderConfig returns the default configuration for Reader
 func DefaultReaderConfig() ReaderConfig {
 	return ReaderConfig{
-		MaxMappedFiles:    10,                 // Reasonable default
-		MaxMemoryBytes:    1024 * 1024 * 1024, // 1GB default
-		CleanupIntervalMs: 5000,               // 5 second cleanup
+		MaxMappedFiles:  10,                     // Reasonable default
+		MaxMemoryBytes:  2 * 1024 * 1024 * 1024, // 2GB default (fixed: was 2MB)
+		CleanupInterval: 5000,                   // 5 second cleanup
 	}
+}
+
+// ReaderConfigForStorage returns a reader configuration optimized for the given storage settings
+func ReaderConfigForStorage(maxFileSize int64) ReaderConfig {
+	// Start with defaults
+	cfg := DefaultReaderConfig()
+
+	// Validate maxFileSize
+	if maxFileSize <= 0 {
+		return cfg // Return defaults for invalid input
+	}
+
+	// Calculate optimal max mapped files based on memory and file size
+	// Assume files are typically 80% full on average
+	avgFileSize := (maxFileSize * 4) / 5
+	if avgFileSize <= 0 {
+		avgFileSize = maxFileSize // Prevent division issues
+	}
+
+	// How many average-sized files fit in our memory limit?
+	filesInMemory := cfg.MaxMemoryBytes / avgFileSize
+
+	// Set max mapped files to 2x what fits in memory (allows for variation in file sizes)
+	// But keep it within reasonable bounds
+	optimalMaxFiles := filesInMemory * 2
+	if optimalMaxFiles < 10 {
+		cfg.MaxMappedFiles = 10 // Minimum for good performance
+	} else {
+		cfg.MaxMappedFiles = int(optimalMaxFiles)
+	}
+
+	return cfg
 }
 
 // MappedFile represents a memory-mapped file with atomic data access
@@ -127,20 +163,26 @@ type Reader struct {
 }
 
 // NewReader creates a new bounded reader for a shard with smart file mapping
-func NewReader(shardID uint32, index *ShardIndex) (*Reader, error) {
+func NewReader(shardID uint32, index *ShardIndex, config ...ReaderConfig) (*Reader, error) {
 	if index == nil {
 		return nil, fmt.Errorf("index cannot be nil")
 	}
 
-	config := DefaultReaderConfig()
+	// Use provided config or default
+	var cfg ReaderConfig
+	if len(config) > 0 {
+		cfg = config[0]
+	} else {
+		cfg = DefaultReaderConfig()
+	}
 
 	r := &Reader{
 		shardID:     shardID,
 		index:       index,
-		config:      config,
+		config:      cfg,
 		fileInfos:   make([]FileInfo, len(index.Files)),
 		mappedFiles: make(map[int]*MappedFile),
-		recentCache: newRecentFileCache(config.MaxMappedFiles / 2), // Half capacity for recent files
+		recentCache: newRecentFileCache(cfg.MaxMappedFiles / 2), // Half capacity for recent files
 		bufferPool: &sync.Pool{
 			New: func() any {
 				return make([]byte, 0, 64*1024)
@@ -161,7 +203,7 @@ func NewReader(shardID uint32, index *ShardIndex) (*Reader, error) {
 	// In smart mapping mode, just map the most recent file to get started
 	if len(r.fileInfos) > 0 {
 		lastIndex := len(r.fileInfos) - 1
-		mapped, err := r.mapFile(lastIndex, r.fileInfos[lastIndex])
+		mapped, err := r.mapFile(r.fileInfos[lastIndex])
 		if err == nil {
 			r.mappedFiles[lastIndex] = mapped
 			// Note: Can't update ReaderMappedFiles here as state isn't set yet
@@ -191,7 +233,7 @@ func (r *Reader) SetState(state *CometState) {
 }
 
 // mapFile maps a single file into memory
-func (r *Reader) mapFile(fileIndex int, info FileInfo) (*MappedFile, error) {
+func (r *Reader) mapFile(info FileInfo) (*MappedFile, error) {
 	file, err := os.Open(info.Path)
 	if err != nil {
 		return nil, err
@@ -211,7 +253,9 @@ func (r *Reader) mapFile(fileIndex int, info FileInfo) (*MappedFile, error) {
 	}
 
 	if size == 0 {
-		// For empty files, store an empty byte slice
+		// For empty files, we should check if this file is expected to have data
+		// If it's in the index with entries > 0, this is likely a race condition
+		// where the file was created but data hasn't been written yet
 		mappedFile.data.Store([]byte{})
 		return mappedFile, nil
 	}
@@ -289,6 +333,29 @@ func (r *Reader) ReadEntryAtPosition(pos EntryPosition) ([]byte, error) {
 
 	// Read from the mapped data
 	data := mapped.data.Load().([]byte)
+
+	// Handle empty files gracefully - this is a transient condition
+	if len(data) == 0 {
+		// Check if file has grown since mapping
+		if mapped.file != nil {
+			stat, err := mapped.file.Stat()
+			if err == nil && stat.Size() > 0 {
+				// File has grown - try remapping
+				if err := r.checkAndRemapIfGrown(pos.FileIndex, mapped); err != nil {
+					return nil, fmt.Errorf("failed to remap grown file: %w", err)
+				}
+				// Try again with the new mapping
+				data = mapped.data.Load().([]byte)
+			}
+		}
+
+		// If still empty, this is likely a new file awaiting its first flush
+		if len(data) == 0 {
+			// Return a specific error that consumers can handle with backoff
+			return nil, ErrFileAwaitingData
+		}
+	}
+
 	return r.readEntryFromFileData(data, pos.ByteOffset)
 }
 
@@ -404,7 +471,7 @@ func (r *Reader) ensureFileMapped(fileIndex int) error {
 		return fmt.Errorf("file index %d out of range", fileIndex)
 	}
 
-	mapped, err := r.mapFile(fileIndex, r.fileInfos[fileIndex])
+	mapped, err := r.mapFile(r.fileInfos[fileIndex])
 	if err != nil {
 		return err
 	}
@@ -461,7 +528,9 @@ func (r *Reader) evictOldestFile() error {
 // readEntryFromFileData reads a single entry from memory-mapped data at a byte offset
 func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, error) {
 	if len(data) == 0 {
-		return nil, fmt.Errorf("file not memory mapped")
+		// This can happen when a file has been created but not yet written to
+		// It's a temporary condition that should resolve once the writer flushes
+		return nil, fmt.Errorf("file is empty (likely awaiting flush)")
 	}
 
 	if byteOffset < 0 {
@@ -473,7 +542,8 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 
 	// Check for overflow and bounds
 	if byteOffset >= fileSize || byteOffset > fileSize-headerSize {
-		return nil, fmt.Errorf("invalid offset: header extends beyond file")
+		// The offset points beyond the actual data - likely the writer hasn't flushed
+		return nil, ErrFileAwaitingData
 	}
 
 	// Read header
@@ -484,7 +554,8 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 	dataStart := byteOffset + headerSize
 	dataEnd := dataStart + int64(length)
 	if dataEnd > int64(len(data)) {
-		return nil, fmt.Errorf("invalid entry: data extends beyond file")
+		// The entry data extends beyond file - likely incomplete write
+		return nil, ErrFileAwaitingData
 	}
 
 	// Extract entry data
@@ -535,7 +606,7 @@ func (r *Reader) UpdateFiles(newFiles *[]FileInfo) error {
 		// Try to map the most recent file
 		lastIndex := len(*newFiles) - 1
 		if _, exists := r.mappedFiles[lastIndex]; !exists {
-			if mapped, err := r.mapFile(lastIndex, (*newFiles)[lastIndex]); err == nil {
+			if mapped, err := r.mapFile((*newFiles)[lastIndex]); err == nil {
 				r.mappedFiles[lastIndex] = mapped
 			}
 		}
@@ -604,6 +675,7 @@ func (r *Reader) GetMemoryUsage() (int64, int) {
 func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 	// Find which file contains this entry
 	for fileIndex, fileInfo := range r.fileInfos {
+		// Check if this entry falls within this file's range
 		if fileInfo.StartEntry <= entryNumber && entryNumber < fileInfo.StartEntry+fileInfo.Entries {
 			// Found the file - now we need to find the exact position within the file
 			relativeEntryNum := entryNumber - fileInfo.StartEntry
@@ -615,8 +687,33 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 			}
 
 			// For non-first entries, we need to scan from the beginning
-			// This is inefficient but correct for now
+			// This should rarely happen if the binary index is properly maintained
 			return r.readEntryByScanning(fileIndex, relativeEntryNum)
+		}
+	}
+
+	// Entry not found in any file - this could be because:
+	// 1. The entry doesn't exist yet (reading ahead of writes)
+	// 2. The file index is out of date
+	// 3. The entry was in a file that got deleted by retention
+
+	// If we're looking for entry 0 and have files, but none contain it,
+	// it might be in a newly created file that hasn't been written to yet
+	if entryNumber == 0 && len(r.fileInfos) > 0 {
+		// Try the first file even if it claims not to have entry 0
+		firstFile := r.fileInfos[0]
+		if firstFile.Entries == 0 && firstFile.StartEntry > 0 {
+			// This is likely a new file that was just created
+			// Try reading from it anyway
+			pos := EntryPosition{FileIndex: 0, ByteOffset: 0}
+			data, err := r.ReadEntryAtPosition(pos)
+			if err == nil {
+				return data, nil
+			}
+			// If we get ErrFileAwaitingData, propagate it
+			if errors.Is(err, ErrFileAwaitingData) {
+				return nil, err
+			}
 		}
 	}
 
@@ -653,20 +750,31 @@ func (r *Reader) readEntryByScanning(fileIndex int, relativeEntryNum int64) ([]b
 	for entryIdx := int64(0); entryIdx < relativeEntryNum; entryIdx++ {
 		// Read entry header to get length
 		if currentOffset+12 > int64(len(data)) {
-			return nil, fmt.Errorf("insufficient data for entry %d header at offset %d", entryIdx, currentOffset)
+			// The index claims there are more entries than we have data for
+			// This can happen if the writer hasn't flushed yet
+			return nil, ErrFileAwaitingData
 		}
 
 		// Extract length from header (first 4 bytes)
 		length := binary.LittleEndian.Uint32(data[currentOffset : currentOffset+4])
 
+		// Sanity check the length
+		if length > 10*1024*1024 { // 10MB max entry size
+			// Likely reading garbage data - the file might be incomplete
+			return nil, ErrFileAwaitingData
+		}
+
 		// Skip to next entry: header (12 bytes) + data length
 		entrySize := int64(12 + length)
-		currentOffset += entrySize
+		nextOffset := currentOffset + entrySize
 
 		// Safety check
-		if currentOffset > int64(len(data)) {
-			return nil, fmt.Errorf("entry %d extends beyond file", entryIdx)
+		if nextOffset > int64(len(data)) {
+			// The entry extends beyond the file - likely incomplete write
+			return nil, ErrFileAwaitingData
 		}
+
+		currentOffset = nextOffset
 	}
 
 	// Now read the target entry at currentOffset

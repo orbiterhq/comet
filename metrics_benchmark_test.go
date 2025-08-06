@@ -23,7 +23,7 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 		},
 		{
 			name:   "WithMetrics",
-			config: MultiProcessConfig(), // This enables mmap state with metrics
+			config: DeprecatedMultiProcessConfig(0, 2), // This enables mmap state with metrics
 		},
 	}
 
@@ -32,7 +32,7 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 	for _, cfg := range configs {
 		for _, size := range sizes {
 			b.Run(fmt.Sprintf("%s/Size=%d", cfg.name, size), func(b *testing.B) {
-				client, err := NewClientWithConfig(dir+"/"+cfg.name, cfg.config)
+				client, err := NewClient(dir+"/"+cfg.name, cfg.config)
 				if err != nil {
 					b.Fatal(err)
 				}
@@ -50,7 +50,7 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 
 				// Benchmark write operations
 				for i := 0; i < b.N; i++ {
-					_, err := client.Append(ctx, "test:v1:shard:0001", entries)
+					_, err := client.Append(ctx, "test:v1:shard:0000", entries)
 					if err != nil {
 						b.Fatal(err)
 					}
@@ -59,9 +59,9 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 				b.StopTimer()
 
 				// Report metrics if available
-				shard, err := client.getOrCreateShard(1)
+				shard, err := client.getOrCreateShard(0)
 				if err == nil {
-					if state := shard.loadState(); state != nil {
+					if state := shard.state; state != nil {
 						b.ReportMetric(float64(state.TotalWrites)/float64(b.N), "writes/op")
 						avgLatency := state.GetAverageWriteLatency()
 						if avgLatency > 0 {
@@ -74,46 +74,14 @@ func BenchmarkMetricsOverhead(b *testing.B) {
 	}
 }
 
-// BenchmarkLatencyMetrics specifically benchmarks the latency tracking overhead
-func BenchmarkLatencyMetrics(b *testing.B) {
-	dir := b.TempDir()
-	config := MultiProcessConfig()
-
-	client, err := NewClientWithConfig(dir, config)
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer client.Close()
-
-	shard, err := client.getOrCreateShard(1)
-	if err != nil {
-		b.Fatal(err)
-	}
-
-	if shard.loadState() == nil {
-		b.Skip("State not available")
-	}
-
-	b.Run("UpdateWriteLatency", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			// Simulate various latencies
-			latency := uint64(100000 + i%50000) // 100-150μs range
-			if state := shard.loadState(); state != nil {
-				state.UpdateWriteLatency(latency)
-			}
-		}
-	})
-}
-
 // BenchmarkCompressionMetrics benchmarks compression with metrics tracking
 func BenchmarkCompressionMetrics(b *testing.B) {
 	ctx := context.Background()
 	dir := b.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Compression.MinCompressSize = 100 // Enable compression
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -130,7 +98,7 @@ func BenchmarkCompressionMetrics(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, err := client.Append(ctx, "test:v1:shard:0001", entries)
+		_, err := client.Append(ctx, "test:v1:shard:0000", entries)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -139,8 +107,8 @@ func BenchmarkCompressionMetrics(b *testing.B) {
 	b.StopTimer()
 
 	// Report compression metrics
-	shard, _ := client.getOrCreateShard(1)
-	if state := shard.loadState(); state != nil {
+	shard, _ := client.getOrCreateShard(0)
+	if state := shard.state; state != nil {
 		ratio := state.GetCompressionRatioFloat()
 		b.ReportMetric(ratio*100, "%compression")
 		if state.CompressionTimeNanos > 0 {
@@ -154,9 +122,9 @@ func BenchmarkCompressionMetrics(b *testing.B) {
 func BenchmarkConcurrentMetrics(b *testing.B) {
 	ctx := context.Background()
 	dir := b.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -188,7 +156,7 @@ func BenchmarkConcurrentMetrics(b *testing.B) {
 	for i := uint32(1); i <= 4; i++ {
 		shard, err := client.getOrCreateShard(i)
 		if err == nil {
-			if state := shard.loadState(); state != nil {
+			if state := shard.state; state != nil {
 				totalWrites += state.TotalWrites
 				totalLatency += state.WriteLatencySum
 			}
@@ -205,12 +173,12 @@ func BenchmarkConcurrentMetrics(b *testing.B) {
 func BenchmarkRetentionMetrics(b *testing.B) {
 	ctx := context.Background()
 	dir := b.TempDir()
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
 	config.Storage.MaxFileSize = 1024 // Small files to force rotation
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -219,7 +187,7 @@ func BenchmarkRetentionMetrics(b *testing.B) {
 	// Write data to create multiple files
 	data := make([]byte, 512)
 	for i := 0; i < 10; i++ {
-		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{data})
+		_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{data})
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -236,8 +204,8 @@ func BenchmarkRetentionMetrics(b *testing.B) {
 	b.StopTimer()
 
 	// Report retention metrics
-	shard, _ := client.getOrCreateShard(1)
-	if state := shard.loadState(); state != nil {
+	shard, _ := client.getOrCreateShard(0)
+	if state := shard.state; state != nil {
 		b.ReportMetric(float64(state.RetentionRuns), "runs")
 		if state.RetentionTimeNanos > 0 && state.RetentionRuns > 0 {
 			avgRetentionTime := float64(state.RetentionTimeNanos) / float64(state.RetentionRuns)

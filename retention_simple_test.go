@@ -15,7 +15,7 @@ func TestRetentionSimple(t *testing.T) {
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.CleanupInterval = 50 * time.Millisecond
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestRetentionSimple(t *testing.T) {
 
 	// Write some data
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	_, err = client.Append(ctx, streamName, [][]byte{
 		[]byte(`{"test": "retention"}`),

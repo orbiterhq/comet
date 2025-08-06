@@ -16,14 +16,14 @@ func TestMissingEntry_FirstWrite(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Log.EnableDebug = true
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 
 	// Track the IDs we get when writing
 	var writtenIDs []int64
@@ -37,6 +37,11 @@ func TestMissingEntry_FirstWrite(t *testing.T) {
 			writtenIDs = append(writtenIDs, ids[0].EntryNumber)
 			t.Logf("Write %d: Got ID %d", i, ids[0].EntryNumber)
 		}
+	}
+
+	// Ensure data is flushed before scanning
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// Now scan and see what we can read
@@ -75,18 +80,18 @@ func TestMissingEntry_FirstWrite(t *testing.T) {
 func TestMissingEntry_StateVsIndex(t *testing.T) {
 	dir := t.TempDir()
 
-	config := MultiProcessConfig()
+	config := DeprecatedMultiProcessConfig(0, 2)
 	config.Log.EnableDebug = true
 
 	// First process writes
 	{
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		ctx := context.Background()
-		streamName := "test:v1:shard:0001"
+		streamName := "test:v1:shard:0000"
 
 		// Write exactly 3 entries
 		for i := 0; i < 3; i++ {
@@ -104,7 +109,7 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 		}
 
 		// Get shard state before closing
-		shard, _ := client.getOrCreateShard(1)
+		shard, _ := client.getOrCreateShard(0)
 		shard.mu.RLock()
 		t.Logf("Process 1: Before close - Index CurrentEntryNumber: %d", shard.index.CurrentEntryNumber)
 		t.Logf("Process 1: Before close - Index Files: %d", len(shard.index.Files))
@@ -113,7 +118,7 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 				t.Logf("  File %d: %s (entries %d-%d)", i, f.Path, f.StartEntry, f.StartEntry+f.Entries-1)
 			}
 		}
-		if state := shard.loadState(); state != nil {
+		if state := shard.state; state != nil {
 			t.Logf("Process 1: Before close - State LastEntryNumber: %d", state.GetLastEntryNumber())
 		}
 		shard.mu.RUnlock()
@@ -126,7 +131,7 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 		if IsDebug() {
 			t.Logf("TRACE: Debug is enabled, about to create second client")
 		}
-		client, err := NewClientWithConfig(dir, config)
+		client, err := NewClient(dir, config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,16 +144,16 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		streamName := "test:v1:shard:0001"
+		streamName := "test:v1:shard:0000"
 
 		// Get shard state after loading
-		shard, _ := client.getOrCreateShard(1)
+		shard, _ := client.getOrCreateShard(0)
 		shard.mu.RLock()
 		if IsDebug() {
 			t.Logf("TRACE: Got shard pointer %p, index pointer %p", shard, shard.index)
 		}
 		t.Logf("Process 2: After load - Index CurrentEntryNumber: %d", shard.index.CurrentEntryNumber)
-		if state := shard.loadState(); state != nil {
+		if state := shard.state; state != nil {
 			t.Logf("Process 2: After load - State LastEntryNumber: %d", state.GetLastEntryNumber())
 		}
 		shard.mu.RUnlock()
@@ -158,7 +163,7 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 		var ids []int64
 
 		// Also manually create a reader to test direct access
-		shard2, _ := client.getOrCreateShard(1)
+		shard2, _ := client.getOrCreateShard(0)
 		shard2.mu.RLock()
 		if shard2.index != nil && len(shard2.index.Files) > 0 {
 			t.Logf("Process 2: Index has %d files:", len(shard2.index.Files))

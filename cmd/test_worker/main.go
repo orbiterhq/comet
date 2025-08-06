@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/orbiterhq/comet"
@@ -54,8 +55,12 @@ func main() {
 }
 
 func runWriter(dir, id string, duration time.Duration) {
-	config := comet.MultiProcessConfig()
-	client, err := comet.NewClientWithConfig(dir, config)
+	processID, err := strconv.Atoi(id)
+	if err != nil {
+		log.Fatalf("invalid process ID '%s': %v", id, err)
+	}
+	config := comet.DeprecatedMultiProcessConfig(processID, 2)
+	client, err := comet.NewClient(dir, config)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
@@ -78,7 +83,7 @@ func runWriter(dir, id string, duration time.Duration) {
 			// Write a batch of entries
 			batch := make([][]byte, 10)
 			for i := 0; i < 10; i++ {
-				entry := map[string]interface{}{
+				entry := map[string]any{
 					"writer_id": id,
 					"sequence":  count + i,
 					"timestamp": time.Now().UnixNano(),
@@ -98,8 +103,12 @@ func runWriter(dir, id string, duration time.Duration) {
 }
 
 func runReader(dir, id string, duration time.Duration) {
-	config := comet.MultiProcessConfig()
-	client, err := comet.NewClientWithConfig(dir, config)
+	processID, err := strconv.Atoi(id)
+	if err != nil {
+		log.Fatalf("invalid process ID '%s': %v", id, err)
+	}
+	config := comet.DeprecatedMultiProcessConfig(processID, 2)
+	client, err := comet.NewClient(dir, config)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
@@ -131,7 +140,7 @@ func runReader(dir, id string, duration time.Duration) {
 
 			// Verify data integrity
 			for _, msg := range messages {
-				var data map[string]interface{}
+				var data map[string]any
 				if err := json.Unmarshal(msg.Data, &data); err != nil {
 					log.Printf("Reader %s: corrupted message: %v", id, err)
 				}
@@ -160,8 +169,12 @@ func runReader(dir, id string, duration time.Duration) {
 }
 
 func runBenchmark(dir, id string, duration time.Duration) {
-	config := comet.MultiProcessConfig()
-	client, err := comet.NewClientWithConfig(dir, config)
+	processID, err := strconv.Atoi(id)
+	if err != nil {
+		log.Fatalf("invalid process ID '%s': %v", id, err)
+	}
+	config := comet.DeprecatedMultiProcessConfig(processID, 2)
+	client, err := comet.NewClient(dir, config)
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
@@ -175,7 +188,7 @@ func runBenchmark(dir, id string, duration time.Duration) {
 	// Prepare batch
 	batch := make([][]byte, 100)
 	for i := 0; i < 100; i++ {
-		entry := map[string]interface{}{
+		entry := map[string]any{
 			"writer_id": id,
 			"sequence":  i,
 			"timestamp": time.Now().UnixNano(),
@@ -215,12 +228,13 @@ func runRetentionTest() {
 		log.Fatal("--dir and --stream are required")
 	}
 
-	// Use same config as test
-	config := comet.MultiProcessConfig()
+	// Use single-process mode for retention test workers
+	// This allows all workers to access the same shard for testing race conditions
+	config := comet.DefaultCometConfig()
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0
 
-	client, err := comet.NewClientWithConfig(*dir, config)
+	client, err := comet.NewClient(*dir, config)
 	if err != nil {
 		log.Fatalf("Worker %d: failed to create client: %v", *workerID, err)
 	}
@@ -273,8 +287,8 @@ func runIndexRebuildTest() {
 	log.Printf("Starting index rebuild test in separate process")
 	log.Printf("Expected: %d files, %d entries", *initialFiles, *initialEntries)
 
-	config := comet.MultiProcessConfig()
-	client, err := comet.NewClientWithConfig(*dir, config)
+	config := comet.DeprecatedMultiProcessConfig(0, 1)
+	client, err := comet.NewClient(*dir, config)
 	if err != nil {
 		log.Fatalf("Failed to create client (this should trigger index rebuild): %v", err)
 	}
@@ -328,12 +342,12 @@ func runRetentionDebug() {
 
 	log.Printf("=== RETENTION DEBUG WORKER ===")
 
-	config := comet.MultiProcessConfig()
+	config := comet.DeprecatedMultiProcessConfig(0, 1)
 	config.Retention.MaxAge = 100 * time.Millisecond
 	config.Retention.MinFilesToKeep = 0
 	config.Retention.ProtectUnconsumed = false
 
-	client, err := comet.NewClientWithConfig(*dir, config)
+	client, err := comet.NewClient(*dir, config)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}

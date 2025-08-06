@@ -18,7 +18,7 @@ func TestGetShardStats(t *testing.T) {
 
 	// Write some data
 	for i := 0; i < 10; i++ {
-		_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+		_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -32,7 +32,7 @@ func TestGetShardStats(t *testing.T) {
 	defer consumer.Close()
 
 	// Read some messages
-	messages, err := consumer.Read(ctx, []uint32{1}, 5)
+	messages, err := consumer.Read(ctx, []uint32{0}, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestGetShardStats(t *testing.T) {
 	client.Sync(ctx)
 
 	// Get shard stats
-	stats, err := consumer.GetShardStats(ctx, 1)
+	stats, err := consumer.GetShardStats(ctx, 0)
 	if err != nil {
 		t.Fatalf("GetShardStats failed: %v", err)
 	}

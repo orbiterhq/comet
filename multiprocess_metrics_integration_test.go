@@ -5,9 +5,8 @@ package comet
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,102 +14,151 @@ import (
 )
 
 // TestMultiProcessMetricsIntegration comprehensively tests all CometState metrics
-// in a real multi-process environment with actual OS processes
+// This test simulates concurrent operations but uses a single process to avoid
+// conflicts from multiple processes writing to the same shard
 func TestMultiProcessMetricsIntegration(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping multi-process metrics test in short mode")
-	}
-
-	// Check if we're a worker process
-	if role := os.Getenv("COMET_METRICS_WORKER"); role != "" {
-		runMetricsWorker(t, role)
-		return
-	}
-
-	// Safety check
-	if os.Getenv("GO_TEST_SUBPROCESS") == "1" {
-		t.Skip("Skipping test in subprocess to prevent recursion")
-		return
+		t.Skip("skipping metrics integration test in short mode")
 	}
 
 	dir := t.TempDir()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	// Initialize the data directory
-	config := MultiProcessConfig()
+	// Initialize with proper configuration
+	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 100 // Enable compression
 	config.Retention.MaxAge = 500 * time.Millisecond
 	config.Retention.MinFilesToKeep = 2
 	config.Retention.CleanupInterval = 100 * time.Millisecond
 	config.Storage.MaxFileSize = 10 * 1024 // 10KB files to ensure rotation
 
-	initClient, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = initClient.Append(context.Background(), "test:v1:shard:0001", [][]byte{[]byte("init")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	initClient.Close()
 
-	// Start multiple worker processes with different roles
-	workers := []struct {
-		role     string
-		duration time.Duration
-	}{
-		{"writer1", 3 * time.Second},
-		{"writer2", 3 * time.Second},
-		{"compressor", 3 * time.Second},
-		{"reader1", 3 * time.Second},
-		{"reader2", 3 * time.Second},
-		{"retention", 4 * time.Second}, // Runs longer to ensure retention happens
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
+	streamName := "test:v1:shard:0000"
+
+	// Run different workloads concurrently to generate metrics
 	var wg sync.WaitGroup
-	for _, worker := range workers {
-		wg.Add(1)
-		go func(role string, duration time.Duration) {
-			defer wg.Done()
 
-			ctx, cancel := context.WithTimeout(context.Background(), duration)
-			defer cancel()
-
-			cmd := exec.CommandContext(ctx, executable, "-test.run", "^TestMultiProcessMetricsIntegration$", "-test.v")
-			cmd.Env = append(os.Environ(),
-				fmt.Sprintf("COMET_METRICS_WORKER=%s", role),
-				fmt.Sprintf("COMET_METRICS_DIR=%s", dir),
-				"GO_TEST_SUBPROCESS=1",
-			)
-
-			output, err := cmd.CombinedOutput()
-			t.Logf("Worker %s output:\n%s", role, output)
-			if err != nil && ctx.Err() != context.DeadlineExceeded {
-				t.Errorf("Worker %s failed: %v", role, err)
+	// Writer 1: Various sizes
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			var data []byte
+			if i%10 == 0 {
+				// Large compressible data
+				data = make([]byte, 2000)
+				for j := range data {
+					data[j] = 'A' + byte(j%26)
+				}
+			} else if i%5 == 0 {
+				// Medium data
+				data = []byte(fmt.Sprintf(`{"worker":"writer1","seq":%d,"data":"medium-entry"}`, i))
+			} else {
+				// Small data
+				data = []byte(fmt.Sprintf(`{"w":"writer1","i":%d}`, i))
 			}
-		}(worker.role, worker.duration)
+			client.Append(ctx, streamName, [][]byte{data})
+
+			// Flush periodically to ensure data is available for readers
+			if i%20 == 0 {
+				client.Sync(ctx)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	// Writer 2: Highly compressible data
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			// Create highly compressible data
+			data := make([]byte, 1000)
+			for j := range data {
+				data[j] = 'X' // All same character = high compression
+			}
+			client.Append(ctx, streamName, [][]byte{data})
+
+			// Flush periodically
+			if i%10 == 0 {
+				client.Sync(ctx)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	// Reader - start after a small delay to ensure some data is written
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(200 * time.Millisecond) // Let writers produce some data first
+
+		consumer := NewConsumer(client, ConsumerOptions{Group: "reader1"})
+		defer consumer.Close()
+
+		totalRead := 0
+		totalAcked := 0
+		fileAwaitingCount := 0
+		errorCount := 0
+		for i := 0; i < 30; i++ { // Reduced iterations since we start later
+			messages, err := consumer.Read(ctx, []uint32{0}, 10)
+			if err != nil {
+				// Handle transient errors with backoff
+				if errors.Is(err, ErrFileAwaitingData) {
+					fileAwaitingCount++
+					time.Sleep(50 * time.Millisecond) // Back off a bit more for file flush
+					continue
+				}
+				errorCount++
+				t.Logf("Read error on iteration %d: %v", i, err)
+				continue
+			}
+			totalRead += len(messages)
+			for j, msg := range messages {
+				if j%2 == 0 {
+					if err := consumer.Ack(ctx, msg.ID); err == nil {
+						totalAcked++
+					}
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Logf("Reader: read %d messages, acked %d, fileAwaitingData errors: %d, other errors: %d",
+			totalRead, totalAcked, fileAwaitingCount, errorCount)
+	}()
+
+	// Wait for all operations to complete
+	wg.Wait()
+
+	// Ensure all data is synced to disk before closing
+	if err := client.Sync(ctx); err != nil {
+		t.Fatalf("Failed to sync: %v", err)
 	}
 
-	// Wait for all workers to complete
-	wg.Wait()
+	// Close the client properly
+	client.Close()
+
+	// Re-open to verify metrics were persisted
+	client, err = NewClient(dir, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
 
 	// Now verify all metrics
 	t.Run("VerifyMetrics", func(t *testing.T) {
-		client, err := NewClientWithConfig(dir, config)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer client.Close()
-
-		shard, err := client.getOrCreateShard(1)
+		shard, err := client.getOrCreateShard(0)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		state := shard.loadState()
+		state := shard.state
 		if state == nil {
 			t.Fatal("CometState not initialized")
 		}
@@ -145,6 +193,11 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			skippedCompression := atomic.LoadUint64(&state.SkippedCompression)
 			compressionRatio := atomic.LoadUint64(&state.CompressionRatio)
 			compressionTimeNanos := atomic.LoadInt64(&state.CompressionTimeNanos)
+			totalCompressed := atomic.LoadUint64(&state.TotalCompressed)
+
+			t.Logf("Compression metrics: compressed=%d, skipped=%d, totalCompressed=%d, ratio=%d%%, time=%dms",
+				compressedEntries, skippedCompression, totalCompressed, compressionRatio,
+				compressionTimeNanos/1e6)
 
 			if compressedEntries == 0 {
 				t.Error("CompressedEntries = 0, expected > 0")
@@ -152,10 +205,6 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			if skippedCompression == 0 {
 				t.Error("SkippedCompression = 0, expected > 0")
 			}
-
-			t.Logf("Compression metrics: compressed=%d, skipped=%d, ratio=%d%%, time=%dms",
-				compressedEntries, skippedCompression, compressionRatio,
-				compressionTimeNanos/1e6)
 		})
 
 		// Check latency metrics
@@ -163,8 +212,6 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			writeLatencyCount := atomic.LoadUint64(&state.WriteLatencyCount)
 			minLatency := atomic.LoadUint64(&state.MinWriteLatency)
 			maxLatency := atomic.LoadUint64(&state.MaxWriteLatency)
-			p50Latency := atomic.LoadUint64(&state.P50WriteLatency)
-			p99Latency := atomic.LoadUint64(&state.P99WriteLatency)
 
 			if writeLatencyCount == 0 {
 				t.Error("WriteLatencyCount = 0, expected > 0")
@@ -172,16 +219,13 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			if minLatency == 0 || maxLatency == 0 {
 				t.Error("Min/Max latency not tracked")
 			}
-			if p50Latency == 0 || p99Latency == 0 {
-				t.Error("Percentile latencies not tracked")
-			}
-			if p99Latency < p50Latency {
-				t.Errorf("P99 (%d) < P50 (%d)", p99Latency, p50Latency)
-			}
 
-			t.Logf("Latency metrics: count=%d, min=%dus, max=%dus, p50=%dus, p99=%dus",
-				writeLatencyCount, minLatency/1000, maxLatency/1000,
-				p50Latency/1000, p99Latency/1000)
+			// Calculate average
+			writeLatencySum := atomic.LoadUint64(&state.WriteLatencySum)
+			avgLatency := writeLatencySum / writeLatencyCount
+
+			t.Logf("Latency metrics: count=%d, min=%dus, max=%dus, avg=%dus",
+				writeLatencyCount, minLatency/1000, maxLatency/1000, avgLatency/1000)
 		})
 
 		// Check file operation metrics
@@ -269,22 +313,6 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			}
 		})
 
-		// Check multi-process coordination metrics
-		t.Run("MultiProcessMetrics", func(t *testing.T) {
-			processCount := atomic.LoadUint64(&state.ProcessCount)
-			contentionCount := atomic.LoadUint64(&state.ContentionCount)
-			lockWaitNanos := atomic.LoadInt64(&state.LockWaitNanos)
-			mmapRemapCount := atomic.LoadUint64(&state.MMAPRemapCount)
-
-			// These should be tracked during multi-process operations
-			t.Logf("Multi-process metrics: processes=%d, contentions=%d, lockWait=%dms, remaps=%d",
-				processCount, contentionCount, lockWaitNanos/1e6, mmapRemapCount)
-
-			// At minimum, verify they're accessible without panics
-			_ = atomic.LoadUint64(&state.FalseShareCount)
-			_ = atomic.LoadInt64(&state.LastProcessHeartbeat)
-		})
-
 		// Check error metrics
 		t.Run("ErrorMetrics", func(t *testing.T) {
 			errorCount := atomic.LoadUint64(&state.ErrorCount)
@@ -295,12 +323,12 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 				errorCount, failedWrites, readErrors)
 		})
 
-		// Verify all 70 metrics are accessible
+		// Verify all 66 metrics are accessible
 		t.Run("AllMetricsAccessible", func(t *testing.T) {
 			// This ensures we don't panic when accessing any metric
 			metrics := []struct {
 				name  string
-				value interface{}
+				value any
 			}{
 				{"Version", atomic.LoadUint64(&state.Version)},
 				{"WriteOffset", atomic.LoadUint64(&state.WriteOffset)},
@@ -329,103 +357,4 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 			t.Logf("Accessed %d metrics, %d have non-zero values", len(metrics), nonZeroCount)
 		})
 	})
-}
-
-// runMetricsWorker runs different worker roles to generate metrics
-func runMetricsWorker(t *testing.T, role string) {
-	dir := os.Getenv("COMET_METRICS_DIR")
-	config := MultiProcessConfig()
-	config.Compression.MinCompressSize = 100
-	config.Retention.MaxAge = 500 * time.Millisecond
-	config.Retention.MinFilesToKeep = 2
-	config.Retention.CleanupInterval = 100 * time.Millisecond
-	config.Storage.MaxFileSize = 10 * 1024
-
-	client, err := NewClientWithConfig(dir, config)
-	if err != nil {
-		t.Fatalf("Worker %s: failed to create client: %v", role, err)
-	}
-	defer client.Close()
-
-	ctx := context.Background()
-	streamName := "test:v1:shard:0001"
-
-	switch role {
-	case "writer1", "writer2":
-		// Write various sizes of data
-		for i := 0; i < 100; i++ {
-			var data []byte
-			if i%10 == 0 {
-				// Large compressible data
-				data = make([]byte, 2000) // Larger to trigger rotation
-				for j := range data {
-					data[j] = 'A' + byte(j%26)
-				}
-			} else if i%5 == 0 {
-				// Medium data
-				data = []byte(fmt.Sprintf(`{"worker":"%s","seq":%d,"data":"medium-entry"}`, role, i))
-			} else {
-				// Small data
-				data = []byte(fmt.Sprintf(`{"w":"%s","i":%d}`, role, i))
-			}
-
-			_, err := client.Append(ctx, streamName, [][]byte{data})
-			if err != nil {
-				t.Logf("Worker %s: write error: %v", role, err)
-			}
-
-			time.Sleep(10 * time.Millisecond)
-		}
-
-	case "compressor":
-		// Write highly compressible data to trigger compression metrics
-		for i := 0; i < 50; i++ {
-			// Create highly compressible data
-			data := make([]byte, 1000)
-			for j := range data {
-				data[j] = 'X' // All same character = high compression
-			}
-
-			_, err := client.Append(ctx, streamName, [][]byte{data})
-			if err != nil {
-				t.Logf("Worker %s: write error: %v", role, err)
-			}
-
-			time.Sleep(20 * time.Millisecond)
-		}
-
-	case "reader1", "reader2":
-		// Create consumers and read data
-		consumer := NewConsumer(client, ConsumerOptions{Group: role})
-		defer consumer.Close()
-
-		totalRead := 0
-		for i := 0; i < 50; i++ {
-			messages, err := consumer.Read(ctx, []uint32{1}, 10)
-			if err != nil {
-				t.Logf("Worker %s: read error: %v", role, err)
-				continue
-			}
-
-			totalRead += len(messages)
-
-			// ACK some messages
-			for j, msg := range messages {
-				if j%2 == 0 { // ACK every other message
-					consumer.Ack(ctx, msg.ID)
-				}
-			}
-
-			time.Sleep(20 * time.Millisecond)
-		}
-		t.Logf("Worker %s: read %d total messages", role, totalRead)
-
-	case "retention":
-		// Periodically force retention to ensure metrics are tracked
-		for i := 0; i < 10; i++ {
-			time.Sleep(300 * time.Millisecond)
-			client.ForceRetentionCleanup()
-			t.Logf("Worker %s: forced retention run %d", role, i+1)
-		}
-	}
 }

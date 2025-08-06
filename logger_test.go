@@ -41,25 +41,25 @@ func (tl *TestLogger) String() string {
 }
 
 // Logger interface implementation
-func (tl *TestLogger) Debug(msg string, keysAndValues ...interface{}) {
+func (tl *TestLogger) Debug(msg string, keysAndValues ...any) {
 	if tl.level <= LogLevelDebug {
 		tl.log("DEBUG", msg, keysAndValues...)
 	}
 }
 
-func (tl *TestLogger) Info(msg string, keysAndValues ...interface{}) {
+func (tl *TestLogger) Info(msg string, keysAndValues ...any) {
 	if tl.level <= LogLevelInfo {
 		tl.log("INFO", msg, keysAndValues...)
 	}
 }
 
-func (tl *TestLogger) Warn(msg string, keysAndValues ...interface{}) {
+func (tl *TestLogger) Warn(msg string, keysAndValues ...any) {
 	if tl.level <= LogLevelWarn {
 		tl.log("WARN", msg, keysAndValues...)
 	}
 }
 
-func (tl *TestLogger) Error(msg string, keysAndValues ...interface{}) {
+func (tl *TestLogger) Error(msg string, keysAndValues ...any) {
 	if tl.level <= LogLevelError {
 		tl.log("ERROR", msg, keysAndValues...)
 	}
@@ -69,12 +69,12 @@ func (tl *TestLogger) WithContext(ctx context.Context) Logger {
 	return tl // Simple implementation for tests
 }
 
-func (tl *TestLogger) WithFields(keysAndValues ...interface{}) Logger {
+func (tl *TestLogger) WithFields(keysAndValues ...any) Logger {
 	// For simplicity, return same logger - could be enhanced if needed
 	return tl
 }
 
-func (tl *TestLogger) log(level, msg string, keysAndValues ...interface{}) {
+func (tl *TestLogger) log(level, msg string, keysAndValues ...any) {
 	fmt.Fprintf(tl.buffer, "[%s] %s", level, msg)
 	for i := 0; i < len(keysAndValues); i += 2 {
 		if i+1 < len(keysAndValues) {

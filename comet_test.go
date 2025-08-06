@@ -46,6 +46,9 @@ func TestClient_AddAndLen(t *testing.T) {
 		t.Errorf("expected 3 IDs, got %d", len(ids))
 	}
 
+	// Debug: log the IDs
+	t.Logf("Appended IDs: %v", ids)
+
 	// Check length
 	length, err = client.Len(ctx, streamName)
 	if err != nil {
@@ -65,7 +68,7 @@ func TestClient_Consumer(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Add test data
 	testData := [][]byte{
@@ -92,7 +95,7 @@ func TestClient_Consumer(t *testing.T) {
 	defer consumer.Close()
 
 	// Read entries
-	messages, err := consumer.Read(ctx, []uint32{1}, 10)
+	messages, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatalf("failed to read entries: %v", err)
 	}
@@ -124,8 +127,13 @@ func TestClient_Consumer(t *testing.T) {
 		}
 	}
 
+	// Flush ACKs to ensure they're persisted before reading again
+	if err := consumer.FlushACKs(ctx); err != nil {
+		t.Fatalf("failed to flush ACKs: %v", err)
+	}
+
 	// Reading again should return no messages
-	messages2, err := consumer.Read(ctx, []uint32{1}, 10)
+	messages2, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatalf("failed to read entries after ack: %v", err)
 	}
@@ -144,7 +152,7 @@ func TestConsumer_Process(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Add test data
 	testData := [][]byte{
@@ -194,7 +202,7 @@ func TestConsumer_Process(t *testing.T) {
 				}
 				return nil
 			},
-				WithShards(1),
+				WithShards(0),
 				WithBatchSize(2),
 			)
 		}()
@@ -224,7 +232,7 @@ func TestConsumer_Process(t *testing.T) {
 	// Test error handling and retries
 	t.Run("ErrorHandling", func(t *testing.T) {
 		// Reset consumer offset
-		err := consumer.ResetOffset(ctx, 1, 0)
+		err := consumer.ResetOffset(ctx, 0, 0)
 		if err != nil {
 			t.Fatalf("failed to reset offset: %v", err)
 		}
@@ -254,7 +262,7 @@ func TestConsumer_Process(t *testing.T) {
 				}
 				return nil
 			},
-				WithShards(1),
+				WithShards(0),
 				WithBatchSize(2),
 				WithMaxRetries(2),
 				WithRetryDelay(10*time.Millisecond),
@@ -283,7 +291,7 @@ func TestConsumer_Process(t *testing.T) {
 
 func TestClient_CrashRecovery(t *testing.T) {
 	dir := t.TempDir()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 	ctx := context.Background()
 
 	// Phase 1: Write some data
@@ -311,7 +319,7 @@ func TestClient_CrashRecovery(t *testing.T) {
 
 	// VALIDATION: Verify all 3 entries are readable BEFORE the "crash"
 	consumer1 := NewConsumer(client1, ConsumerOptions{Group: "pre-crash-validation"})
-	preMessages, err := consumer1.Read(ctx, []uint32{1}, 10)
+	preMessages, err := consumer1.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatalf("failed to read entries before crash: %v", err)
 	}
@@ -330,7 +338,7 @@ func TestClient_CrashRecovery(t *testing.T) {
 	}
 
 	// Check that index was created before closing
-	indexPath := filepath.Join(dir, "shard-0001", "index.bin")
+	indexPath := filepath.Join(dir, "shard-0000", "index.bin")
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
 		t.Fatalf("index.bin not created before close")
 	}
@@ -392,7 +400,7 @@ func TestClient_CrashRecovery(t *testing.T) {
 	})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 10)
+	messages, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatalf("failed to read entries after recovery: %v", err)
 	}
@@ -419,7 +427,7 @@ func TestClient_FileRotation(t *testing.T) {
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Write enough data to trigger file rotation (1GB+ per file)
 	// Use smaller entries but many of them to stay within memory limits
@@ -464,7 +472,7 @@ func TestClient_FileRotation(t *testing.T) {
 	}
 
 	// Check that shard directory contains files
-	shardDir := filepath.Join(dir, "shard-0001")
+	shardDir := filepath.Join(dir, "shard-0000")
 	files, err := os.ReadDir(shardDir)
 	if err != nil {
 		t.Fatalf("failed to read shard directory: %v", err)
@@ -498,7 +506,7 @@ func TestClient_FileRotation(t *testing.T) {
 	// Read in chunks to test cross-file reading
 	readAll := make([]StreamMessage, 0, expectedTotal)
 	for len(readAll) < expectedTotal {
-		messages, err := consumer.Read(ctx, []uint32{1}, 1000)
+		messages, err := consumer.Read(ctx, []uint32{0}, 1000)
 		if err != nil {
 			t.Fatalf("failed to read entries: %v", err)
 		}
@@ -576,14 +584,14 @@ func TestClient_Compression(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 100 // Lower threshold for testing
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Test with mixed sizes - some will compress, some won't
 	testData := [][]byte{
@@ -642,7 +650,7 @@ func TestClient_Compression(t *testing.T) {
 	})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, 10)
+	messages, err := consumer.Read(ctx, []uint32{0}, 10)
 	if err != nil {
 		t.Fatalf("failed to read entries: %v", err)
 	}
@@ -667,14 +675,14 @@ func TestClient_CompressionMetrics(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 100 // Lower threshold to ensure compression
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Create many large entries to potentially overwhelm the compression queue
 	largeEntries := make([][]byte, 10)
@@ -710,14 +718,14 @@ func TestClient_LoggingOptimization(t *testing.T) {
 	dir := t.TempDir()
 
 	// Use default config (optimized for logging)
-	client, err := NewClientWithConfig(dir, DefaultCometConfig())
+	client, err := NewClient(dir, DefaultCometConfig())
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 	defer client.Close()
 
 	ctx := context.Background()
-	streamName := "events:v1:shard:0001"
+	streamName := "events:v1:shard:0000"
 
 	// Typical log entries (small, frequent)
 	logEntries := [][]byte{
@@ -754,11 +762,11 @@ func TestClient_LoggingOptimization(t *testing.T) {
 
 	// All entries should be skipped (too small for compression)
 	expectedTotal := uint64(400) // 100 iterations * 4 entries
-	if stats.TotalEntries != expectedTotal {
+	if stats.TotalEntries != int64(expectedTotal) {
 		t.Errorf("expected %d total entries, got %d", expectedTotal, stats.TotalEntries)
 	}
 
-	if stats.SkippedCompression != expectedTotal {
+	if stats.SkippedCompression != int64(expectedTotal) {
 		t.Errorf("expected %d skipped compressions, got %d", expectedTotal, stats.SkippedCompression)
 	}
 
@@ -771,7 +779,7 @@ func TestClient_LoggingOptimization(t *testing.T) {
 	})
 	defer consumer.Close()
 
-	messages, err := consumer.Read(ctx, []uint32{1}, int(expectedTotal))
+	messages, err := consumer.Read(ctx, []uint32{0}, int(expectedTotal))
 	if err != nil {
 		t.Fatalf("failed to read entries: %v", err)
 	}
@@ -788,6 +796,9 @@ func TestHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+
+	// Sleep longer to ensure uptime is measurable (at least 1 second)
+	time.Sleep(1100 * time.Millisecond)
 
 	// Test initial health - no data written
 	health := client.Health()
@@ -806,7 +817,7 @@ func TestHealth(t *testing.T) {
 
 	// Write some data
 	ctx := context.Background()
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test data")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -830,33 +841,31 @@ func TestHealth(t *testing.T) {
 	}
 
 	// Simulate errors by incrementing error counter
-	client.metrics.ErrorCount.Add(10)
-	client.metrics.LastErrorNano.Store(uint64(time.Now().UnixNano()))
+	client.metrics.WriteErrors.Add(10)
+	client.metrics.LastErrorNano.Store(time.Now().UnixNano())
 
 	// Check health with recent errors
 	health = client.Health()
-	if health.Status != "degraded" {
-		t.Errorf("Expected degraded status with recent errors, got %s", health.Status)
+	if health.Status != "unhealthy" {
+		t.Errorf("Expected unhealthy status with recent errors, got %s", health.Status)
 	}
-	if !strings.Contains(health.Details, "Recent errors detected") {
+	if !strings.Contains(health.Details, "Recent error") {
 		t.Errorf("Expected error details, got %s", health.Details)
 	}
 
-	// Test high error rate
-	client.metrics.TotalEntries.Store(100)
-	client.metrics.ErrorCount.Store(5) // 5% error rate
-
-	health = client.Health()
-	if health.Healthy {
-		t.Error("Expected unhealthy with high error rate")
+	// Test that writes are marked as not OK after errors
+	if health.WritesOK {
+		t.Error("Expected WritesOK to be false after write errors")
 	}
-	if !strings.Contains(health.Details, "High error rate") {
-		t.Errorf("Expected high error rate details, got %s", health.Details)
+
+	// ErrorCount should match WriteErrors
+	if health.ErrorCount != 10 {
+		t.Errorf("Expected error count 10, got %d", health.ErrorCount)
 	}
 
 	// Test uptime
-	if !strings.Contains(health.Uptime, "s") {
-		t.Errorf("Expected uptime to contain seconds, got %s", health.Uptime)
+	if health.Uptime <= 0 {
+		t.Errorf("Expected positive uptime, got %d", health.Uptime)
 	}
 }
 
@@ -874,7 +883,7 @@ func TestDebugLogging(t *testing.T) {
 	config.Log.Logger = testLogger
 	config.Storage.MaxFileSize = 1024 // Small file size to trigger rotation
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -883,7 +892,7 @@ func TestDebugLogging(t *testing.T) {
 	ctx := context.Background()
 
 	// Test 1: Shard creation should log
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test message")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test message")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -902,13 +911,13 @@ func TestDebugLogging(t *testing.T) {
 	// Clear logger to see only rotation logs
 	testLogger.buffer.Reset()
 
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{largeData})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{largeData})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Check if rotation happened
-	shard, _ := client.getOrCreateShard(1)
+	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
 	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()

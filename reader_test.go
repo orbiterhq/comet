@@ -21,14 +21,14 @@ func TestReaderBasicUsage(t *testing.T) {
 	// Create client with standard config
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 1024 // Small files to test multiple files
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	// Write test data
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	for i := 0; i < 10; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "message": "test data for reader"}`, i))
 		_, err := client.Append(ctx, streamName, [][]byte{data})
@@ -37,8 +37,13 @@ func TestReaderBasicUsage(t *testing.T) {
 		}
 	}
 
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal("Failed to get shard:", err)
 	}
@@ -89,14 +94,14 @@ func TestReaderMemoryBounds(t *testing.T) {
 	// Create client and write data to create multiple files
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 512 // Very small files
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	// Write enough data to create multiple files
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	for i := 0; i < 20; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "message": "memory bounds test with longer data to force file rotation"}`, i))
 		_, err := client.Append(ctx, streamName, [][]byte{data})
@@ -105,8 +110,13 @@ func TestReaderMemoryBounds(t *testing.T) {
 		}
 	}
 
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Get the shard
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal("Failed to get shard:", err)
 	}
@@ -159,14 +169,14 @@ func TestReaderCompressedData(t *testing.T) {
 	// Create client with compression enabled
 	config := DefaultCometConfig()
 	config.Compression.MinCompressSize = 50 // Compress entries > 50 bytes
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	// Write data that will be compressed
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	largeData := []byte(fmt.Sprintf(`{"id": 1, "message": "this is a large message that should trigger compression because it exceeds the minimum compression size threshold: %s"}`,
 		"padding data to make this entry large enough for compression testing"))
 
@@ -175,8 +185,13 @@ func TestReaderCompressedData(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Get shard and test Reader can decompress
-	shard, err := client.getOrCreateShard(1)
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,20 +227,25 @@ func TestReaderErrorHandling(t *testing.T) {
 
 	// Create basic setup
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
 	// Write some data
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	_, err = client.Append(ctx, streamName, [][]byte{[]byte("test data")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,13 +280,13 @@ func TestReaderConcurrentAccess(t *testing.T) {
 
 	// Create test data
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
-	streamName := "test:v1:shard:0001"
+	streamName := "test:v1:shard:0000"
 	for i := 0; i < 20; i++ {
 		data := []byte(fmt.Sprintf(`{"id": %d, "message": "concurrent access test"}`, i))
 		_, err = client.Append(ctx, streamName, [][]byte{data})
@@ -275,7 +295,11 @@ func TestReaderConcurrentAccess(t *testing.T) {
 		}
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,18 +380,23 @@ func TestReaderClose(t *testing.T) {
 	ctx := context.Background()
 
 	config := DefaultCometConfig()
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
 
-	_, err = client.Append(ctx, "test:v1:shard:0001", [][]byte{[]byte("test")})
+	_, err = client.Append(ctx, "test:v1:shard:0000", [][]byte{[]byte("test")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	shard, err := client.getOrCreateShard(1)
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	shard, err := client.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +461,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 	config.Storage.MaxFileSize = 4096 // Small-ish files but not too extreme
 	// Reader config is managed internally, we'll use small files to force remapping
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -459,14 +488,14 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 		go func(writerID int) {
 			defer writerWg.Done()
 			for j := 0; ctx.Err() == nil && j < numEntries/numWriters; j++ {
-				data := map[string]interface{}{
+				data := map[string]any{
 					"writer": writerID,
 					"seq":    j,
 					"data":   fmt.Sprintf("test-data-%d-%d", writerID, j),
 				}
 				jsonData, _ := json.Marshal(data)
 
-				_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
+				_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{jsonData})
 				if err != nil {
 					errorCount.Add(1)
 					t.Logf("Write error: %v", err)
@@ -480,6 +509,12 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 		}(i)
 	}
 
+	// Give writers a head start to ensure some data is written
+	time.Sleep(100 * time.Millisecond)
+
+	// Sync to ensure initial writes are visible
+	client.Sync(context.Background())
+
 	// Start readers that continuously read and validate data
 	readerWg := &sync.WaitGroup{}
 	for i := 0; i < numReaders; i++ {
@@ -492,7 +527,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 			defer consumer.Close()
 
 			for ctx.Err() == nil {
-				messages, err := consumer.Read(ctx, []uint32{1}, 10)
+				messages, err := consumer.Read(ctx, []uint32{0}, 10)
 				if err != nil {
 					if ctx.Err() == nil {
 						// Some errors are expected in this stress test
@@ -514,7 +549,7 @@ func TestReaderMemorySafetyConcurrent(t *testing.T) {
 					time.Sleep(time.Duration(rand.Intn(100)) * time.Microsecond)
 
 					// This should not segfault even if the underlying memory was unmapped
-					var decoded map[string]interface{}
+					var decoded map[string]any
 					if err := json.Unmarshal(msg.Data, &decoded); err != nil {
 						errorCount.Add(1)
 						t.Logf("Failed to unmarshal data: %v", err)
@@ -576,7 +611,7 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 	config.Storage.MaxFileSize = 512 // Very small files
 	// Reader will handle memory mapping internally
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -585,19 +620,24 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 	ctx := context.Background()
 
 	// Write entries across multiple files
-	var storedData []map[string]interface{}
+	var storedData []map[string]any
 	for i := 0; i < 20; i++ {
-		data := map[string]interface{}{
+		data := map[string]any{
 			"id":   i,
 			"data": fmt.Sprintf("test-entry-%d", i),
 		}
 		storedData = append(storedData, data)
 
 		jsonData, _ := json.Marshal(data)
-		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
+		_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{jsonData})
 		if err != nil {
 			t.Fatalf("Failed to write: %v", err)
 		}
+	}
+
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	consumer := NewConsumer(client, ConsumerOptions{Group: "test"})
@@ -606,7 +646,7 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 	// Read all messages but don't process them immediately
 	var messages []StreamMessage
 	for len(messages) < len(storedData) {
-		batch, err := consumer.Read(ctx, []uint32{1}, 5)
+		batch, err := consumer.Read(ctx, []uint32{0}, 5)
 		if err != nil {
 			t.Fatalf("Failed to read: %v", err)
 		}
@@ -620,7 +660,7 @@ func TestReaderDataValidityAfterUnmap(t *testing.T) {
 
 	// Now process the messages - the data should still be valid
 	for i, msg := range messages {
-		var decoded map[string]interface{}
+		var decoded map[string]any
 		if err := json.Unmarshal(msg.Data, &decoded); err != nil {
 			t.Errorf("Failed to unmarshal message %d: %v", i, err)
 			continue
@@ -642,7 +682,7 @@ func TestReaderMemoryPressure(t *testing.T) {
 	config.Storage.MaxFileSize = 1024 // 1KB files
 	// Reader will manage memory internally
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -655,7 +695,7 @@ func TestReaderMemoryPressure(t *testing.T) {
 	for i := 0; i < numEntries; i++ {
 		// Create varying sizes of data
 		dataSize := 50 + rand.Intn(100)
-		data := map[string]interface{}{
+		data := map[string]any{
 			"id":   i,
 			"data": string(make([]byte, dataSize)),
 			"size": dataSize,
@@ -666,6 +706,11 @@ func TestReaderMemoryPressure(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to write: %v", err)
 		}
+	}
+
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	// Create multiple consumers reading from different shards concurrently
@@ -690,7 +735,7 @@ func TestReaderMemoryPressure(t *testing.T) {
 
 				for _, msg := range messages {
 					// Verify data can be decoded
-					var decoded map[string]interface{}
+					var decoded map[string]any
 					if err := json.Unmarshal(msg.Data, &decoded); err != nil {
 						t.Errorf("Failed to decode message on shard %d: %v", shardID, err)
 					}
@@ -711,7 +756,7 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Storage.MaxFileSize = 2048
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -722,15 +767,20 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 	// Write test data
 	numEntries := 50
 	for i := 0; i < numEntries; i++ {
-		data := map[string]interface{}{
+		data := map[string]any{
 			"id":      i,
 			"content": fmt.Sprintf("delayed-access-test-%d", i),
 		}
 		jsonData, _ := json.Marshal(data)
-		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
+		_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{jsonData})
 		if err != nil {
 			t.Fatalf("Failed to write: %v", err)
 		}
+	}
+
+	// Sync to ensure data is written to disk
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	consumer := NewConsumer(client, ConsumerOptions{Group: "delayed"})
@@ -739,7 +789,7 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 	// Read messages in batches with delays
 	totalRead := 0
 	for totalRead < numEntries {
-		messages, err := consumer.Read(ctx, []uint32{1}, 10)
+		messages, err := consumer.Read(ctx, []uint32{0}, 10)
 		if err != nil {
 			t.Fatalf("Failed to read: %v", err)
 		}
@@ -765,9 +815,13 @@ func TestReaderDelayedDataAccess(t *testing.T) {
 		// Force some file operations to potentially trigger remapping
 		client.Append(ctx, "test:v1:shard:0002", [][]byte{[]byte("trigger-remap")})
 
+		if err := client.Sync(ctx); err != nil {
+			t.Fatalf("Failed to flush: %v", err)
+		}
+
 		// Now access the delayed data - should not segfault
 		for _, dm := range delayedMessages {
-			var decoded map[string]interface{}
+			var decoded map[string]any
 			if err := json.Unmarshal(dm.data, &decoded); err != nil {
 				t.Errorf("Failed to decode delayed message: %v", err)
 			}
@@ -785,7 +839,7 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 	config.Storage.MaxFileSize = 4096
 	config.Compression.MinCompressSize = 100 // Only compress larger entries
 
-	client, err := NewClientWithConfig(dir, config)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("Failed to create client: %v", err)
 	}
@@ -795,17 +849,17 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 
 	// Write mixed compressed and uncompressed data
 	for i := 0; i < 100; i++ {
-		var data map[string]interface{}
+		var data map[string]any
 		if i%2 == 0 {
 			// Small data - won't be compressed
-			data = map[string]interface{}{
+			data = map[string]any{
 				"id":   i,
 				"type": "small",
 				"data": "x",
 			}
 		} else {
 			// Large data - will be compressed
-			data = map[string]interface{}{
+			data = map[string]any{
 				"id":   i,
 				"type": "large",
 				"data": string(make([]byte, 200)),
@@ -813,10 +867,16 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 		}
 
 		jsonData, _ := json.Marshal(data)
-		_, err := client.Append(ctx, "test:v1:shard:0001", [][]byte{jsonData})
+		_, err := client.Append(ctx, "test:v1:shard:0000", [][]byte{jsonData})
 		if err != nil {
 			t.Fatalf("Failed to write: %v", err)
 		}
+	}
+
+	// Sync to ensure all data is written before reading
+	err = client.Sync(ctx)
+	if err != nil {
+		t.Fatalf("Failed to sync: %v", err)
 	}
 
 	// Read concurrently from multiple consumers
@@ -833,7 +893,7 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 
 			totalRead := 0
 			for totalRead < 20 { // Each consumer reads 20 entries
-				messages, err := consumer.Read(ctx, []uint32{1}, 5)
+				messages, err := consumer.Read(ctx, []uint32{0}, 5)
 				if err != nil {
 					t.Errorf("Read error: %v", err)
 					break
@@ -841,7 +901,7 @@ func TestReaderMixedCompressionSafety(t *testing.T) {
 
 				for _, msg := range messages {
 					// Decode and verify
-					var decoded map[string]interface{}
+					var decoded map[string]any
 					if err := json.Unmarshal(msg.Data, &decoded); err != nil {
 						t.Errorf("Failed to decode: %v", err)
 						continue

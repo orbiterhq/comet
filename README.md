@@ -2,10 +2,10 @@
 
 High-performance embedded segmented log for edge observability. Built for single-digit microsecond latency and bounded resources.
 
+[**Architecture Guide**](ARCHITECTURE.md) | [**Performance Guide**](PERFORMANCE.md) | [**Troubleshooting**](TROUBLESHOOTING.md) | [**Security**](SECURITY.md) | [**API Reference**](https://pkg.go.dev/github.com/orbiterhq/comet)
+
 > [!NOTE]
 > This is very much an experiment in vibe coding. While the ideas are sound and the test coverage is robust, you may want to keep that in mind before using it for now.
-
-[**Architecture Guide**](ARCHITECTURE.md) | [**Performance Guide**](PERFORMANCE.md) | [**Troubleshooting**](TROUBLESHOOTING.md) | [**Security**](SECURITY.md) | [**API Reference**](https://pkg.go.dev/github.com/orbiterhq/comet)
 
 ## What is Comet?
 
@@ -30,7 +30,8 @@ Edge deployments need local observability buffering, but other solutions fall sh
 
 ## Features
 
-- **Ultra-low latency**: 1.7μs single-process, 33μs multi-process writes
+- **Ultra-low latency**: Up to 12,634,200 entries/sec with batching (2.4M ops/sec with optimal sharding)
+  - Comet uses periodic checkpoints (default: every 1000 writes or 1 second) to persist data to disk. Between checkpoints, writes are acknowledged after being written to the OS page cache.
 - **Predictable performance**: No compaction stalls or write amplification like LSM-trees
 - **True multi-process support**: Hybrid coordination (mmap + file locks), crash-safe rotation, real OS processes
 - **O(log n) lookups**: Binary searchable index with bounded memory usage
@@ -42,27 +43,26 @@ Edge deployments need local observability buffering, but other solutions fall sh
 
 ## Multi-Process Coordination
 
-Unlike other embedded solutions, Comet enables **true multi-process coordination**.
-Perfect for prefork web servers like Go Fiber.
+Unlike other embedded solutions, Comet enables **true multi-process coordination** through memory-mapped state files. Perfect for prefork web servers and multi-process deployments.
 
-- **Hybrid coordination strategy** - Memory-mapped atomics for high-frequency operations, OS file locks for critical sections
-- **Crash-safe rotation** - File locks provide automatic cleanup when processes crash
-- **Real process testing** - Spawns actual OS processes, not just goroutines
-- **33μs write latency** - vs. 4,470x with traditional file locking
+- **Automatic shard ownership** - Each process owns specific shards based on `shardID % processCount == processID`
+- **Per-shard state files** - Each shard has its own `comet.state` for metrics and recovery
+- **Memory-mapped coordination** - Lock-free operations through atomic memory access
+- **Crash-safe design** - State files enable automatic recovery on restart
 
 ## How Does Comet Compare?
 
-| Feature              | Comet                      | Kafka               | Redis Streams      | RocksDB            | Proof                                         |
-| -------------------- | -------------------------- | ------------------- | ------------------ | ------------------ | --------------------------------------------- |
-| **Write Latency**    | 1.7μs (33μs multi-process) | 1-5ms               | 50-100μs           | 50-200μs           | [Code](benchmarks_test.go#L22)                |
-| **Multi-Process**    | ✅ Real OS processes       | ✅ Distributed      | ❌ Single process  | ⚠️ Mutex locks      | [Test](multiprocess_simple_test.go#L101)      |
-| **Resource Bounds**  | ✅ Time & size limits      | ⚠️ JVM heap          | ⚠️ Memory only      | ⚠️ Manual compact   | [Retention](retention.go#L144-L196)           |
-| **Crash Recovery**   | ✅ Automatic               | ✅ Replicas         | ⚠️ AOF/RDB          | ✅ WAL             | [Test](multiprocess_integration_test.go#L154) |
-| **Zero Copy Reads**  | ✅ mmap                    | ❌ Network          | ❌ Serialization   | ❌ Deserialization | [Code](reader.go#L89)                         |
-| **Storage Overhead** | ~12 bytes/entry            | ~50 bytes/entry     | ~20 bytes/entry    | ~30 bytes/entry    | [Format](ARCHITECTURE.md#wire-format)         |
-| **Sharding**         | ✅ Built-in                | ✅ Partitions       | ❌ Manual          | ❌ Manual          | [Code](client.go#L776)                        |
-| **Compression**      | ✅ Optional zstd           | ✅ Multiple codecs  | ❌ None            | ✅ Multiple        | [Code](benchmarks_test.go#L283)               |
-| **Embedded**         | ✅ Native                  | ❌ Requires cluster | ❌ Requires server | ✅ Native          | -                                             |
+| Feature              | Comet                      | Kafka               | Redis Streams      | RocksDB            | Proof                                 |
+| -------------------- | -------------------------- | ------------------- | ------------------ | ------------------ | ------------------------------------- |
+| **Write Latency**    | 1.7μs (33μs multi-process) | 1-5ms               | 50-100μs           | 50-200μs           | [Benchmarks](benchmarks_test.go)      |
+| **Multi-Process**    | ✅ Real OS processes       | ✅ Distributed      | ❌ Single process  | ⚠️ Mutex locks      | [Tests](multiprocess_test.go)         |
+| **Resource Bounds**  | ✅ Time & size limits      | ⚠️ JVM heap          | ⚠️ Memory only      | ⚠️ Manual compact   | [Retention](retention.go)             |
+| **Crash Recovery**   | ✅ Automatic               | ✅ Replicas         | ⚠️ AOF/RDB          | ✅ WAL             | [Recovery](state_recovery.go)         |
+| **Zero Copy Reads**  | ✅ mmap                    | ❌ Network          | ❌ Serialization   | ❌ Deserialization | [Reader](reader.go)                   |
+| **Storage Overhead** | ~12 bytes/entry            | ~50 bytes/entry     | ~20 bytes/entry    | ~30 bytes/entry    | [Format](ARCHITECTURE.md#wire-format) |
+| **Sharding**         | ✅ Built-in                | ✅ Partitions       | ❌ Manual          | ❌ Manual          | [Client](client.go)                   |
+| **Compression**      | ✅ Optional zstd           | ✅ Multiple codecs  | ❌ None            | ✅ Multiple        | [Config](comet.go)                    |
+| **Embedded**         | ✅ Native                  | ❌ Requires cluster | ❌ Requires server | ✅ Native          | -                                     |
 
 ## Quick Start
 
@@ -80,8 +80,8 @@ defer client.Close()
 ```go
 // Pick which shard to write to based on a key (for consistent routing)
 // High cardinality keys (e.g. uuid) are recommended for consistent routing
-stream := comet.PickShardStream(event.ID, "events", "v1", 16)
-// This returns something like "events:v1:shard:0007" based on hash(userID) % 16
+stream := comet.PickShardStream(event.ID, "events", "v1", 256)
+// This returns something like "events:v1:shard:00A7" based on hash(event.ID) % 256
 
 ids, err := client.Append(ctx, stream, [][]byte{
     []byte(event.ToJSON()),
@@ -167,12 +167,7 @@ err = consumer.Process(ctx, processEvents,
 // Only override what you need:
 config := comet.DefaultCometConfig()
 config.Retention.MaxAge = 24 * time.Hour  // Keep data longer
-client, err := comet.NewClientWithConfig("/var/lib/comet", config)
-
-// Or use a preset:
-config = comet.HighCompressionConfig()      // Optimize for storage
-config = comet.MultiProcessConfig()         // For prefork deployments
-config = comet.HighThroughputConfig()       // For maximum write speed
+client, err := comet.NewClient("/var/lib/comet", config)
 ```
 
 #### Configuration Structure
@@ -192,10 +187,10 @@ type CometConfig struct {
 ```
 ┌─────────────────┐     ┌─────────────────┐
 │   Your Service  │     │  Your Service   │
-│                 │     │                 │
+│    Process 0    │     │    Process 1    │
 │  ┌───────────┐  │     │  ┌───────────┐  │
 │  │   Comet   │  │     │  │   Comet   │  │
-│  │  Writer   │  │     │  │  Reader   │  │
+│  │  Client   │  │     │  │  Client   │  │
 │  └─────┬─────┘  │     │  └─────┬─────┘  │
 └────────┼────────┘     └────────┼────────┘
          │                       │
@@ -203,8 +198,14 @@ type CometConfig struct {
     ┌──────────────────────────────────┐
     │      Segmented Log Storage       │
     │                                  │
-    │  Shard 0: [seg0][seg1][seg2]→    │
-    │  Shard 1: [seg0][seg1]→          │
+    │  Shard 0: [seg0][seg1][seg2]→    │ ← Process 0
+    │           [comet.state]          │
+    │  Shard 1: [seg0][seg1]→          │ ← Process 1
+    │           [comet.state]          │
+    │  Shard 2: [seg0][seg1][seg2]→    │ ← Process 0
+    │           [comet.state]          │
+    │  Shard 3: [seg0][seg1]→          │ ← Process 1
+    │           [comet.state]          │
     │  ...                             │
     │                                  │
     │  ↓ segments deleted by retention │
@@ -216,13 +217,11 @@ type CometConfig struct {
 Comet achieves microsecond-level latency through careful optimization:
 
 1. **Lock-Free Reads**: Memory-mapped files with atomic pointers and defensive copying for memory safety
-2. **I/O Outside Locks**: Compression and disk writes happen outside critical sections
-3. **Binary Searchable Index**: O(log n) entry lookups instead of linear scans
-4. **Vectored I/O**: Batches multiple writes into single syscalls
-5. **Batch ACKs**: Groups acknowledgments by shard to minimize lock acquisitions
-6. **Pre-allocated Buffers**: Reuses buffers to minimize allocations
-7. **Concurrent Shards**: Each shard has independent locks for parallel operations
-8. **Memory-Mapped Multi-Process Coordination**: Direct memory writes with atomic sequence allocation
+1. **Binary Searchable Index**: O(log n) entry lookups instead of linear scans
+1. **Vectored I/O**: Batches multiple writes into single syscalls
+1. **Batch ACKs**: Groups acknowledgments by shard to minimize lock acquisitions
+1. **Pre-allocated Buffers**: Reuses buffers to minimize allocations
+1. **Concurrent Shards**: Each shard has independent locks for parallel operations
 
 ## How It Works
 
@@ -295,82 +294,134 @@ err = consumer.Process(ctx, handler,
 - Random access patterns
 - Complex queries or aggregations
 
-## Performance
+## Performance notes
 
-Benchmarked on Apple M2 with SSD (see [Performance Guide](PERFORMANCE.md) for detailed analysis):
+**Durability Note**: Comet uses periodic checkpoints (default: every 1000 writes or 1 second) to persist metadata to disk. Between checkpoints, writes are acknowledged after being written to the OS page cache. This provides excellent performance while maintaining durability through:
 
-### Single-Process Mode (default)
+- OS page cache (typically synced within 30 seconds)
+- Explicit fsync on file rotation
+- Crash recovery that rebuilds state from data files
 
-Optimized for single-process deployments with best performance:
+### Performance Metrics
 
-- **Single entry**: 1.7μs latency (594k entries/sec)
-- **10-entry batch**: 2.7μs per batch (3.6M entries/sec)
-- **100-entry batch**: 9.0μs per batch (11.1M entries/sec)
-- **1000-entry batch**: 112μs per batch (8.9M entries/sec)
-- **10000-entry batch**: 548μs per batch (18.2M entries/sec)
-
-### Multi-Process Mode
-
-For prefork/multi-process deployments with memory-mapped coordination:
-
-- **Single entry**: 33μs latency (30k entries/sec) - ultra-fast for multi-process!
-- **10-entry batch**: 35μs per batch (283k entries/sec)
-- **100-entry batch**: 56μs per batch (1.8M entries/sec)
-- **1000-entry batch**: 170μs per batch (5.9M entries/sec)
-- **10000-entry batch**: 2.0ms per batch (5.0M entries/sec)
-
-**Note on Multi-Process Latency**: While single-entry writes are ~19x slower in multi-process mode (33μs vs 1.7μs), this difference is often irrelevant in production:
-
-- **With async batching**: If you're buffering writes (like most ingest services), the latency is hidden from your request path
-- **With large batches**: At 1000-entry batches, multi-process is only ~1.5x slower per batch (170μs vs 112μs)
-- **With prefork benefits**: You gain linear CPU scaling, process isolation, and crash resilience
-
-**When the 33μs matters**: Direct, synchronous writes where every microsecond counts
-**When it doesn't**: HTTP APIs, batched ingestion, async workers, or any pattern that decouples the write from the request
-
-### Other Performance Metrics
-
-- **ACK performance**: 30ns per ACK (34M ACKs/sec) with batch optimization
-- **Memory efficiency**: Zero allocations for ACKs, 5 allocations per write batch
-- **Multi-process coordination**: Memory-mapped atomic operations for lock-free sequence allocation
+- **ACK performance**: 201ns per ACK (5M ACKs/sec) for single ACKs
+- **Memory efficiency**: 7 allocations per write batch, 4 allocations per ACK
 - **Storage overhead**: 12 bytes per entry (4-byte length + 8-byte timestamp)
 
 ## Configuration
 
 ### Single-Process vs Multi-Process Mode
 
-Comet defaults to single-process mode for optimal single-entry performance. Enable multi-process mode when needed:
+Comet supports both single-process and multi-process deployments with a unified state management system:
 
 ```go
 // Single-process mode (default) - fastest performance
 client, err := comet.NewClient("/data/streams")
 
-// Multi-process mode (EXPERIMENTAL) - for prefork/multi-process deployments
-config := comet.DefaultCometConfig()
-config.Concurrency.EnableMultiProcessMode = true
-client, err := comet.NewClientWithConfig("/data/streams", config)
+// Multi-process mode - for prefork/multi-process deployments
+client, err := comet.NewMultiProcessClient("/data/streams")
 ```
 
-**⚠️ IMPORTANT: Multi-Process Mode Limitations**
+**How multi-process mode works:**
 
-1. **Experimental Status**: Multi-process mode is experimental and may have edge cases
-2. **Mode Switching**: You CANNOT switch between single-process and multi-process modes on the same data directory. They use incompatible on-disk formats
-3. **Performance Trade-off**: 19x slower for single writes (33μs vs 1.7μs)
-4. **Known Issues**: Some race conditions exist in aggressive retention scenarios
+- Each process owns specific shards based on: `shardID % processCount == processID`
+- Processes automatically coordinate through memory-mapped state files
+- No configuration needed - just use `NewMultiProcessClient()`
+- Automatic process ID assignment from a pool
 
 **When to use multi-process mode:**
 
 - Process isolation is critical
+- Using prefork web servers (e.g., Go Fiber with prefork)
+- Need independent process scaling
 - You're already batching writes (reduces the latency impact)
-- Using prefork web servers and need true process separation
-- Can tolerate experimental features
 
-**When to use single-process mode (recommended):**
+**When to use single-process mode (default):**
 
-- Need the lowest possible latency
-- Want maximum reliability
+- Single service deployment
 - Don't need process-level isolation
-- Writing less than 500k entries/second
+
+### Sharding Configuration and Performance
+
+Comet uses sharding to enable parallel writes and horizontal scaling. Based on extensive benchmarking, here are the optimal configurations:
+
+#### Performance Benchmarks
+
+With a 3GB memory budget and 16 concurrent threads on 2023 MacBook Air w/ Apple M2 chip:
+
+| Configuration              | Ops/sec  | Latency  | Performance vs Default |
+| -------------------------- | -------- | -------- | ---------------------- |
+| 1 shard × 1GB              | 748K     | 1.0μs    | Baseline               |
+| 4 shards × 768MB (default) | 912K     | 1.0μs    | -                      |
+| 16 shards × 192MB          | 1.3M     | <1μs     | +45%                   |
+| 64 shards × 48MB           | 1.5M     | <1μs     | +65%                   |
+| **256 shards × 10MB**      | **2.4M** | **<1μs** | **+168%**              |
+| 1024 shards × 4MB          | 7.8K     | 127μs    | -91% (degradation)     |
+
+#### Multi-Process Performance
+
+With 256 shards and varying process counts on 2023 MacBook Air w/ Apple M2 chip:
+
+| Processes | Shards/Process | Ops/sec | Performance Gain |
+| --------- | -------------- | ------- | ---------------- |
+| 1         | 256            | 1.3M    | Baseline         |
+| 4         | 64             | 5.3M    | 4x               |
+| 8         | 32             | 6.2M    | 4.8x             |
+| 16        | 16             | 6.4M    | 4.9x             |
+
+#### Recommended Configurations
+
+**For single-process deployments:**
+
+```go
+// Option 1: Use the OptimizedConfig helper
+config := comet.OptimizedConfig(256, 3072)  // 256 shards with 3GB memory budget
+client, err := comet.NewClient("/data", config)
+
+// Option 2: Manual configuration
+config := comet.DefaultCometConfig()
+config.Storage.MaxFileSize = 10 << 20  // 10MB
+
+// Use 256 shards when creating streams
+stream := comet.PickShardStream(key, "events", "v1", 256)
+```
+
+**For multi-process deployments:**
+
+```go
+// 4-8 processes with 256 total shards works best
+config := comet.MultiProcessConfig()
+config.Storage.MaxFileSize = 10 << 20  // 10MB
+config.Concurrency.ProcessCount = 4    // 64 shards per process
+
+// Still use 256 total shards
+stream := comet.PickShardStream(key, "events", "v1", 256)
+```
+
+#### Sharding Best Practices
+
+1. **Choose shard count upfront**: Changing shard count requires data migration
+2. **Use high-cardinality keys**: UUIDs, user IDs, or request IDs for even distribution
+3. **Powers of 2**: Use 16, 64, 256 shards for optimal hash distribution
+4. **File size scaling**: Smaller files (10-50MB) work better with many shards
+5. **Memory budget**: Plan for memory mapped capacity for optimal performance
+
+#### How Sharding Works
+
+```go
+// Helper functions for shard management
+shardID := comet.PickShard(key, 256)                    // Get shard ID (0-255)
+stream := comet.ShardStreamName("events", "v1", shardID) // "events:v1:shard:00FF"
+stream := comet.PickShardStream(key, "events", "v1", 256) // One-liner
+
+// Get all shards for parallel processing
+shardIDs := comet.AllShardsRange(256)                   // [0, 1, ..., 255]
+streams := comet.AllShardStreams("events", "v1", 256)   // All stream names
+
+// Consumers automatically discover all shards
+consumer.Process(ctx, handler,
+    comet.WithStream("events:v1:shard:*"))  // Wildcard pattern
+```
 
 ## License
 
