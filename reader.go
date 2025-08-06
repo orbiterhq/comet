@@ -159,6 +159,7 @@ type Reader struct {
 	bufferPool           *sync.Pool
 	state                *CometState // Shared state for metrics (optional)
 	lastKnownIndexUpdate int64       // Last known index update timestamp for cache invalidation
+	client               *Client     // Reference to client for index refreshing (optional)
 }
 
 // NewReader creates a new bounded reader for a shard with smart file mapping
@@ -232,6 +233,33 @@ func (r *Reader) SetState(state *CometState) {
 		// Initialize the last known index update timestamp
 		atomic.StoreInt64(&r.lastKnownIndexUpdate, state.GetLastIndexUpdate())
 	}
+}
+
+// SetClient sets the client reference for index refreshing
+func (r *Reader) SetClient(client *Client) {
+	r.client = client
+}
+
+// refreshFromLiveIndex refreshes the reader's file info from the live shard index
+func (r *Reader) refreshFromLiveIndex() error {
+	if r.client == nil {
+		return fmt.Errorf("no client reference available for index refresh")
+	}
+
+	// Get the current shard
+	shard := r.client.getShard(r.shardID)
+	if shard == nil {
+		return fmt.Errorf("shard %d not found", r.shardID)
+	}
+
+	// Get a copy of the current files under read lock
+	shard.mu.RLock()
+	currentFiles := make([]FileInfo, len(shard.index.Files))
+	copy(currentFiles, shard.index.Files)
+	shard.mu.RUnlock()
+
+	// Update our file info with the fresh data
+	return r.UpdateFiles(&currentFiles)
 }
 
 // mapFile maps a single file into memory
@@ -710,12 +738,24 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 		}
 
 		if currentIndexUpdate > lastKnown {
-			// Reader works with immutable index - Consumer should create new Reader for updates
+			// Reader index is stale - try to refresh from the live index
 			if IsDebug() {
-				fmt.Printf("[DEBUG] Reader index is stale: entry=%d, currentUpdate=%d > lastKnown=%d\n",
+				fmt.Printf("[DEBUG] Reader index is stale: entry=%d, currentUpdate=%d > lastKnown=%d, attempting refresh\n",
 					entryNumber, currentIndexUpdate, lastKnown)
 			}
-			return nil, fmt.Errorf("reader index is stale - entry %d may be in newer files", entryNumber)
+
+			if err := r.refreshFromLiveIndex(); err != nil {
+				if IsDebug() {
+					fmt.Printf("[DEBUG] Failed to refresh reader index: %v\n", err)
+				}
+				return nil, fmt.Errorf("reader index is stale and refresh failed: %w", err)
+			}
+
+			// Update our known index timestamp
+			atomic.StoreInt64(&r.lastKnownIndexUpdate, currentIndexUpdate)
+
+			// Try reading again with refreshed index
+			return r.ReadEntryByNumber(entryNumber)
 		}
 	}
 

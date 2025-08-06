@@ -686,21 +686,21 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 		}
 	}
 
-	// Create new reader with a cloned index for thread safety
-	// The mmap state coordinates updates - Consumer will create new Readers as needed
+	// Create new reader with current index - reader will refresh itself when stale
 	shard.mu.RLock()
-	indexCopy := shard.cloneIndex()
+	indexSnapshot := shard.cloneIndex()
 	shard.mu.RUnlock()
 
-	newReader, err := NewReader(shard.shardID, indexCopy, c.client.config.Reader)
+	newReader, err := NewReader(shard.shardID, indexSnapshot, c.client.config.Reader)
 	if err != nil {
 		return nil, err
 	}
 
-	// Set the state for metrics tracking
+	// Set the state and client reference for metrics tracking and index refreshing
 	if state := shard.state; state != nil {
 		newReader.SetState(state)
 	}
+	newReader.SetClient(c.client)
 
 	// Use LoadOrStore to handle race where multiple goroutines try to create
 	if actual, loaded := c.readers.LoadOrStore(shard.shardID, newReader); loaded {
