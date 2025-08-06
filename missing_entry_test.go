@@ -14,7 +14,7 @@ func TestMissingEntry_FirstWrite(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Log.EnableDebug = true
+	config.Log.Level = "debug"
 
 	client, err := NewClient(dir, config)
 	if err != nil {
@@ -81,7 +81,7 @@ func TestMissingEntry_StateVsIndex(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DeprecatedMultiProcessConfig(0, 2)
-	config.Log.EnableDebug = true
+	config.Log.Level = "debug"
 
 	// First process writes
 	{

@@ -700,15 +700,25 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		lastKnownUpdate = shard.lastIndexReload.UnixNano()
 		needsReload = currentIndexUpdate > lastKnownUpdate
 		
-		fmt.Printf("[DEBUG] Checking index update: shard=%d, current=%d, last=%d, needsReload=%v\n",
-			shard.shardID, currentIndexUpdate, lastKnownUpdate, needsReload)
+		if c.client.logger != nil && IsDebug() {
+			c.client.logger.Debug("Checking index update state",
+				"shard", shard.shardID,
+				"current_update", currentIndexUpdate,
+				"last_known", lastKnownUpdate,
+				"needs_reload", needsReload)
+		}
 		
-		if needsReload {
-			fmt.Printf("[DEBUG] Index update detected: shard=%d, current=%d > last=%d\n",
-				shard.shardID, currentIndexUpdate, lastKnownUpdate)
+		if needsReload && c.client.logger != nil && IsDebug() {
+			c.client.logger.Debug("Index update detected via memory-mapped state",
+				"shard", shard.shardID,
+				"current_update", currentIndexUpdate,
+				"last_known", lastKnownUpdate)
 		}
 	} else {
-		fmt.Printf("[DEBUG] No shard state available for shard %d\n", shard.shardID)
+		if c.client.logger != nil && IsDebug() {
+			c.client.logger.Debug("No shard state available for index update detection",
+				"shard", shard.shardID)
+		}
 	}
 
 	if needsReload {
@@ -827,10 +837,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 				// CRITICAL: Update memory offset even for skipped entries to prevent infinite loops
 				c.memOffsetsMu.Lock()
 				if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
-					if IsDebug() {
-						fmt.Printf("[DEBUG] Consumer updating memOffset for 'not found': shard=%d, entryNum=%d, newOffset=%d\n",
-							shard.shardID, entryNum, entryNum+1)
-					}
+
 					c.memOffsets[shard.shardID] = entryNum + 1 // Next entry to try
 				}
 				c.memOffsetsMu.Unlock()

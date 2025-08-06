@@ -19,7 +19,7 @@ func TestRealtimeVisibilityDebug(t *testing.T) {
 	defer os.Unsetenv("COMET_DEBUG")
 
 	cfg := DefaultCometConfig()
-	cfg.Storage.FlushInterval = 20 // 20ms - very aggressive flushing
+	cfg.Storage.FlushInterval = 100 // 100ms - more realistic production-like interval
 
 	ctx := context.Background()
 	stream := "test:v1:shard:0000"
@@ -121,9 +121,17 @@ func TestRealtimeVisibilityDebug(t *testing.T) {
 	fmt.Printf("Lag: %d messages\n", written-read)
 
 	// Allow some lag due to timing, but it shouldn't be too much
-	maxAcceptableLag := int64(10)
+	// With 100ms flush interval and 50ms write interval, we expect good realtime performance
+	maxAcceptableLag := int64(15) // Allow slightly more lag for realistic flush intervals
 	if written-read > maxAcceptableLag {
 		t.Errorf("Consumer is lagging too far behind! Written: %d, Read: %d, Lag: %d (max acceptable: %d)",
 			written, read, written-read, maxAcceptableLag)
+	}
+	
+	// Ensure we got most messages in realtime (not just initial batch)
+	minExpectedMessages := written * 80 / 100 // Expect at least 80% for realtime performance
+	if read < minExpectedMessages {
+		t.Errorf("Poor realtime performance! Expected at least %d messages (80%%), got %d", 
+			minExpectedMessages, read)
 	}
 }

@@ -139,3 +139,4 @@ deadcode -test ./...
 - Tests should be comprehensive and cover failure modes, resource exhaustion, and the _critical_ edge cases.
 - To run the benchmarks we care _most_ about not regressing, use `mise run bench:core`
 - Run `go vet ./...`, `go test ./...`, `go test ./... -bench=. -benchmem` after significant changes.
+- Use `COMET_DEBUG=1` to enable debug logging.

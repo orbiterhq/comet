@@ -732,22 +732,10 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 		currentIndexUpdate := r.state.GetLastIndexUpdate()
 		lastKnown := atomic.LoadInt64(&r.lastKnownIndexUpdate)
 
-		if IsDebug() {
-			fmt.Printf("[DEBUG] Reader.ReadEntryByNumber: entry=%d, currentIndexUpdate=%d, lastKnown=%d, stale=%v\n",
-				entryNumber, currentIndexUpdate, lastKnown, currentIndexUpdate > lastKnown)
-		}
-
 		if currentIndexUpdate > lastKnown {
 			// Reader index is stale - try to refresh from the live index
-			if IsDebug() {
-				fmt.Printf("[DEBUG] Reader index is stale: entry=%d, currentUpdate=%d > lastKnown=%d, attempting refresh\n",
-					entryNumber, currentIndexUpdate, lastKnown)
-			}
 
 			if err := r.refreshFromLiveIndex(); err != nil {
-				if IsDebug() {
-					fmt.Printf("[DEBUG] Failed to refresh reader index: %v\n", err)
-				}
 				return nil, fmt.Errorf("reader index is stale and refresh failed: %w", err)
 			}
 
@@ -776,10 +764,7 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 			if err == nil {
 				return data, nil
 			}
-			// Log read errors for debugging
-			if IsDebug() {
-				fmt.Printf("[DEBUG] Error reading entry 0 from file 0: %v\n", err)
-			}
+
 		}
 	}
 

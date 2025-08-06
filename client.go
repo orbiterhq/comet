@@ -190,8 +190,12 @@ func DefaultCometConfig() CometConfig {
 
 		// Logging
 		Log: LogConfig{
-			Level:       "info",
-			EnableDebug: false,
+			Level: func() string {
+				if os.Getenv("COMET_DEBUG") != "" && os.Getenv("COMET_DEBUG") != "0" && strings.ToLower(os.Getenv("COMET_DEBUG")) != "false" {
+					return "debug"
+				}
+				return "info"
+			}(),
 		},
 	}
 
@@ -624,11 +628,6 @@ func NewClient(dataDir string, config ...CometConfig) (*Client, error) {
 	// Create logger based on config
 	logger := createLogger(cfg.Log)
 
-	// Set debug mode from config
-	if cfg.Log.EnableDebug || os.Getenv("COMET_DEBUG") != "" {
-		SetDebug(true)
-	}
-
 	c := &Client{
 		dataDir:   dataDir,
 		config:    cfg,
@@ -796,7 +795,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	c.mu.RUnlock()
 
 	if exists {
-		if c.logger != nil {
+		if c.logger != nil && IsDebug() {
 			c.logger.Debug("getOrCreateShard: shard already exists in memory",
 				"shardID", shardID,
 				"pid", processID)
