@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -86,7 +87,7 @@ type ConcurrencyConfig struct {
 	// When ProcessCount > 1, multi-process mode is automatically enabled
 	ProcessID    int    `json:"process_id"`    // This process's ID (0-based)
 	ProcessCount int    `json:"process_count"` // Total number of processes (0 = single-process)
-	SHMFile      string `json:"shm_file"`      // Shared memory file path (empty = "/tmp/comet-worker-slots-shm")
+	SHMFile      string `json:"shm_file"`      // Shared memory file path (empty = os.TempDir()/comet-worker-slots-shm)
 }
 
 // Owns checks if this process owns a particular shard
@@ -191,6 +192,15 @@ func DefaultCometConfig() CometConfig {
 			Level:       "info",
 			EnableDebug: false,
 		},
+	}
+
+	if isFiberChild == envPreforkChildVal {
+		// We're in a Fiber worker - enable multi-process coordination
+		processID := GetProcessID() // Use default shared memory
+		if processID >= 0 {
+			cfg.Concurrency.ProcessID = processID
+			cfg.Concurrency.ProcessCount = runtime.NumCPU()
+		}
 	}
 
 	return cfg
@@ -389,18 +399,27 @@ type ClientMetrics struct {
 	RetentionSkipped atomic.Uint64
 }
 
+var (
+	isFiberChild       = os.Getenv("FIBER_PREFORK_CHILD")
+	envPreforkChildVal = "1"
+)
+
 // MultiProcessConfig returns a configuration optimized for multi-process deployments.
 // It automatically acquires a unique process ID and configures the client for multi-process mode.
 // The process ID is automatically released when the client is closed.
 func MultiProcessConfig(sharedMemoryFile ...string) CometConfig {
-	// Acquire process ID
-	processID := GetProcessID(sharedMemoryFile...)
-	if processID < 0 {
-		panic("failed to acquire process ID - all slots may be taken")
-	}
-
 	// Create multi-process config
-	config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
+	config := DefaultCometConfig()
+	if config.Concurrency.ProcessCount == 0 {
+		// Acquire process ID
+		processID := GetProcessID(sharedMemoryFile...)
+		if processID < 0 {
+			panic("failed to acquire process ID - all slots may be taken")
+		}
+
+		config.Concurrency.ProcessCount = runtime.NumCPU()
+		config.Concurrency.ProcessID = processID
+	}
 
 	// Set the shared memory file
 	if len(sharedMemoryFile) > 0 && sharedMemoryFile[0] != "" {
@@ -544,7 +563,7 @@ func NewMultiProcessClient(dataDir string, cfg ...CometConfig) (*Client, error) 
 			config.Concurrency.SHMFile = shmFile
 		}
 		if config.Concurrency.SHMFile == "" {
-			config.Concurrency.SHMFile = "/tmp/comet-worker-slots-shm"
+			config.Concurrency.SHMFile = filepath.Join(os.TempDir(), "comet-worker-slots")
 		}
 	}
 	client, err := NewClient(dataDir, config)
@@ -2184,33 +2203,33 @@ func (idx *BinarySearchableIndex) FindEntryPosition(targetEntry int64) (EntryPos
 
 // parseShardFromStream extracts shard ID from stream name
 func parseShardFromStream(stream string) (uint32, error) {
-	// Expected format: "name:version:shard:NNNN"
-	// Find the third colon to locate the shard number
-	colonCount := 0
-	shardStart := -1
+	// Expected formats:
+	// New format: "prefix:NNNN" (4-digit decimal)
+	// Legacy format: "name:version:shard:NNNN" (4-digit decimal)
 
-	for i, ch := range stream {
-		if ch == ':' {
-			colonCount++
-			if colonCount == 3 {
-				shardStart = i + 1
-				break
-			}
+	// Find the last colon
+	lastColon := strings.LastIndex(stream, ":")
+	if lastColon == -1 || lastColon == len(stream)-1 {
+		return 0, fmt.Errorf("invalid stream format, expected prefix:NNNN or name:version:shard:NNNN")
+	}
+
+	shardStr := stream[lastColon+1:]
+
+	// Check if this might be legacy format by looking for "shard:" before the last colon
+	if lastColon >= 6 && stream[lastColon-6:lastColon] == ":shard" {
+		// Legacy format: parse as decimal
+		shard, err := strconv.ParseUint(shardStr, 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("invalid shard number: %s", shardStr)
 		}
+		return uint32(shard), nil
 	}
 
-	// Validate format
-	if colonCount < 3 || shardStart == -1 || shardStart >= len(stream) {
-		return 0, fmt.Errorf("invalid stream format, expected name:version:shard:NNNN")
+	// New format: parse as decimal (4-digit)
+	if len(shardStr) != 4 {
+		return 0, fmt.Errorf("invalid shard format, expected 4-digit decimal value")
 	}
 
-	// Verify "shard" keyword by checking backwards from the third colon
-	if shardStart < 6 || stream[shardStart-6:shardStart-1] != "shard" {
-		return 0, fmt.Errorf("invalid stream format, expected name:version:shard:NNNN")
-	}
-
-	// Parse the shard number directly from the substring
-	shardStr := stream[shardStart:]
 	shard, err := strconv.ParseUint(shardStr, 10, 32)
 	if err != nil {
 		return 0, fmt.Errorf("invalid shard number: %s", shardStr)
@@ -2331,6 +2350,9 @@ func (c *Client) Close() error {
 
 		// Now safe to unmap unified state
 		if shard.stateData != nil {
+			// The memory-mapped state is MAP_SHARED, so changes are automatically
+			// written back to the file. We don't need explicit msync on most systems.
+			// The OS will ensure data is written when we unmap or when the file is closed.
 			syscall.Munmap(shard.stateData)
 			shard.stateData = nil
 			shard.state = nil
@@ -2504,7 +2526,7 @@ func (c *Client) GetStats() CometStats {
 // Smart Sharding helper functions
 
 // PickShard selects a shard ID based on consistent hashing of the key
-func PickShard(key string, shardCount uint32) uint32 {
+func (c *Client) PickShard(key string, shardCount uint32) uint32 {
 	if shardCount == 0 {
 		shardCount = 16
 	}
@@ -2520,9 +2542,16 @@ func PickShard(key string, shardCount uint32) uint32 {
 }
 
 // PickShardStream returns a complete stream name for the shard picked by key
-func PickShardStream(key, prefix, version string, shardCount uint32) string {
-	shardID := PickShard(key, shardCount)
-	return fmt.Sprintf("%s:%s:shard:%04d", prefix, version, shardID)
+// Example: client.PickShardStream("events:v1", "user123", 256) returns "events:v1:0011"
+func (c *Client) PickShardStream(prefix string, key string, shardCount uint32) string {
+	shardID := c.PickShard(key, shardCount)
+	return ShardStreamName(prefix, shardID)
+}
+
+// ShardStreamName constructs a stream name from prefix and shard ID
+// Example: ShardStreamName("events:v1", 255) returns "events:v1:0011"
+func ShardStreamName(prefix string, shardID uint32) string {
+	return fmt.Sprintf("%s:%04d", prefix, shardID)
 }
 
 // AllShardsRange returns a slice containing all shard IDs from 0 to shardCount-1
@@ -2537,14 +2566,14 @@ func AllShardsRange(shardCount uint32) []uint32 {
 	return shards
 }
 
-// AllShardStreams returns all stream names for the given prefix, version and shard count
-func AllShardStreams(prefix, version string, shardCount uint32) []string {
+// AllShardStreams returns all stream names for the given prefix and shard count
+func AllShardStreams(prefix string, shardCount uint32) []string {
 	if shardCount == 0 {
 		shardCount = defaultShardCount
 	}
 	streams := make([]string, shardCount)
 	for i := uint32(0); i < shardCount; i++ {
-		streams[i] = fmt.Sprintf("%s:%s:shard:%04d", prefix, version, i)
+		streams[i] = ShardStreamName(prefix, i)
 	}
 	return streams
 }
@@ -2918,9 +2947,7 @@ func (s *Shard) doRebuildIndex(config CometConfig, shardDir string) error {
 	}
 
 	// Preserve consumer offsets
-	for k, v := range s.index.ConsumerOffsets {
-		newIndex.ConsumerOffsets[k] = v
-	}
+	maps.Copy(newIndex.ConsumerOffsets, s.index.ConsumerOffsets)
 
 	totalEntries := int64(0)
 	totalBytes := int64(0)

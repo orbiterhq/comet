@@ -121,7 +121,7 @@ func BenchmarkShardStress(b *testing.B) {
 					preCreateCount = 100 // Don't pre-create too many
 				}
 				for i := 0; i < preCreateCount; i++ {
-					streamName := ShardStreamName("test", "v1", uint32(i))
+					streamName := ShardStreamName("test:v1", uint32(i))
 					client.Append(ctx, streamName, [][]byte{entry})
 				}
 
@@ -143,8 +143,8 @@ func BenchmarkShardStress(b *testing.B) {
 						for i := 0; i < opsPerThread; i++ {
 							// Distribute across shards
 							key := fmt.Sprintf("t%d-op%d", threadID, i)
-							shardID := PickShard(key, uint32(cfg.shards))
-							streamName := ShardStreamName("test", "v1", shardID)
+							shardID := client.PickShard(key, uint32(cfg.shards))
+							streamName := ShardStreamName("test:v1", shardID)
 
 							if _, err := client.Append(ctx, streamName, [][]byte{entry}); err != nil {
 								b.Error(err)
@@ -206,7 +206,7 @@ func BenchmarkShardCreationOverhead(b *testing.B) {
 				// Time how long it takes to create N shards
 				start := time.Now()
 				for shard := 0; shard < count; shard++ {
-					streamName := ShardStreamName("test", "v1", uint32(shard))
+					streamName := ShardStreamName("test:v1", uint32(shard))
 					if _, err := client.Append(ctx, streamName, [][]byte{entry}); err != nil {
 						b.Fatal(err)
 					}

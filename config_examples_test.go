@@ -1,6 +1,8 @@
 package comet_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/orbiterhq/comet"
@@ -55,14 +57,14 @@ func TestConfigHelpers(t *testing.T) {
 func ExampleOptimizedConfig() {
 	// Create a client optimized for 256 shards with 3GB memory budget
 	cfg := comet.OptimizedConfig(256, 3072)
-	client, err := comet.NewClient("/tmp/comet", cfg)
+	client, err := comet.NewClient(filepath.Join(os.TempDir(), "comet"), cfg)
 	if err != nil {
 		panic(err)
 	}
 	defer client.Close()
 
 	// Use 256 shards when writing
-	stream := comet.PickShardStream("user-123", "events", "v1", 256)
+	stream := client.PickShardStream("events:v1", "user-123", 256)
 	// Write to the stream...
 	_ = stream
 }

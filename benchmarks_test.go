@@ -19,11 +19,6 @@ import (
 // Write Benchmarks
 // ============================================================================
 
-// ShardStreamName generates a stream name for the given prefix, version, and shard ID
-func ShardStreamName(prefix, version string, shardID uint32) string {
-	return fmt.Sprintf("%s:%s:shard:%04d", prefix, version, shardID)
-}
-
 // BenchmarkWrite_SingleEntry measures single entry write performance
 func BenchmarkWrite_SingleEntry(b *testing.B) {
 	dir := b.TempDir()
@@ -918,7 +913,7 @@ func BenchmarkConsumerAck(b *testing.B) {
 	var allMessages []StreamMessage
 
 	for _, shardID := range shards {
-		streamName := ShardStreamName("bench", "v1", shardID)
+		streamName := ShardStreamName("bench:v1", shardID)
 		data := []byte(`{"test": "data"}`)
 		ids, err := client.Append(ctx, streamName, [][]byte{data})
 		if err != nil {

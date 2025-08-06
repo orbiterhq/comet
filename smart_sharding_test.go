@@ -10,10 +10,18 @@ import (
 func TestSmartSharding_PickShard(t *testing.T) {
 	const shardCount = 16
 
+	// Create a client for testing
+	dir := t.TempDir()
+	client, err := NewClient(dir)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
 	// Test consistency - same key should always return same shard
 	key := "user123"
-	shard1 := PickShard(key, shardCount)
-	shard2 := PickShard(key, shardCount)
+	shard1 := client.PickShard(key, shardCount)
+	shard2 := client.PickShard(key, shardCount)
 
 	if shard1 != shard2 {
 		t.Errorf("PickShard not consistent: got %d and %d for same key", shard1, shard2)
@@ -28,7 +36,7 @@ func TestSmartSharding_PickShard(t *testing.T) {
 	shardHits := make(map[uint32]int)
 	for i := 0; i < 1000; i++ {
 		key := fmt.Sprintf("user%d", i)
-		shard := PickShard(key, shardCount)
+		shard := client.PickShard(key, shardCount)
 		shardHits[shard]++
 	}
 
@@ -48,20 +56,35 @@ func TestSmartSharding_PickShard(t *testing.T) {
 
 // TestSmartSharding_StreamNames verifies stream name generation
 func TestSmartSharding_StreamNames(t *testing.T) {
-	// Test ShardStreamName
-	streamName := ShardStreamName("events", "v1", 42)
-	expected := "events:v1:shard:0042"
+	// Test ShardStreamName with decimal format
+	streamName := ShardStreamName("events:v1", 42)
+	expected := "events:v1:0042"
 	if streamName != expected {
 		t.Errorf("ShardStreamName: got %s, expected %s", streamName, expected)
 	}
 
+	// Test with max shard ID
+	streamName = ShardStreamName("events:v1", 255)
+	expected = "events:v1:0255"
+	if streamName != expected {
+		t.Errorf("ShardStreamName: got %s, expected %s", streamName, expected)
+	}
+
+	// Create a client for testing PickShardStream
+	dir := t.TempDir()
+	client, err := NewClient(dir)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
 	// Test PickShardStream
 	key := "user123"
-	shardStream := PickShardStream(key, "events", "v1", 16)
+	shardStream := client.PickShardStream("events:v1", key, 16)
 
 	// Should match the shard picked by PickShard
-	expectedShard := PickShard(key, 16)
-	expectedStream := fmt.Sprintf("events:v1:shard:%04d", expectedShard)
+	expectedShard := client.PickShard(key, 16)
+	expectedStream := ShardStreamName("events:v1", expectedShard)
 
 	if shardStream != expectedStream {
 		t.Errorf("PickShardStream: got %s, expected %s", shardStream, expectedStream)
@@ -84,14 +107,14 @@ func TestSmartSharding_AllShards(t *testing.T) {
 		}
 	}
 
-	// Test AllShardStreams
-	streams := AllShardStreams("events", "v1", shardCount)
+	// Test AllShardStreams with new hex format
+	streams := AllShardStreams("events:v1", shardCount)
 	if len(streams) != shardCount {
 		t.Errorf("AllShardStreams: got %d streams, expected %d", len(streams), shardCount)
 	}
 
 	for i, stream := range streams {
-		expected := fmt.Sprintf("events:v1:shard:%04d", i)
+		expected := ShardStreamName("events:v1", uint32(i))
 		if stream != expected {
 			t.Errorf("AllShardStreams[%d]: got %s, expected %s", i, stream, expected)
 		}
@@ -108,10 +131,18 @@ func TestSmartSharding_DefaultShardCount(t *testing.T) {
 		t.Errorf("Default shard count not working: got %d vs %d", len(shards1), len(shards2))
 	}
 
+	// Create a client for testing
+	dir := t.TempDir()
+	client, err := NewClient(dir)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
 	// Test PickShard with 0
 	key := "test"
-	shard1 := PickShard(key, 0)
-	shard2 := PickShard(key, defaultShardCount)
+	shard1 := client.PickShard(key, 0)
+	shard2 := client.PickShard(key, defaultShardCount)
 
 	if shard1 != shard2 {
 		t.Errorf("Default shard count not consistent: got %d vs %d", shard1, shard2)
@@ -135,7 +166,7 @@ func TestSmartSharding_Integration(t *testing.T) {
 
 	for _, user := range users {
 		// Each user writes to their assigned shard
-		streamName := PickShardStream(user, "events", "v1", shardCount)
+		streamName := client.PickShardStream("events:v1", user, shardCount)
 
 		event := []byte(fmt.Sprintf(`{"user":"%s","action":"login","timestamp":%d}`, user, 1234567890))
 		ids, err := client.Append(ctx, streamName, [][]byte{event})
@@ -199,9 +230,17 @@ func BenchmarkSmartSharding_PickShard(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
+	// Create a client for benchmarking
+	dir := b.TempDir()
+	client, err := NewClient(dir)
+	if err != nil {
+		b.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
 	for i := 0; i < b.N; i++ {
 		key := keys[i%1000]
-		_ = PickShard(key, shardCount)
+		_ = client.PickShard(key, shardCount)
 	}
 
 	b.ReportMetric(float64(shardCount), "target_shards")
@@ -214,9 +253,17 @@ func BenchmarkSmartSharding_Distribution(b *testing.B) {
 
 	b.ResetTimer()
 
+	// Create a client for benchmarking
+	dir := b.TempDir()
+	client, err := NewClient(dir)
+	if err != nil {
+		b.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+
 	for i := 0; i < b.N; i++ {
 		key := fmt.Sprintf("key%d", i)
-		shard := PickShard(key, shardCount)
+		shard := client.PickShard(key, shardCount)
 		shardHits[shard]++
 	}
 
