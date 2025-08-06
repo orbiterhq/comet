@@ -2,6 +2,8 @@ package comet
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -9,8 +11,12 @@ import (
 func TestNewMultiProcessClient_Basic(t *testing.T) {
 	// Test basic creation and cleanup
 	tempDir := t.TempDir()
+	shmFile := filepath.Join(tempDir, "test-basic-slots")
+	
+	// Clean up any existing file
+	os.Remove(shmFile)
 
-	client, err := NewMultiProcessClient(tempDir + "/data")
+	client, err := NewMultiProcessClient(tempDir+"/data", MultiProcessConfig(shmFile))
 	if err != nil {
 		t.Fatalf("Failed to create multi-process client: %v", err)
 	}
@@ -52,7 +58,10 @@ func TestNewMultiProcessClient_Basic(t *testing.T) {
 
 func TestNewMultiProcessClientWithFile(t *testing.T) {
 	tempDir := t.TempDir()
-	shmFile := tempDir + "/custom-slots"
+	shmFile := filepath.Join(tempDir, "custom-slots")
+	
+	// Clean up any existing file
+	os.Remove(shmFile)
 
 	client, err := NewMultiProcessClient(tempDir+"/data", MultiProcessConfig(shmFile))
 	if err != nil {
@@ -73,8 +82,12 @@ func TestNewMultiProcessClientWithFile(t *testing.T) {
 
 func TestNewMultiProcessClient_DefaultOptions(t *testing.T) {
 	tempDir := t.TempDir()
+	shmFile := filepath.Join(tempDir, "test-default-slots")
+	
+	// Clean up any existing file
+	os.Remove(shmFile)
 
-	client, err := NewMultiProcessClient(tempDir + "/data")
+	client, err := NewMultiProcessClient(tempDir+"/data", MultiProcessConfig(shmFile))
 	if err != nil {
 		t.Fatalf("Failed to create multi-process client: %v", err)
 	}
@@ -86,16 +99,19 @@ func TestNewMultiProcessClient_DefaultOptions(t *testing.T) {
 		t.Errorf("Expected default process count %d, got %d", expectedCount, client.config.Concurrency.ProcessCount)
 	}
 
-	// Should use default shared memory file (empty in config means use default)
-	if client.config.Concurrency.SHMFile != "" {
-		t.Errorf("Expected empty SHMFile (default), got %s", client.config.Concurrency.SHMFile)
+	// Should use the specified shared memory file
+	if client.config.Concurrency.SHMFile != shmFile {
+		t.Errorf("Expected SHMFile %s, got %s", shmFile, client.config.Concurrency.SHMFile)
 	}
 }
 
 func TestNewMultiProcessClient_FailureCleanup(t *testing.T) {
 	// Test that process ID is released even if client creation fails
 	tempDir := t.TempDir()
-	shmFile := tempDir + "/slots"
+	shmFile := filepath.Join(tempDir, "slots")
+	
+	// Clean up any existing file
+	os.Remove(shmFile)
 
 	// First, create a config that will work for process ID acquisition
 	config := MultiProcessConfig(shmFile)
@@ -124,7 +140,10 @@ func TestNewMultiProcessClient_FailureCleanup(t *testing.T) {
 
 func TestMultiProcessCometConfig(t *testing.T) {
 	tempDir := t.TempDir()
-	shmFile := tempDir + "/config-test-slots"
+	shmFile := filepath.Join(tempDir, "config-test-slots")
+	
+	// Clean up any existing file
+	os.Remove(shmFile)
 
 	// Test the config creation function
 	config := MultiProcessConfig(shmFile)

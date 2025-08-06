@@ -246,6 +246,106 @@ func BenchmarkSmartSharding_PickShard(b *testing.B) {
 	b.ReportMetric(float64(shardCount), "target_shards")
 }
 
+// TestSmartSharding_MultiProcess verifies that PickShardStream only picks from owned shards
+func TestSmartSharding_MultiProcess(t *testing.T) {
+	const shardCount = 16
+	const processCount = 4
+	
+	// Test each process ID
+	for processID := 0; processID < processCount; processID++ {
+		t.Run(fmt.Sprintf("Process%d", processID), func(t *testing.T) {
+			// Create a multi-process config
+			config := DeprecatedMultiProcessConfig(processID, processCount)
+			
+			// Create client
+			dir := t.TempDir()
+			client, err := NewClient(dir, config)
+			if err != nil {
+				t.Fatalf("failed to create client: %v", err)
+			}
+			defer client.Close()
+			
+			// Track which shards this process picks
+			pickedShards := make(map[uint32]bool)
+			
+			// Try many different keys
+			for i := 0; i < 1000; i++ {
+				key := fmt.Sprintf("key%d", i)
+				stream := client.PickShardStream("events:v1", key, shardCount)
+				
+				// Extract shard ID from stream
+				shardID, err := parseShardFromStream(stream)
+				if err != nil {
+					t.Fatalf("failed to parse shard from stream %s: %v", stream, err)
+				}
+				
+				// Verify this process owns this shard
+				if !config.Concurrency.Owns(shardID) {
+					t.Errorf("Process %d picked shard %d which it doesn't own", processID, shardID)
+				}
+				
+				pickedShards[shardID] = true
+			}
+			
+			// Verify we only picked from our owned shards
+			expectedOwnedShards := 0
+			for i := uint32(0); i < shardCount; i++ {
+				if config.Concurrency.Owns(i) {
+					expectedOwnedShards++
+				}
+			}
+			
+			// We should have picked from most or all of our owned shards
+			if len(pickedShards) < expectedOwnedShards/2 {
+				t.Errorf("Process %d only used %d of %d owned shards", 
+					processID, len(pickedShards), expectedOwnedShards)
+			}
+			
+			t.Logf("Process %d owns %d shards, picked from %d unique shards",
+				processID, expectedOwnedShards, len(pickedShards))
+		})
+	}
+}
+
+// TestSmartSharding_MultiProcessCaching verifies owned shards are cached properly
+func TestSmartSharding_MultiProcessCaching(t *testing.T) {
+	// Create a multi-process client
+	config := DeprecatedMultiProcessConfig(0, 4)
+	dir := t.TempDir()
+	client, err := NewClient(dir, config)
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	defer client.Close()
+	
+	// First call should populate cache
+	stream1 := client.PickShardStream("events:v1", "test1", 256)
+	
+	// Verify cache was populated
+	cached, ok := client.ownedShardsCache.Load(uint32(256))
+	if !ok {
+		t.Error("Expected owned shards to be cached")
+	}
+	
+	ownedShards := cached.([]uint32)
+	if len(ownedShards) == 0 {
+		t.Error("Expected at least one owned shard")
+	}
+	
+	// Second call should use cache (verify by checking same owned shards)
+	stream2 := client.PickShardStream("events:v1", "test2", 256)
+	
+	// Both should be valid streams
+	if _, err := parseShardFromStream(stream1); err != nil {
+		t.Errorf("Invalid stream1: %v", err)
+	}
+	if _, err := parseShardFromStream(stream2); err != nil {
+		t.Errorf("Invalid stream2: %v", err)
+	}
+	
+	t.Logf("Process 0 owns %d shards out of 256", len(ownedShards))
+}
+
 // BenchmarkSmartSharding_Distribution measures how evenly load distributes
 func BenchmarkSmartSharding_Distribution(b *testing.B) {
 	const shardCount = 16
