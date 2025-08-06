@@ -112,6 +112,11 @@ func TestProcessWithErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Sync to make messages durable and readable by consumer
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	consumer := NewConsumer(client, ConsumerOptions{Group: "error-test"})
 	defer consumer.Close()
 

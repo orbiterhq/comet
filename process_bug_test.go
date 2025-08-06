@@ -38,6 +38,11 @@ func TestProcessContinuousBatching(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Sync to make messages durable and readable by consumer
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Verify messages were written
 	length, err := client.Len(ctx, stream)
 	if err != nil {

@@ -50,6 +50,38 @@ High-performance embedded segmented log for edge observability. Built for single
 - **Retention Management** - Configurable time and size-based retention with protection for unconsumed data
 - **Metrics** - Comprehensive metrics tracking including write latency, compression ratios, and consumer lag
 
+### Architectural Clarity
+
+From a clean architecture perspective:
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Writer    │────▶│   Buffer    │────▶│    Disk     │
+└─────────────┘     └─────────────┘     └─────────────┘
+                                               │
+                                               ▼
+                                        ┌─────────────┐
+                                        │    Index    │
+                                        └─────────────┘
+```
+
+The index should only be updated AFTER data is durable. Otherwise, we're lying about the system state.
+
+- Index = Durable State (what's persisted to disk via index.CurrentEntryNumber)
+- Consumers = Read via Index (only see durable data)
+- Writers = Use `nextEntryNumber` (for volatile entry assignment)
+- File Rotation = Uses `pendingWriteOffset`, includes both synced and pending data
+- Tests = Call `Sync()` explicitly when consumers need to read data, except when we're doing integration tests to simulate real flush and sync behaviors.
+
+This architecture ensures:
+
+- **Crash Safety**: Consumers never see data that could be lost on crash
+- **Consistency**: Index always reflects what's actually persisted
+- **Performance**: Writers don't block on disk I/O for each entry
+- **Reliability**: System can recover to last known good state
+
+For a more detailed explanation, please refer to the [Architecture](ARCHITECTURE.md) document.
+
 ## Configuration
 
 The package uses a hierarchical configuration structure:

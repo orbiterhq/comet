@@ -450,8 +450,10 @@ type Client struct {
 // Fields ordered for optimal memory alignment (64-bit words first)
 type Shard struct {
 	// 64-bit aligned fields first (8 bytes each)
-	readerCount    int64     // Lock-free reader tracking
-	lastCheckpoint time.Time // 64-bit on most systems
+	readerCount        int64     // Lock-free reader tracking
+	nextEntryNumber    int64     // Next entry number to assign (includes pending)
+	pendingWriteOffset int64     // Current write offset including pending writes
+	lastCheckpoint     time.Time // 64-bit on most systems
 	// lastMmapCheck removed - processes own their shards exclusively
 
 	// Pointers (8 bytes each on 64-bit)
@@ -677,21 +679,21 @@ func (c *Client) Len(ctx context.Context, stream string) (int64, error) {
 	// Handle potential index rebuild in multi-process mode
 	if shard.state != nil && shard.checkIfRebuildNeeded() {
 		shard.mu.Lock()
-		if shard.checkIfRebuildNeeded() {
+		needsRebuild := shard.checkIfRebuildNeeded()
+		shard.mu.Unlock()
+
+		if needsRebuild {
+			// Call rebuild without holding the lock to avoid deadlock
 			shard.lazyRebuildIndexIfNeeded(c.config, filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shard.shardID)))
 		}
-		shard.mu.Unlock()
 	}
 
 	// Now get the length with read lock
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()
 
-	var total int64
-	for _, file := range shard.index.Files {
-		total += file.Entries
-	}
-	return total, nil
+	// Return nextEntryNumber which tracks all assigned entries (both flushed and pending)
+	return shard.nextEntryNumber, nil
 }
 
 // Sync ensures all buffered data is durably written to disk
@@ -727,19 +729,25 @@ func (c *Client) Sync(ctx context.Context) error {
 			}
 		}
 
+		// Update index to reflect what's now persisted to disk
+		// CurrentEntryNumber should match nextEntryNumber after all pending writes are flushed
+		shard.index.CurrentEntryNumber = shard.nextEntryNumber
+
 		// Update CurrentWriteOffset and EndOffset to match actual file sizes
 		// This ensures GetShardStats() returns correct TotalBytes after sync
 		if shard.dataFile != nil {
 			if stat, err := shard.dataFile.Stat(); err == nil {
 				actualSize := stat.Size()
-				if actualSize > shard.index.CurrentWriteOffset {
-					shard.index.CurrentWriteOffset = actualSize
-				}
-				// Update current file EndOffset to match actual file size
+				shard.index.CurrentWriteOffset = actualSize
+				shard.pendingWriteOffset = actualSize // Sync pending offset with actual file size
+
+				// Update current file EndOffset and Entries count
 				if len(shard.index.Files) > 0 {
 					current := &shard.index.Files[len(shard.index.Files)-1]
 					current.EndOffset = shard.index.CurrentWriteOffset
 					current.EndTime = time.Now()
+					// Calculate actual entry count for this file
+					current.Entries = shard.index.CurrentEntryNumber - current.StartEntry
 				}
 			}
 		}
@@ -764,6 +772,15 @@ func (c *Client) Sync(ctx context.Context) error {
 // loadExistingShard loads a shard that was created by another process
 
 // getOrCreateShard returns an existing shard or creates a new one
+// getShard retrieves an existing shard without creating it if it doesn't exist.
+// Returns nil if the shard doesn't exist.
+func (c *Client) getShard(shardID uint32) *Shard {
+	c.mu.RLock()
+	shard := c.shards[shardID]
+	c.mu.RUnlock()
+	return shard
+}
+
 func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	processID := os.Getpid()
 	if IsDebug() && c.logger != nil {
@@ -870,6 +887,10 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 			"pid", processID,
 			"currentEntryNumber", shard.index.CurrentEntryNumber)
 	}
+
+	// Initialize nextEntryNumber from index (what's on disk)
+	shard.nextEntryNumber = shard.index.CurrentEntryNumber
+	shard.pendingWriteOffset = shard.index.CurrentWriteOffset
 
 	// Synchronize state with index if index has data and state is uninitialized
 	// This handles the case where an index file exists from a previous session
@@ -1100,34 +1121,33 @@ func (s *Shard) prepareWriteRequest(entries [][]byte, compressedEntries []Compre
 	// Determine if we should flush after this write based on entry count from config
 	flushThreshold := int64(config.Storage.FlushEntries)
 	if flushThreshold > 0 {
-		writeReq.ShouldFlush = (s.index.CurrentEntryNumber%flushThreshold)+int64(numEntries) >= flushThreshold
+		// Use nextEntryNumber (which includes pending) to determine flush needs
+		writeReq.ShouldFlush = (s.nextEntryNumber % flushThreshold) >= flushThreshold
 	}
 
 	return writeReq, criticalErr
 }
 
 // allocateEntryNumbers reserves entry numbers for the batch
+// MUST be called with s.mu held
 func (s *Shard) allocateEntryNumbers(count int) []int64 {
 	entryNumbers := make([]int64, count)
 
-	// Always use state for entry number allocation to ensure persistence
-	state := s.state
-	if state != nil {
-		// Use batched allocation - single atomic operation instead of count operations
-		firstEntry := state.AllocateEntryNumbers(count)
-		for i := range entryNumbers {
-			entryNumbers[i] = firstEntry + int64(i)
-		}
-	} else {
-		// Fallback if state not available (shouldn't happen in normal operation)
-		if IsDebug() && s.logger != nil {
-			s.logger.Warn("State not available, using index fallback",
-				"shard", s.shardID)
-		}
-		baseEntry := s.index.CurrentEntryNumber
-		for i := range entryNumbers {
-			entryNumbers[i] = baseEntry + int64(i)
-		}
+	// Use nextEntryNumber which tracks all assigned entries (both flushed and pending)
+	// Caller must hold the lock
+	baseEntry := s.nextEntryNumber
+	s.nextEntryNumber += int64(count)
+
+	// Fill in the entry numbers
+	for i := range entryNumbers {
+		entryNumbers[i] = baseEntry + int64(i)
+	}
+
+	// Update state for multi-process coordination if available
+	if s.state != nil {
+		// Update LastEntryNumber to the highest assigned entry
+		lastEntry := baseEntry + int64(count) - 1
+		atomic.StoreInt64(&s.state.LastEntryNumber, lastEntry)
 	}
 
 	return entryNumbers
@@ -1135,7 +1155,7 @@ func (s *Shard) allocateEntryNumbers(count int) []int64 {
 
 // buildWriteRequestDirect builds the write request directly from uncompressed entries
 func (s *Shard) buildWriteRequestDirect(writeReq *WriteRequest, entries [][]byte, entryNumbers []int64, now int64, allHeaders []byte) {
-	writeOffset := s.index.CurrentWriteOffset
+	writeOffset := s.pendingWriteOffset
 	totalBytes := uint64(0)
 
 	for i, data := range entries {
@@ -1177,25 +1197,18 @@ func (s *Shard) buildWriteRequestDirect(writeReq *WriteRequest, entries [][]byte
 		atomic.StoreUint64(&state.BinaryIndexNodes, uint64(len(s.index.BinaryIndex.Nodes)))
 	}
 
-	// Update index state
+	// NOTE: Index updates moved to Sync() - index should only track persisted data
+	// Track writes for checkpoint purposes and rotation decisions
 	if len(entryNumbers) > 0 {
-		s.index.CurrentEntryNumber = entryNumbers[len(entryNumbers)-1] + 1
-		s.index.CurrentWriteOffset = writeOffset
 		s.writesSinceCheckpoint += len(entries)
-
-		// Update total file bytes metric
-		fileIndex := len(s.index.Files) - 1
-		if fileIndex >= 0 {
-			s.index.Files[fileIndex].Entries += int64(len(entries))
-			s.index.Files[fileIndex].EndOffset = writeOffset
-		}
+		s.pendingWriteOffset = writeOffset // Track actual write position
 	}
 }
 
 // buildWriteRequest builds the write request (unified for both modes)
 func (s *Shard) buildWriteRequest(writeReq *WriteRequest, compressedEntries []CompressedEntry, entryNumbers []int64, now int64, allHeaders []byte) {
 
-	writeOffset := s.index.CurrentWriteOffset
+	writeOffset := s.pendingWriteOffset
 
 	for i, compressedEntry := range compressedEntries {
 		// Use pre-allocated header buffer
@@ -1228,26 +1241,11 @@ func (s *Shard) buildWriteRequest(writeReq *WriteRequest, compressedEntries []Co
 		writeOffset += entrySize
 	}
 
-	// Update index state
+	// NOTE: Index updates moved to Sync() - index should only track persisted data
+	// Track writes for checkpoint purposes and rotation decisions
 	if len(entryNumbers) > 0 {
-		s.index.CurrentEntryNumber = entryNumbers[len(entryNumbers)-1] + 1
-		s.index.CurrentWriteOffset = writeOffset
 		s.writesSinceCheckpoint += len(compressedEntries)
-
-		// Update total file bytes metric
-		if state := s.state; state != nil {
-			var totalBytes int64
-			for _, fileInfo := range s.index.Files {
-				totalBytes += fileInfo.EndOffset - fileInfo.StartOffset
-			}
-			atomic.StoreUint64(&state.TotalFileBytes, uint64(totalBytes))
-		}
-	}
-
-	// Update current file's entry count and end offset
-	if len(s.index.Files) > 0 {
-		s.index.Files[len(s.index.Files)-1].EndOffset = writeOffset
-		s.index.Files[len(s.index.Files)-1].Entries += int64(len(compressedEntries))
+		s.pendingWriteOffset = writeOffset // Track actual write position
 	}
 
 	// Update state metrics
@@ -1464,7 +1462,8 @@ func (s *Shard) shouldCheckpoint(config *CometConfig) bool {
 
 // shouldRotateFile determines if file rotation is needed
 func (s *Shard) shouldRotateFile(config *CometConfig) bool {
-	return s.index.CurrentWriteOffset >= config.Storage.MaxFileSize
+	// Use pendingWriteOffset which includes buffered writes
+	return s.pendingWriteOffset >= config.Storage.MaxFileSize
 }
 
 // maybeCheckpoint conditionally saves the index if needed
@@ -1515,8 +1514,8 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 
 	// Quick check without lock
 	s.mu.RLock()
-	needsRotation := s.index.CurrentWriteOffset >= config.Storage.MaxFileSize
-	currentWriteOffset := s.index.CurrentWriteOffset
+	needsRotation := s.pendingWriteOffset >= config.Storage.MaxFileSize
+	currentWriteOffset := s.pendingWriteOffset
 	s.mu.RUnlock()
 
 	if !needsRotation {
@@ -1560,7 +1559,7 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	s.writeMu.Lock()
 
 	// Double-check rotation is still needed
-	if s.index.CurrentWriteOffset < config.Storage.MaxFileSize {
+	if s.pendingWriteOffset < config.Storage.MaxFileSize {
 		s.writeMu.Unlock()
 		newFile.Close()
 		os.Remove(newFilePath)
@@ -1583,20 +1582,24 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 
 	// Update index metadata (fast in-memory operations)
 	if len(s.index.Files) > 0 {
-		s.index.Files[len(s.index.Files)-1].EndTime = time.Now()
-		s.index.Files[len(s.index.Files)-1].EndOffset = currentWriteOffset
+		current := &s.index.Files[len(s.index.Files)-1]
+		current.EndTime = time.Now()
+		current.EndOffset = currentWriteOffset
+		// Calculate actual entry count for this file
+		current.Entries = s.nextEntryNumber - current.StartEntry
 	}
 
 	// Add new file to index
 	newFileInfo := FileInfo{
 		Path:       newFilePath,
-		StartEntry: s.index.CurrentEntryNumber,
+		StartEntry: s.nextEntryNumber, // Use nextEntryNumber for pending writes
 		StartTime:  time.Now(),
 		Entries:    0,
 		EndOffset:  0,
 	}
 	s.index.Files = append(s.index.Files, newFileInfo)
 	s.index.CurrentWriteOffset = 0
+	s.pendingWriteOffset = 0 // Reset pending offset for new file
 	s.index.CurrentFile = newFilePath
 
 	// Track new file
@@ -1807,7 +1810,7 @@ func (s *Shard) openDataFileForAppend(shardDir string) error {
 		Path:        filePath,
 		StartOffset: s.index.CurrentWriteOffset,
 		EndOffset:   s.index.CurrentWriteOffset,
-		StartEntry:  s.index.CurrentEntryNumber,
+		StartEntry:  s.nextEntryNumber, // Use nextEntryNumber for pending writes
 		Entries:     0,
 		StartTime:   time.Now(),
 		EndTime:     time.Now(),
@@ -1924,6 +1927,8 @@ func (s *Shard) openDataFileWithConfig(shardDir string) error {
 						}
 					}
 					s.index.CurrentEntryNumber = lastFile.StartEntry + entryCount
+					// Also update nextEntryNumber to stay in sync
+					s.nextEntryNumber = s.index.CurrentEntryNumber
 					if s.logger != nil {
 						s.logger.Info("Updated file entry count after crash recovery",
 							"file", lastFile.Path,
@@ -1992,6 +1997,7 @@ func (s *Shard) persistIndex() error {
 	// Clone the index while holding the lock to prevent concurrent modification
 	s.mu.RLock()
 	indexCopy := s.cloneIndex()
+	state := s.state // Capture state reference while holding lock
 	s.mu.RUnlock()
 
 	// Return index to pool after use
@@ -2003,16 +2009,16 @@ func (s *Shard) persistIndex() error {
 	s.indexMu.Unlock()
 
 	if err != nil {
-		if s.state != nil {
-			atomic.AddUint64(&s.state.IndexPersistErrors, 1)
+		if state != nil {
+			atomic.AddUint64(&state.IndexPersistErrors, 1)
 		}
 		return fmt.Errorf("failed to persist index: %w", err)
 	}
 
 	// Update mmap timestamp to signal index change to other processes
-	if s.state != nil {
-		s.state.SetLastIndexUpdate(time.Now().UnixNano())
-		atomic.AddUint64(&s.state.IndexPersistCount, 1)
+	if state != nil {
+		state.SetLastIndexUpdate(time.Now().UnixNano())
+		atomic.AddUint64(&state.IndexPersistCount, 1)
 	}
 
 	return nil
@@ -2075,6 +2081,8 @@ func (s *Shard) recoverFromCrash() error {
 		lastFile.Entries = entryCount
 		s.index.CurrentWriteOffset = actualSize
 		s.index.CurrentEntryNumber = lastFile.StartEntry + entryCount
+		// Keep nextEntryNumber in sync
+		s.nextEntryNumber = s.index.CurrentEntryNumber
 	}
 
 	return nil
@@ -3060,8 +3068,10 @@ func (s *Shard) doRebuildIndex(config CometConfig, shardDir string) error {
 		newIndex.CurrentFile = newIndex.Files[len(newIndex.Files)-1].Path
 	}
 
-	// Replace index
+	// Replace index under write lock
+	s.mu.Lock()
 	s.index = newIndex
+	s.mu.Unlock()
 
 	// Update state to match
 	if s.state != nil && totalEntries > 0 {
@@ -3070,7 +3080,7 @@ func (s *Shard) doRebuildIndex(config CometConfig, shardDir string) error {
 		atomic.AddUint64(&s.state.RecoverySuccesses, 1)
 	}
 
-	// Persist rebuilt index
+	// Persist rebuilt index (this will take its own read lock as needed)
 	if err := s.persistIndex(); err != nil {
 		if s.logger != nil {
 			s.logger.Error("Failed to persist rebuilt index",

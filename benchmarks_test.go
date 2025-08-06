@@ -720,6 +720,11 @@ func BenchmarkConsumer_LagMeasurement(b *testing.B) {
 		b.Fatalf("failed to add test data: %v", err)
 	}
 
+	// Sync to make entries durable and visible to consumers
+	if err := client.Sync(ctx); err != nil {
+		b.Fatalf("failed to sync test data: %v", err)
+	}
+
 	// Create consumer with some lag
 	consumer := NewConsumer(client, ConsumerOptions{
 		Group: "lag-bench",

@@ -471,6 +471,7 @@ func (c *Consumer) Read(ctx context.Context, shards []uint32, count int) ([]Stre
 			break
 		}
 
+		// Use getOrCreateShard to ensure we can read from existing shards after restart
 		shard, err := c.client.getOrCreateShard(shardID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get shard %d: %w", shardID, err)
@@ -635,51 +636,61 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 	if value, ok := c.readers.Load(shard.shardID); ok {
 		reader := value.(*Reader)
 
-		// Update the reader with current files - the new Reader handles this efficiently
-		shard.mu.RLock()
-		// Make a copy to avoid race conditions
-		currentFiles := make([]FileInfo, len(shard.index.Files))
-		copy(currentFiles, shard.index.Files)
-		shard.mu.RUnlock()
+		// Check if reader's cache is stale by comparing LastIndexUpdate timestamps
+		if reader.state != nil && shard.state != nil {
+			currentIndexUpdate := shard.state.GetLastIndexUpdate()
+			readerLastKnown := atomic.LoadInt64(&reader.lastKnownIndexUpdate)
 
-		if err := reader.UpdateFiles(&currentFiles); err != nil {
-			// If update fails, close the reader and create a new one
-			c.readers.Delete(shard.shardID)
-			reader.Close()
-			// Decrement active readers count
-			if state := shard.state; state != nil {
-				atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
+			if currentIndexUpdate > readerLastKnown {
+				// Reader cache is stale, need to refresh
+				if IsDebug() {
+					fmt.Printf("[DEBUG] Consumer detected stale reader cache: shard=%d, current=%d, reader=%d\n",
+						shard.shardID, currentIndexUpdate, readerLastKnown)
+				}
+
+				// Close the stale reader and create a new one
+				c.readers.Delete(shard.shardID)
+				reader.Close()
+				// Decrement active readers count
+				atomic.AddUint64(&shard.state.ActiveReaders, ^uint64(0)) // Decrement by 1
+				// Fall through to create a new reader
+			} else {
+				// Reader cache is up to date
+				// Track reader cache hit
+				atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
+				return reader, nil
 			}
 		} else {
-			// Track reader cache hit
-			if state := shard.state; state != nil {
-				atomic.AddUint64(&state.ReaderCacheHits, 1)
+			// No state to check, use existing reader
+			// Update the reader with current files - the new Reader handles this efficiently
+			shard.mu.RLock()
+			// Make a copy to avoid race conditions
+			currentFiles := make([]FileInfo, len(shard.index.Files))
+			copy(currentFiles, shard.index.Files)
+			shard.mu.RUnlock()
+			if err := reader.UpdateFiles(&currentFiles); err != nil {
+				// If update fails, close the reader and create a new one
+				c.readers.Delete(shard.shardID)
+				reader.Close()
+				// Decrement active readers count
+				if state := shard.state; state != nil {
+					atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
+				}
+			} else {
+				// Track reader cache hit
+				if state := shard.state; state != nil {
+					atomic.AddUint64(&state.ReaderCacheHits, 1)
+				}
+				return reader, nil
 			}
-			return reader, nil
 		}
 	}
 
-	// Create new reader with a snapshot of the current index
+	// Create new reader with a reference to the live index
+	// We need to hold the lock while creating the reader to avoid data races
 	shard.mu.RLock()
-	// Make a copy of the index to avoid race conditions
-	indexCopy := &ShardIndex{
-		Files:              make([]FileInfo, len(shard.index.Files)),
-		CurrentFile:        shard.index.CurrentFile,
-		CurrentWriteOffset: shard.index.CurrentWriteOffset,
-		CurrentEntryNumber: shard.index.CurrentEntryNumber,
-		ConsumerOffsets:    make(map[string]int64),
-		BinaryIndex: BinarySearchableIndex{
-			IndexInterval: shard.index.BinaryIndex.IndexInterval,
-			MaxNodes:      shard.index.BinaryIndex.MaxNodes,
-			Nodes:         make([]EntryIndexNode, len(shard.index.BinaryIndex.Nodes)),
-		},
-	}
-	copy(indexCopy.Files, shard.index.Files)
-	copy(indexCopy.BinaryIndex.Nodes, shard.index.BinaryIndex.Nodes)
-	maps.Copy(indexCopy.ConsumerOffsets, shard.index.ConsumerOffsets)
+	newReader, err := NewReader(shard.shardID, shard.index, c.client.config.Reader)
 	shard.mu.RUnlock()
-
-	newReader, err := NewReader(shard.shardID, indexCopy, c.client.config.Reader)
 	if err != nil {
 		return nil, err
 	}
@@ -742,57 +753,12 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		}
 	}
 
-	endEntryNum := shard.index.CurrentEntryNumber
+	endEntryNum := shard.index.CurrentEntryNumber // Only read durable data
 	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()
 
-	// In multi-process mode, check if index might be stale by comparing with state
-	if IsDebug() && shard.logger != nil {
-		shard.logger.Debug("Consumer read state check",
-			"shard", shard.shardID,
-			"stateExists", shard.state != nil,
-			"endEntryNum", endEntryNum)
-	}
-	if shard.state != nil {
-		totalWrites := atomic.LoadUint64(&shard.state.TotalWrites)
-		if totalWrites > uint64(endEntryNum) {
-			// Need write lock for rebuild
-			shard.mu.Lock()
-			shardDir := filepath.Join(c.client.dataDir, fmt.Sprintf("shard-%04d", shard.shardID))
-			// Force a full rebuild by manually updating the rebuild trigger
-			// Temporarily modify the file end offset to trigger a rebuild
-			oldEndOffset := int64(0)
-			if len(shard.index.Files) > 0 {
-				oldEndOffset = shard.index.Files[len(shard.index.Files)-1].EndOffset
-				// Set end offset to 0 to force rebuild detection
-				shard.index.Files[len(shard.index.Files)-1].EndOffset = 0
-			}
-
-			shard.lazyRebuildIndexIfNeeded(c.client.config, shardDir)
-
-			// Restore if rebuild didn't happen (shouldn't occur)
-			if len(shard.index.Files) > 0 && shard.index.Files[len(shard.index.Files)-1].EndOffset == 0 {
-				shard.index.Files[len(shard.index.Files)-1].EndOffset = oldEndOffset
-			}
-			// Reload the updated values
-			startEntryNum, exists = shard.index.ConsumerOffsets[c.group]
-			if !exists {
-				startEntryNum = 0
-			}
-
-			// After retention, adjust to earliest available entry if needed
-			if len(shard.index.Files) > 0 {
-				earliestEntry := shard.index.Files[0].StartEntry
-				if startEntryNum < earliestEntry {
-					startEntryNum = earliestEntry
-				}
-			}
-
-			endEntryNum = shard.index.CurrentEntryNumber
-			fileCount = len(shard.index.Files)
-			shard.mu.Unlock()
-		}
-	}
+	// The reader cache invalidation in getOrCreateReader now handles stale data detection
+	// No need for the hacky workaround anymore
 
 	if startEntryNum >= endEntryNum {
 		return nil, nil // No new data
@@ -830,6 +796,11 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			// Handle transient conditions gracefully
 			if errors.Is(err, ErrFileAwaitingData) {
 				// File exists but has no data yet - this is normal during active writes
+				// Force reader to check for updates on next read by marking cache as stale
+				if reader.state != nil && shard.state != nil {
+					atomic.StoreInt64(&reader.lastKnownIndexUpdate, 0)
+				}
+
 				// Return what we have so far and let the consumer retry later
 				if len(messages) > 0 {
 					return messages, nil
@@ -841,6 +812,16 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			// In multi-process mode, some entries might not exist due to gaps in the sequence
 			// Skip these entries instead of failing the entire read
 			if strings.Contains(err.Error(), "not found in any file") {
+				// CRITICAL: Update memory offset even for skipped entries to prevent infinite loops
+				c.memOffsetsMu.Lock()
+				if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
+					if IsDebug() {
+						fmt.Printf("[DEBUG] Consumer updating memOffset for 'not found': shard=%d, entryNum=%d, newOffset=%d\n",
+							shard.shardID, entryNum, entryNum+1)
+					}
+					c.memOffsets[shard.shardID] = entryNum + 1 // Next entry to try
+				}
+				c.memOffsetsMu.Unlock()
 				continue
 			}
 			// Track read error in CometState

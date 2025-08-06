@@ -136,6 +136,11 @@ func TestScanDataFilesForEntryFallback(t *testing.T) {
 		}
 	}
 
+	// Sync to flush entries to files so scanDataFilesForEntry can find them
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
 	// Create consumer
 	consumer := NewConsumer(client, ConsumerOptions{Group: "test"})
 	defer consumer.Close()
