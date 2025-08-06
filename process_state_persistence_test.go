@@ -30,7 +30,7 @@ func TestProcessStatePersistence(t *testing.T) {
 		t.Fatalf("Failed to create writer client: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	stream := "prod:v1:shard:0000"
@@ -99,7 +99,7 @@ func TestProcessStatePersistence(t *testing.T) {
 	}()
 
 	// Let writer establish some data
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Phase 2: Start consumer in parallel
 	t.Log("\n=== PHASE 2: Starting consumer (writer still running) ===")
@@ -191,8 +191,8 @@ func TestProcessStatePersistence(t *testing.T) {
 		}
 	}()
 
-	// Phase 3: Simulate process restart after 10 seconds
-	time.Sleep(10 * time.Second)
+	// Phase 3: Simulate process restart after 5 seconds
+	time.Sleep(5 * time.Second)
 
 	t.Log("\n=== PHASE 3: Simulating process restart ===")
 	pauseWritten := totalWritten.Load()
@@ -205,7 +205,7 @@ func TestProcessStatePersistence(t *testing.T) {
 	<-consumerDone // Wait for consumer reader to exit
 
 	// Create new context for phase 3 and 4
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel2()
 
 	// Restart writer with new context
@@ -271,7 +271,7 @@ func TestProcessStatePersistence(t *testing.T) {
 
 	// Continue reading with new consumer
 	restartRead := int64(0)
-	phase3Ctx, phase3Cancel := context.WithTimeout(ctx2, 10*time.Second)
+	phase3Ctx, phase3Cancel := context.WithTimeout(ctx2, 5*time.Second)
 	defer phase3Cancel()
 
 	for {
@@ -318,7 +318,7 @@ phase4:
 	writerClient.Close()
 
 	// Do final reads to catch up
-	finalCtx, finalCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	finalCtx, finalCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer finalCancel()
 
 	for {
