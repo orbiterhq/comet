@@ -561,6 +561,12 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 
 		start := time.Now()
 		messages, err := c.Read(ctx, shards, cfg.batchSize)
+		if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Consumer read attempt",
+				"messages_count", len(messages),
+				"batch_size", cfg.batchSize,
+				"error", err)
+		}
 		if err != nil {
 			if cfg.onError != nil {
 				cfg.onError(err, 0)
@@ -684,8 +690,53 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	atomic.AddInt64(&shard.readerCount, 1)
 	defer atomic.AddInt64(&shard.readerCount, -1)
 
-	// Since processes own their shards exclusively, no need to check for changes
+	// Check if index has been updated by another process using memory-mapped atomic state
+	// This is much more efficient than time-based reloading since we only reload when actually needed
+	var needsReload bool
+	var lastKnownUpdate int64
+	
+	if shard.state != nil {
+		currentIndexUpdate := shard.state.GetLastIndexUpdate()
+		lastKnownUpdate = shard.lastIndexReload.UnixNano()
+		needsReload = currentIndexUpdate > lastKnownUpdate
+		
+		fmt.Printf("[DEBUG] Checking index update: shard=%d, current=%d, last=%d, needsReload=%v\n",
+			shard.shardID, currentIndexUpdate, lastKnownUpdate, needsReload)
+		
+		if needsReload {
+			fmt.Printf("[DEBUG] Index update detected: shard=%d, current=%d > last=%d\n",
+				shard.shardID, currentIndexUpdate, lastKnownUpdate)
+		}
+	} else {
+		fmt.Printf("[DEBUG] No shard state available for shard %d\n", shard.shardID)
+	}
 
+	if needsReload {
+		shard.mu.Lock()
+		oldEntries := shard.index.CurrentEntryNumber
+		
+		if err := shard.loadIndex(); err != nil {
+			// Log but don't fail - continue with current index
+			if c.client.logger != nil {
+				c.client.logger.Warn("Failed to reload index, using cached state",
+					"shard", shard.shardID,
+					"error", err)
+			}
+		} else {
+			shard.lastIndexReload = time.Now()
+			newEntries := shard.index.CurrentEntryNumber
+			
+			if c.client.logger != nil && IsDebug() {
+				c.client.logger.Debug("Reloaded index after state change",
+					"shard", shard.shardID,
+					"old_entries", oldEntries,
+					"new_entries", newEntries,
+					"entries_added", newEntries-oldEntries)
+			}
+		}
+		shard.mu.Unlock()
+	}
+	
 	// First check in-memory offset for immediate consistency
 	c.memOffsetsMu.RLock()
 	memOffset, hasMemOffset := c.memOffsets[shard.shardID]
@@ -716,6 +767,19 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	endEntryNum := shard.index.CurrentEntryNumber // Only read durable data
 	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()
+	
+	// If we just reloaded the index, re-capture the updated endEntryNum
+	if needsReload {
+		shard.mu.RLock()
+		endEntryNum = shard.index.CurrentEntryNumber
+		shard.mu.RUnlock()
+		
+		if c.client.logger != nil && IsDebug() {
+			c.client.logger.Debug("Updated endEntryNum after index reload",
+				"shard", shard.shardID,
+				"end_entry_num", endEntryNum)
+		}
+	}
 
 	// The reader cache invalidation in getOrCreateReader now handles stale data detection
 	// No need for the hacky workaround anymore

@@ -455,6 +455,7 @@ type Shard struct {
 	nextEntryNumber    int64     // Next entry number to assign (includes pending)
 	pendingWriteOffset int64     // Current write offset including pending writes
 	lastCheckpoint     time.Time // 64-bit on most systems
+	lastIndexReload    time.Time // Last time index was reloaded from disk
 	// lastMmapCheck removed - processes own their shards exclusively
 
 	// Pointers (8 bytes each on 64-bit)

@@ -20,7 +20,8 @@
       "Bash(git diff:*)",
       "Bash(dprint fmt:*)",
       "Bash(DEBUG=true go test -run TestIndexMetrics -v)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(COMET_DEBUG=true go test -timeout 30s -run \"TestRealtimeVisibilityDebug\" -v)"
     ],
     "deny": []
   }
