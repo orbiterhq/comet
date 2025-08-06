@@ -408,18 +408,14 @@ var (
 // It automatically acquires a unique process ID and configures the client for multi-process mode.
 // The process ID is automatically released when the client is closed.
 func MultiProcessConfig(sharedMemoryFile ...string) CometConfig {
-	// Create multi-process config
-	config := DefaultCometConfig()
-	if config.Concurrency.ProcessCount == 0 {
-		// Acquire process ID
-		processID := GetProcessID(sharedMemoryFile...)
-		if processID < 0 {
-			panic("failed to acquire process ID - all slots may be taken")
-		}
-
-		config.Concurrency.ProcessCount = runtime.NumCPU()
-		config.Concurrency.ProcessID = processID
+	// Acquire process ID
+	processID := GetProcessID(sharedMemoryFile...)
+	if processID < 0 {
+		panic("failed to acquire process ID - all slots may be taken")
 	}
+
+	// Create multi-process config
+	config := DeprecatedMultiProcessConfig(processID, runtime.NumCPU())
 
 	// Set the shared memory file
 	if len(sharedMemoryFile) > 0 && sharedMemoryFile[0] != "" {
@@ -442,6 +438,9 @@ type Client struct {
 	stopCh           chan struct{}
 	startTime        time.Time
 	sharedMemoryFile string // For automatic process ID cleanup
+
+	// Multi-process optimization: cache owned shards per shard count
+	ownedShardsCache sync.Map // map[uint32][]uint32 - shardCount -> owned shard IDs
 }
 
 // isShardOwnedByProcess checks if this process owns a specific shard
@@ -553,28 +552,49 @@ type FileInfo struct {
 //	}
 //	defer client.Close() // Automatically releases process ID
 func NewMultiProcessClient(dataDir string, cfg ...CometConfig) (*Client, error) {
-	mpCfg := MultiProcessConfig()
-	config := mpCfg
-	if len(cfg) > 0 {
+	var config CometConfig
+
+	if len(cfg) > 0 && cfg[0].Concurrency.IsMultiProcess() {
+		// Use the provided multi-process config
 		config = cfg[0]
-		shmFile := config.Concurrency.SHMFile
-		config.Concurrency = mpCfg.Concurrency
-		if shmFile != "" {
-			config.Concurrency.SHMFile = shmFile
+	} else {
+		// Create a new multi-process config
+		var shmFile string
+		if len(cfg) > 0 && cfg[0].Concurrency.SHMFile != "" {
+			shmFile = cfg[0].Concurrency.SHMFile
 		}
-		if config.Concurrency.SHMFile == "" {
-			config.Concurrency.SHMFile = filepath.Join(os.TempDir(), "comet-worker-slots")
+
+		if shmFile == "" {
+			config = MultiProcessConfig()
+		} else {
+			config = MultiProcessConfig(shmFile)
+		}
+
+		// Copy other settings from provided config
+		if len(cfg) > 0 {
+			providedCfg := cfg[0]
+			config.Compression = providedCfg.Compression
+			config.Indexing = providedCfg.Indexing
+			config.Storage = providedCfg.Storage
+			config.Retention = providedCfg.Retention
+			config.Reader = providedCfg.Reader
+			config.Log = providedCfg.Log
 		}
 	}
+
 	client, err := NewClient(dataDir, config)
 	if err != nil {
 		// Release process ID on failure
-		ReleaseProcessID()
+		if config.Concurrency.SHMFile != "" {
+			ReleaseProcessID(config.Concurrency.SHMFile)
+		} else {
+			ReleaseProcessID()
+		}
 		return nil, err
 	}
 
 	// Mark that this client should auto-release the process ID
-	client.sharedMemoryFile = "" // Empty means use default file
+	client.sharedMemoryFile = config.Concurrency.SHMFile
 
 	return client, nil
 }
@@ -2541,9 +2561,53 @@ func (c *Client) PickShard(key string, shardCount uint32) uint32 {
 	return h % shardCount
 }
 
+// getOwnedShards returns the list of shard IDs owned by this process for the given total shard count
+func (c *Client) getOwnedShards(shardCount uint32) []uint32 {
+	// Check cache first
+	if cached, ok := c.ownedShardsCache.Load(shardCount); ok {
+		return cached.([]uint32)
+	}
+
+	// Build the list of owned shards
+	ownedShards := make([]uint32, 0, shardCount/uint32(c.config.Concurrency.ProcessCount)+1)
+	for i := uint32(0); i < shardCount; i++ {
+		if c.config.Concurrency.Owns(i) {
+			ownedShards = append(ownedShards, i)
+		}
+	}
+
+	// Store in cache
+	c.ownedShardsCache.Store(shardCount, ownedShards)
+	return ownedShards
+}
+
 // PickShardStream returns a complete stream name for the shard picked by key
-// Example: client.PickShardStream("events:v1", "user123", 256) returns "events:v1:0011"
+// Example: client.PickShardStream("events:v1", "user123", 256) returns "events:v1:0255"
+// In multi-process mode, this will only pick from shards owned by this client
 func (c *Client) PickShardStream(prefix string, key string, shardCount uint32) string {
+	if shardCount == 0 {
+		shardCount = 16
+	}
+
+	// In multi-process mode, only pick from owned shards
+	if c.config.Concurrency.IsMultiProcess() {
+		ownedShards := c.getOwnedShards(shardCount)
+		if len(ownedShards) == 0 {
+			panic("no shards owned by this process")
+		}
+
+		// Hash the key and pick from owned shards
+		h := uint32(2166136261) // FNV offset basis
+		for i := 0; i < len(key); i++ {
+			h ^= uint32(key[i])
+			h *= 16777619 // FNV prime
+		}
+
+		shardID := ownedShards[h%uint32(len(ownedShards))]
+		return ShardStreamName(prefix, shardID)
+	}
+
+	// Single-process mode: use regular shard picking
 	shardID := c.PickShard(key, shardCount)
 	return ShardStreamName(prefix, shardID)
 }
