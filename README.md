@@ -80,7 +80,7 @@ defer client.Close()
 ```go
 // Pick which shard to write to based on a key (for consistent routing)
 // High cardinality keys (e.g. uuid) are recommended for consistent routing
-stream := comet.PickShardStream(event.ID, "events", "v1", 256)
+stream := client.PickShardStream("events:v1", event.ID, 256)
 // This returns something like "events:v1:shard:00A7" based on hash(event.ID) % 256
 
 ids, err := client.Append(ctx, stream, [][]byte{
@@ -251,7 +251,7 @@ Comet uses deterministic sharding for load distribution. Here's how it works:
 
 ```go
 // The key (event ID, user ID, tenant, etc.) determines which shard gets the data
-stream := comet.PickShardStream(event.ID, "events", "v1", 16)
+stream := client.PickShardStream("events:v1", event.ID, 256)
 // Returns "events:v1:shard:0007" (hash("user-123") % 16 = 7)
 
 // The key is ONLY used for routing - it's not stored anywhere!
@@ -383,7 +383,7 @@ config := comet.DefaultCometConfig()
 config.Storage.MaxFileSize = 10 << 20  // 10MB
 
 // Use 256 shards when creating streams
-stream := comet.PickShardStream(key, "events", "v1", 256)
+stream := client.PickShardStream("events:v1", event.ID, 256)
 ```
 
 **For multi-process deployments:**
@@ -393,9 +393,6 @@ stream := comet.PickShardStream(key, "events", "v1", 256)
 config := comet.MultiProcessConfig()
 config.Storage.MaxFileSize = 10 << 20  // 10MB
 config.Concurrency.ProcessCount = 4    // 64 shards per process
-
-// Still use 256 total shards
-stream := comet.PickShardStream(key, "events", "v1", 256)
 ```
 
 #### Sharding Best Practices
@@ -410,9 +407,9 @@ stream := comet.PickShardStream(key, "events", "v1", 256)
 
 ```go
 // Helper functions for shard management
-shardID := comet.PickShard(key, 256)                    // Get shard ID (0-255)
-stream := comet.ShardStreamName("events", "v1", shardID) // "events:v1:shard:00FF"
-stream := comet.PickShardStream(key, "events", "v1", 256) // One-liner
+stream := client.PickShardStream("events:v1", uniqueKey, 256) // One-liner
+shardID := client.PickShard(uniqueKey, 256)                   // Get shard ID (0-255)
+streamName := comet.ShardStreamName("events:v1", shardID)     // "events:v1:00FF"
 
 // Get all shards for parallel processing
 shardIDs := comet.AllShardsRange(256)                   // [0, 1, ..., 255]

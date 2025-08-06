@@ -2,6 +2,7 @@ package comet
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"testing"
@@ -115,7 +116,7 @@ func TestGetProcessID_DefaultFile(t *testing.T) {
 	// In practice, you'd want isolation, but this tests the default behavior
 
 	// Clean up any existing default file for this test
-	defaultFile := "/tmp/comet-worker-slots"
+	defaultFile := filepath.Join(os.TempDir(), "comet-worker-slots")
 	os.Remove(defaultFile)
 	defer os.Remove(defaultFile)
 

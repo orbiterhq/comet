@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 
 	comet "github.com/orbiterhq/comet"
 )
@@ -13,7 +15,7 @@ func main() {
 	config := comet.DeprecatedMultiProcessConfig(0, 1)
 
 	// Create client with temp directory
-	client, err := comet.NewClient("/tmp/test_unified_state", config)
+	client, err := comet.NewClient(filepath.Join(os.TempDir(), "test_unified_state"), config)
 	if err != nil {
 		log.Fatal(err)
 	}

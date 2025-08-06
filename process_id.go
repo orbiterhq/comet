@@ -2,6 +2,7 @@ package comet
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -38,7 +39,7 @@ var (
 //	config := comet.MultiProcessConfig(processID, runtime.NumCPU())
 //	client, err := comet.NewClient(dataDir, config)
 func GetProcessID(shmFile ...string) int {
-	shmFile_ := "/tmp/comet-worker-slots"
+	shmFile_ := filepath.Join(os.TempDir(), "comet-worker-slots")
 	if len(shmFile) > 0 {
 		shmFile_ = shmFile[0]
 	}
@@ -64,7 +65,7 @@ func GetProcessIDWithFile(shmFile string) int {
 
 func doGetProcessID(shmFile string) int {
 	if shmFile == "" {
-		shmFile = "/tmp/comet-worker-slots"
+		shmFile = filepath.Join(os.TempDir(), "comet-worker-slots")
 	}
 	maxWorkers := runtime.NumCPU()
 	slotSize := 8 // 8 bytes for PID (uint32) + 4 bytes padding
@@ -141,7 +142,7 @@ func isProcessAlive(pid int) bool {
 // ReleaseProcessID releases the process ID when shutting down gracefully.
 // This is optional but helps with faster slot reuse.
 func ReleaseProcessID(shmFile_ ...string) {
-	shmFile := "/tmp/comet-worker-slots"
+	shmFile := filepath.Join(os.TempDir(), "comet-worker-slots")
 	if len(shmFile_) > 0 {
 		shmFile = shmFile_[0]
 	}
