@@ -1519,6 +1519,9 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 			atomic.StoreInt64(&state.LastCheckpointNanos, time.Now().UnixNano())
 			checkpointDuration := time.Since(checkpointStart).Nanoseconds()
 			atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
+			
+			// CRITICAL: Update LastIndexUpdate so consumers know to reload
+			state.SetLastIndexUpdate(time.Now().UnixNano())
 		}
 	}
 }
@@ -2354,6 +2357,9 @@ func (c *Client) Close() error {
 					atomic.StoreInt64(&state.LastCheckpointNanos, time.Now().UnixNano())
 					checkpointDuration := time.Since(checkpointStart).Nanoseconds()
 					atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
+					
+					// CRITICAL: Update LastIndexUpdate so consumers know to reload
+					state.SetLastIndexUpdate(time.Now().UnixNano())
 				}
 			}
 		}

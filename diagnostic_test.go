@@ -24,7 +24,7 @@ func TestSyncPersistenceDiagnostic(t *testing.T) {
 	shardNames := make([]string, 16)
 	for i := 0; i < 16; i++ {
 		shardNames[i] = fmt.Sprintf("shard:%04d", i)
-		
+
 		// Write exactly 1 message to this shard
 		_, err := writer.Append(ctx, shardNames[i], [][]byte{[]byte(fmt.Sprintf("msg-%d", i))})
 		if err != nil {
@@ -39,15 +39,15 @@ func TestSyncPersistenceDiagnostic(t *testing.T) {
 		t.Fatalf("Sync failed: %v", err)
 	}
 	t.Logf("[WRITER] Sync completed")
-	
+
 	// Check IndexPersistErrors counter to see if there were silent failures
 	t.Logf("[DIAGNOSTIC] Checking for persist errors and actual paths...")
 	for i := 0; i < 16; i++ {
 		if shard := writer.shards[uint32(i)]; shard != nil && shard.state != nil {
 			errors := shard.state.IndexPersistErrors
-			successes := shard.state.IndexPersistCount  
+			successes := shard.state.IndexPersistCount
 			t.Logf("[DIAGNOSTIC] Shard %d: %d successes, %d errors, indexPath='%s'", i, successes, errors, shard.indexPath)
-			
+
 			// Check if file exists at the actual indexPath
 			if _, err := os.Stat(shard.indexPath); err == nil {
 				t.Logf("[DIAGNOSTIC] ✅ Index file found at actual path: %s", shard.indexPath)
@@ -57,13 +57,13 @@ func TestSyncPersistenceDiagnostic(t *testing.T) {
 		}
 	}
 
-	// Check filesystem - verify that index files exist for all shards  
+	// Check filesystem - verify that index files exist for all shards
 	t.Logf("[DIAGNOSTIC] Checking filesystem for index files...")
 	indexFilesFound := 0
 	for i := 0; i < 16; i++ {
 		shardDir := filepath.Join(dir, fmt.Sprintf("shard-%04d", i))
 		indexPath := filepath.Join(shardDir, "index.bin")
-		
+
 		if _, err := os.Stat(indexPath); err == nil {
 			indexFilesFound++
 			t.Logf("[DIAGNOSTIC] ✅ Index file exists: %s", indexPath)
@@ -120,7 +120,7 @@ func TestSyncPersistenceDiagnostic(t *testing.T) {
 			t.Logf("[CONSUMER] ❌ Shard %d has 0 entries in index", i)
 		}
 	}
-	
+
 	t.Logf("[CONSUMER] Visible shards: %d/16", visibleShards)
 
 	// Summary

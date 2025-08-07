@@ -32,7 +32,7 @@ func IsDebug() bool {
 	if atomic.LoadInt32(&debugEnabled) == 1 {
 		return true
 	}
-	
+
 	// Also check environment variable dynamically (slower but handles runtime changes)
 	debugEnv := os.Getenv("COMET_DEBUG")
 	return debugEnv != "" && debugEnv != "0" && strings.ToLower(debugEnv) != "false"

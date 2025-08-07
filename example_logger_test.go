@@ -22,7 +22,6 @@ func Example_customLogger() {
 	// Example: Disabling logs entirely
 	config.Log.Logger = comet.NoOpLogger{}
 
-
 	// Create client with configured logging
 	client, err := comet.NewClient(filepath.Join(os.TempDir(), "logger"), config)
 	if err != nil {
