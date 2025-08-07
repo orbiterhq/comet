@@ -2360,7 +2360,31 @@ func (c *Client) Close() error {
 		// Wait for background operations to complete BEFORE acquiring locks
 		shard.wg.Wait()
 
+		// CRITICAL: Flush writer BEFORE checkpointing to ensure all data is written
+		// This prevents the index from missing entries that are in the writer buffer
+		shard.writeMu.Lock()
+		if shard.writer != nil {
+			shard.writer.Flush()
+		}
+		shard.writeMu.Unlock()
+
 		shard.mu.Lock()
+
+		// Now sync to ensure flushed data is durable, then update index
+		if shard.dataFile != nil {
+			syncStart := time.Now()
+			if err := shard.dataFile.Sync(); err == nil {
+				// Update CurrentEntryNumber to reflect what's now durable
+				shard.index.CurrentEntryNumber = atomic.LoadInt64(&shard.lastWrittenEntryNumber)
+
+				// Track sync metrics
+				if shard.state != nil {
+					syncDuration := time.Since(syncStart).Nanoseconds()
+					atomic.AddInt64(&shard.state.SyncLatencyNanos, syncDuration)
+					atomic.AddUint64(&shard.state.SyncCount, 1)
+				}
+			}
+		}
 
 		// Final checkpoint - do it directly since we already hold the lock
 		// Always checkpoint on close to ensure index is persisted
@@ -2368,7 +2392,7 @@ func (c *Client) Close() error {
 			// Track checkpoint timing
 			checkpointStart := time.Now()
 
-			// Clone index while holding lock
+			// Clone index while holding lock (now includes all entries)
 			indexCopy := shard.cloneIndex()
 			shard.writesSinceCheckpoint = 0
 			shard.lastCheckpoint = time.Now()
@@ -2405,21 +2429,7 @@ func (c *Client) Close() error {
 		// Acquire write lock to ensure no writes are in progress
 		shard.writeMu.Lock()
 
-		// Close direct writer and sync to disk
-		if shard.writer != nil {
-			shard.writer.Flush()
-		}
-
-		// Ensure data is persisted to disk before closing
-		if shard.dataFile != nil {
-			syncStart := time.Now()
-			if err := shard.dataFile.Sync(); err == nil && shard.state != nil {
-				// Track sync latency during close
-				syncDuration := time.Since(syncStart).Nanoseconds()
-				atomic.AddInt64(&shard.state.SyncLatencyNanos, syncDuration)
-				atomic.AddUint64(&shard.state.SyncCount, 1)
-			}
-		}
+		// Writer already flushed and synced above, no need to do it again
 
 		// Close compressor
 		if shard.compressor != nil {
