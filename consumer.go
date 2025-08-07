@@ -498,7 +498,7 @@ func (c *Consumer) Read(ctx context.Context, shards []uint32, count int) ([]Stre
 		// Pick a random shard from the remaining ones
 		j := rand.Intn(len(shards) - i)
 		shardID := shards[j]
-		
+
 		// Swap the used shard to the end so we don't pick it again
 		shards[j], shards[len(shards)-1-i] = shards[len(shards)-1-i], shards[j]
 
@@ -794,12 +794,12 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			}
 		} else {
 			newEntries := shard.index.CurrentEntryNumber
-			
+
 			// Only update lastIndexReload if we actually loaded a non-empty index
 			// This prevents marking an empty index as "up to date" when it's not
 			if newEntries > 0 || len(shard.index.Files) > 0 {
 				shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
-				
+
 				if c.client.logger != nil && IsDebug() {
 					c.client.logger.Debug("Reloaded index after state change",
 						"shard", shard.shardID,
@@ -1391,7 +1391,7 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 				}
 			} else {
 				newEntries := shard.index.CurrentEntryNumber
-				
+
 				// Only update lastIndexReload if we actually loaded a non-empty index
 				// This prevents marking an empty index as "up to date" when it's not
 				if newEntries > 0 || len(shard.index.Files) > 0 {

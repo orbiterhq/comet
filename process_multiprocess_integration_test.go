@@ -44,12 +44,12 @@ func TestProcessMultiProcessIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure messages are durable
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client.Close()
 
 	// Verify data was written

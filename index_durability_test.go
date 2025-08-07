@@ -76,7 +76,7 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 	if entriesBeforeClose != 5 {
 		t.Errorf("Index incorrectly shows unflushed entries: expected 5, got %d", entriesBeforeClose)
 	}
-	
+
 	if nextEntryNumber != 10 {
 		t.Errorf("nextEntryNumber should track all writes: expected 10, got %d", nextEntryNumber)
 	}

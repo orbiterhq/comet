@@ -34,12 +34,12 @@ func TestQuickACKStress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure messages are durable
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client.Close()
 	client = nil // Already closed, prevent double close in defer
 
@@ -172,12 +172,12 @@ func testDuplicateACK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure message is durable
 	if err := client.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client.Close()
 
 	// Read and ACK same message multiple times
@@ -252,12 +252,12 @@ func testOutOfOrderACK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure messages are durable
 	if err := client.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client.Close()
 
 	// Read all messages
@@ -354,12 +354,12 @@ func testRapidACKUnACK(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure messages are durable
 	if err := client.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client.Close()
 
 	// Rapid ACK operations

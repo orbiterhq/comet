@@ -33,12 +33,12 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure messages are durable
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client.Close()
 
 	// Small delay to ensure multi-process state is fully persisted
@@ -174,12 +174,12 @@ func TestConsumerFailover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Sync to ensure messages are durable
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client.Close()
 
 	// Small delay to ensure multi-process state is fully persisted
@@ -270,12 +270,12 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	
+
 	// Sync to ensure messages are durable
 	if err := client.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client.Close()
 
 	// Small delay to ensure multi-process state is fully persisted
@@ -402,12 +402,12 @@ func TestDebugMessageLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("Append result: %v", result)
-	
+
 	// Sync to ensure messages are durable
 	if err := client.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	client.Close()
 
 	time.Sleep(100 * time.Millisecond)

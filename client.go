@@ -782,21 +782,6 @@ func (c *Client) getShard(shardID uint32) *Shard {
 	return shard
 }
 
-// getMaxShardID returns the highest shard ID that this client knows about.
-// Used by consumers for efficient shard discovery without filesystem scanning.
-func (c *Client) getMaxShardID() uint32 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	var maxShardID uint32 = 0
-	for shardID := range c.shards {
-		if shardID > maxShardID {
-			maxShardID = shardID
-		}
-	}
-	return maxShardID
-}
-
 func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	processID := os.Getpid()
 	if IsDebug() && c.logger != nil {
@@ -1519,7 +1504,7 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 			atomic.StoreInt64(&state.LastCheckpointNanos, time.Now().UnixNano())
 			checkpointDuration := time.Since(checkpointStart).Nanoseconds()
 			atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
-			
+
 			// CRITICAL: Update LastIndexUpdate so consumers know to reload
 			state.SetLastIndexUpdate(time.Now().UnixNano())
 		}
@@ -2358,7 +2343,7 @@ func (c *Client) Close() error {
 					atomic.StoreInt64(&state.LastCheckpointNanos, time.Now().UnixNano())
 					checkpointDuration := time.Since(checkpointStart).Nanoseconds()
 					atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
-					
+
 					// CRITICAL: Update LastIndexUpdate so consumers know to reload
 					state.SetLastIndexUpdate(time.Now().UnixNano())
 				}

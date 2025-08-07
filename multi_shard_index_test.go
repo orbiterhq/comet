@@ -63,7 +63,7 @@ func TestMultiShardIndexPersistence(t *testing.T) {
 	defer reader.Close()
 
 	consumer := NewConsumer(reader, ConsumerOptions{Group: "test"})
-	
+
 	// Check each shard individually
 	totalMessages := 0
 	for shardID := 0; shardID < 4; shardID++ {

@@ -21,7 +21,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 
 	// Real-world production configuration - no cheating!
 	cfg := DefaultCometConfig()
-	cfg.Storage.FlushInterval = 1000     // 1 second flush (production default)
+	cfg.Storage.FlushInterval = 1000      // 1 second flush (production default)
 	cfg.Storage.CheckpointInterval = 2000 // 2 second checkpoint (production default)
 
 	ctx := context.Background()
@@ -71,14 +71,14 @@ func TestRealtimeBulletproof(t *testing.T) {
 			case <-timeout:
 				// Signal to stop writing new messages
 				close(stopWriting)
-				
+
 				// Graceful shutdown - ensure final flush happens
 				written := atomic.LoadInt64(&writtenCount)
 				t.Logf("[WRITER] Stopping after %d writes, waiting for final flush cycles...", written)
-				
+
 				// Wait for TWO full flush cycles to ensure all messages are flushed
 				// First cycle: flush any messages written just before timeout
-				// Second cycle: ensure everything is visible 
+				// Second cycle: ensure everything is visible
 				// This is the real-world approach - let the automatic flush handle it
 				time.Sleep(2200 * time.Millisecond) // Just over 2 seconds to ensure 2 flushes happen
 
@@ -86,22 +86,22 @@ func TestRealtimeBulletproof(t *testing.T) {
 				if err := writerClient.Sync(ctx); err != nil {
 					t.Logf("[WRITER] Warning: Failed to sync: %v", err)
 				}
-				
+
 				// Debug: Check what's actually in the indexes BEFORE close
 				t.Logf("[WRITER] Checking shard states after sync...")
 				for i := 0; i < len(shards); i++ {
 					shard := writerClient.shards[uint32(i)]
 					if shard != nil {
-						t.Logf("[WRITER] Shard %d: nextEntryNumber=%d, index.CurrentEntryNumber=%d", 
+						t.Logf("[WRITER] Shard %d: nextEntryNumber=%d, index.CurrentEntryNumber=%d",
 							i, shard.nextEntryNumber, shard.index.CurrentEntryNumber)
-							
+
 						// Also check the consumer offsets
 						offset := shard.index.ConsumerOffsets["bulletproof-test"]
 						unread := shard.index.CurrentEntryNumber - offset
 						t.Logf("[WRITER] Shard %d: consumer offset=%d, unread messages=%d", i, offset, unread)
 					}
 				}
-				
+
 				if err := writerClient.Close(); err != nil {
 					t.Logf("[WRITER] Warning: Failed to close: %v", err)
 				}
@@ -111,7 +111,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 				time.Sleep(2 * time.Second)
 
 				t.Logf("[WRITER] All shards synced and closed. Final total written: %d", written)
-				
+
 				// Immediately check what the consumer can see after close
 				finalRead := atomic.LoadInt64(&readCount)
 				t.Logf("[WRITER] Consumer has read %d messages immediately after writer close", finalRead)
@@ -124,7 +124,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 					continue // Don't write any more messages
 				default:
 				}
-				
+
 				count := atomic.AddInt64(&writtenCount, 1)
 				msg := fmt.Sprintf("event-%d-%d", time.Now().UnixMilli(), count)
 
@@ -176,10 +176,10 @@ func TestRealtimeBulletproof(t *testing.T) {
 			<-writerDone
 			startCatchup := atomic.LoadInt64(&readCount)
 			t.Logf("[CONSUMER] Writer finished, consumer at %d reads, giving 15 seconds to capture final flushes...", startCatchup)
-			
+
 			// Give consumer a bit of time to finish current poll cycle
 			time.Sleep(200 * time.Millisecond)
-			
+
 			// Debug: Check what each shard thinks is available
 			t.Logf("[CONSUMER] Checking final shard states...")
 			totalUnread := int64(0)
@@ -193,7 +193,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 					} else {
 						t.Logf("[CONSUMER] Shard %d index file missing: %s", i, indexPath)
 					}
-					
+
 					// Force reload the index to get latest state
 					shard.mu.Lock()
 					if err := shard.loadIndex(); err == nil {
@@ -201,7 +201,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 						offset := shard.index.ConsumerOffsets[consumer.group]
 						unread := entries - offset
 						totalUnread += unread
-						t.Logf("[CONSUMER] Shard %d after reload: entries=%d, offset=%d, unread=%d", 
+						t.Logf("[CONSUMER] Shard %d after reload: entries=%d, offset=%d, unread=%d",
 							i, entries, offset, unread)
 					} else {
 						t.Logf("[CONSUMER] Shard %d failed to reload index: %v", i, err)
@@ -210,7 +210,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 				}
 			}
 			t.Logf("[CONSUMER] Total unread messages across all shards: %d", totalUnread)
-			
+
 			// If there are unread messages, wait for the continuous consumer to pick them up
 			if totalUnread > 0 {
 				t.Logf("[CONSUMER] Waiting for continuous consumer to pick up %d unread messages...", totalUnread)
@@ -221,7 +221,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 				// Even if no unread messages detected, wait a bit for any in-flight messages
 				time.Sleep(2 * time.Second)
 			}
-			
+
 			finalCatchup := atomic.LoadInt64(&readCount)
 			t.Logf("[CONSUMER] Catch-up complete: captured %d additional messages (total: %d)", finalCatchup-startCatchup, finalCatchup)
 			cancel() // Stop the consumer
@@ -229,7 +229,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 
 		// Track when consumer stops
 		consumerStopped := make(chan struct{})
-		
+
 		err = consumer.Process(consumerCtx, func(ctx context.Context, msgs []StreamMessage) error {
 			if len(msgs) > 0 {
 				// Count all messages in this batch
@@ -246,9 +246,9 @@ func TestRealtimeBulletproof(t *testing.T) {
 			}
 			return nil
 		}, WithStream("events:v1:shard:*"), // Consumer watches all shards
-			WithBatchSize(100),                    // Normal production batch size
+			WithBatchSize(100),                     // Normal production batch size
 			WithPollInterval(100*time.Millisecond)) // Normal production polling interval
-		
+
 		close(consumerStopped)
 
 		if err != nil && err != context.DeadlineExceeded && err != context.Canceled {

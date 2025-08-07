@@ -42,15 +42,15 @@ func TestIndexPersistenceAfterClose(t *testing.T) {
 
 	t.Logf("Before close - In memory: nextEntryNumber=%d, index.CurrentEntryNumber=%d",
 		nextEntry, currentEntry)
-		
+
 	// Wait for flush to happen
 	time.Sleep(150 * time.Millisecond)
-	
+
 	shard.mu.RLock()
 	nextEntryAfter := shard.nextEntryNumber
 	currentEntryAfter := shard.index.CurrentEntryNumber
 	shard.mu.RUnlock()
-	
+
 	t.Logf("After flush - In memory: nextEntryNumber=%d, index.CurrentEntryNumber=%d",
 		nextEntryAfter, currentEntryAfter)
 
@@ -80,7 +80,7 @@ func TestIndexPersistenceAfterClose(t *testing.T) {
 		t.Fatalf("Failed to get shard: %v", err)
 	}
 
-	t.Logf("After reopen - From disk: index.CurrentEntryNumber=%d", 
+	t.Logf("After reopen - From disk: index.CurrentEntryNumber=%d",
 		readerShard.index.CurrentEntryNumber)
 
 	// Step 5: Verify the index shows the correct state
