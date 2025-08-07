@@ -2360,37 +2360,7 @@ func (c *Client) Close() error {
 		// Wait for background operations to complete BEFORE acquiring locks
 		shard.wg.Wait()
 
-		// CRITICAL: Flush writer BEFORE checkpointing to ensure all data is written
-		// This prevents the index from missing entries that are in the writer buffer
-		shard.writeMu.Lock()
-		if shard.writer != nil {
-			shard.writer.Flush()
-		}
-		shard.writeMu.Unlock()
-
 		shard.mu.Lock()
-
-		// Now sync to ensure flushed data is durable, then update index
-		if shard.dataFile != nil {
-			syncStart := time.Now()
-			if err := shard.dataFile.Sync(); err == nil {
-				// Only update CurrentEntryNumber if this shard has actually written entries
-				// Some shards might be created by consumers but never written to
-				if shard.nextEntryNumber > shard.index.CurrentEntryNumber {
-					// Update CurrentEntryNumber to reflect what's now durable
-					// During Close, all allocated entries have been written (writer flushed above)
-					// so nextEntryNumber accurately reflects what's on disk
-					shard.index.CurrentEntryNumber = shard.nextEntryNumber
-				}
-
-				// Track sync metrics
-				if shard.state != nil {
-					syncDuration := time.Since(syncStart).Nanoseconds()
-					atomic.AddInt64(&shard.state.SyncLatencyNanos, syncDuration)
-					atomic.AddUint64(&shard.state.SyncCount, 1)
-				}
-			}
-		}
 
 		// Final checkpoint - do it directly since we already hold the lock
 		// Always checkpoint on close to ensure index is persisted
