@@ -47,6 +47,10 @@ func TestStructAlignment(t *testing.T) {
 		// Reader internal structs
 		{"recentFileCache", recentFileCache{}},
 		{"cacheItem", cacheItem{}},
+		// Consumer offset structs
+		{"ConsumerOffsetHeader", ConsumerOffsetHeader{}},
+		{"ConsumerEntry", ConsumerEntry{}},
+		{"ConsumerOffsetMmap", ConsumerOffsetMmap{}},
 	}
 
 	for _, tt := range tests {

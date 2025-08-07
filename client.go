@@ -473,10 +473,11 @@ type Shard struct {
 	// lastMmapCheck removed - processes own their shards exclusively
 
 	// Pointers (8 bytes each on 64-bit)
-	dataFile   *os.File      // Data file handle
-	writer     *bufio.Writer // Buffered writer
-	compressor *zstd.Encoder // Compression engine
-	index      *ShardIndex   // Shard metadata
+	dataFile   *os.File            // Data file handle
+	writer     *bufio.Writer       // Buffered writer
+	compressor *zstd.Encoder       // Compression engine
+	index      *ShardIndex         // Shard metadata
+	offsetMmap *ConsumerOffsetMmap // Memory-mapped consumer offset storage
 	// Lock files removed - processes own their shards exclusively
 	state  *CometState // Unified memory-mapped state for all metrics and coordination
 	logger Logger      // Logger for this shard
@@ -890,6 +891,19 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	// Load the index with recovery support - handles rebuild if index is missing/corrupted
 	if err := shard.loadIndexWithRecovery(); err != nil {
 		return nil, err
+	}
+
+	// Initialize memory-mapped consumer offset storage
+	offsetMmap, err := NewConsumerOffsetMmap(shardDir, shardID)
+	if err != nil {
+		// Log error but continue - offsets will be in-memory only
+		if c.logger != nil {
+			c.logger.Warn("Failed to initialize consumer offset mmap, using in-memory only",
+				"shardID", shardID,
+				"error", err)
+		}
+	} else {
+		shard.offsetMmap = offsetMmap
 	}
 
 	if c.logger != nil {
@@ -2027,7 +2041,7 @@ func (s *Shard) loadIndex() error {
 	if err != nil {
 		return fmt.Errorf("failed to load binary index: %w", err)
 	}
-	
+
 	if s.logger != nil && IsDebug() {
 		s.logger.Debug("[LOAD] Loaded index from disk",
 			"shard", s.shardID,
@@ -2399,7 +2413,7 @@ func (c *Client) Close() error {
 
 				// CRITICAL: Update CometState LastEntryNumber so other processes can see the final state
 				if shard.state != nil && shard.index.CurrentEntryNumber > 0 {
-					atomic.StoreInt64(&shard.state.LastEntryNumber, shard.index.CurrentEntryNumber - 1)
+					atomic.StoreInt64(&shard.state.LastEntryNumber, shard.index.CurrentEntryNumber-1)
 				}
 
 				// Update file metadata to reflect actual state
@@ -2478,6 +2492,16 @@ func (c *Client) Close() error {
 		shard.mu.Unlock()
 
 		// Lock files removed - processes own their shards exclusively
+
+		// Close consumer offset mmap
+		if shard.offsetMmap != nil {
+			if err := shard.offsetMmap.Close(); err != nil && c.logger != nil {
+				c.logger.Warn("Failed to close consumer offset mmap",
+					"shard", shard.shardID,
+					"error", err)
+			}
+			shard.offsetMmap = nil
+		}
 
 		// Now safe to unmap unified state
 		if shard.stateData != nil {
@@ -3372,7 +3396,7 @@ func (s *Shard) loadIndexWithRecovery() error {
 			shouldRecover = true
 		}
 	}
-	
+
 	// If we don't need to recover, try normal load
 	if !shouldRecover {
 		err := s.loadIndex()
@@ -3396,7 +3420,7 @@ func (s *Shard) loadIndexWithRecovery() error {
 			return err
 		}
 	}
-	
+
 	// If we don't need recovery and it's just a missing file with no data, that's OK
 	if !shouldRecover {
 		dataFiles, _ := filepath.Glob(filepath.Join(shardDir, "log-*.comet"))
@@ -3610,9 +3634,9 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 						if state := s.state; state != nil {
 							// Update LastEntryNumber so other processes can see the new entries
 							if s.index.CurrentEntryNumber > 0 {
-								atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber - 1)
+								atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber-1)
 							}
-							
+
 							syncDuration := time.Since(syncStart).Nanoseconds()
 							atomic.AddInt64(&state.SyncLatencyNanos, syncDuration)
 							atomic.AddUint64(&state.SyncCount, 1)

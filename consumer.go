@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -444,8 +443,10 @@ func (c *Consumer) cleanupProcessedMessages() {
 	c.client.mu.RLock()
 	for shardID, shard := range c.client.shards {
 		shard.mu.RLock()
-		if offset, exists := shard.index.ConsumerOffsets[c.group]; exists {
-			shardOffsets[shardID] = offset
+		if shard.offsetMmap != nil {
+			if offset, exists := shard.offsetMmap.Get(c.group); exists {
+				shardOffsets[shardID] = offset
+			}
 		}
 		shard.mu.RUnlock()
 	}
@@ -841,12 +842,17 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	memOffset, hasMemOffset := c.memOffsets[shard.shardID]
 	c.memOffsetsMu.RUnlock()
 
-	shard.mu.RLock()
-	// Get consumer entry offset from persistent index
-	persistedOffset, exists := shard.index.ConsumerOffsets[c.group]
+	// Get consumer entry offset from mmap store
+	var persistedOffset int64
+	var exists bool
+	if shard.offsetMmap != nil {
+		persistedOffset, exists = shard.offsetMmap.Get(c.group)
+	}
 	if !exists {
 		persistedOffset = 0
 	}
+
+	shard.mu.RLock()
 
 	// Use the higher of memory or persisted offset for consistency
 	startEntryNum := persistedOffset
@@ -1024,23 +1030,29 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 			// Track this shard for persistence on close
 			c.shards.Store(shardID, true)
 
-			shard.mu.Lock()
 			// Check if this is a new consumer group
-			currentOffset, groupExists := shard.index.ConsumerOffsets[c.group]
+			var currentOffset int64
+			var groupExists bool
+			if shard.offsetMmap != nil {
+				currentOffset, groupExists = shard.offsetMmap.Get(c.group)
+			}
 			if !groupExists {
 				if state := shard.state; state != nil {
 					atomic.AddUint64(&state.ConsumerGroups, 1)
 				}
-				shard.index.ConsumerOffsets[c.group] = newOffset
+				if shard.offsetMmap != nil {
+					shard.offsetMmap.Set(c.group, newOffset)
+				}
 			} else if newOffset > currentOffset {
 				// Only update if the new offset is higher
-				shard.index.ConsumerOffsets[c.group] = newOffset
+				if shard.offsetMmap != nil {
+					shard.offsetMmap.Set(c.group, newOffset)
+				}
 			}
 			// Track acked entries
 			if state := shard.state; state != nil {
 				atomic.AddUint64(&state.AckedEntries, uint64(len(ids)))
 			}
-			shard.mu.Unlock()
 
 			// Don't persist on every ACK - let the background flusher handle it
 			// This preserves read-after-write consistency via in-memory offsets
@@ -1058,23 +1070,7 @@ func (c *Consumer) FlushACKs(ctx context.Context) error {
 	var lastErr error
 	c.shards.Range(func(key, value any) bool {
 		// shardID := key.(uint32)
-		// shard, err := c.client.getOrCreateShard(shardID)
-		// if err != nil {
-		// 	lastErr = err
-		// 	return true
-		// }
-
-		// TODO: Consumer should not overwrite the writer's index file!
-		// Skip persisting to avoid overwriting writer's data
-		// if err := shard.persistIndex(); err != nil {
-		// 	lastErr = err
-		// 	if c.client.logger != nil {
-		// 		// Only log if it's not a "directory not found" error (common in tests)
-		// 		if !os.IsNotExist(err) && !strings.Contains(err.Error(), "no such file or directory") {
-		// 			c.client.logger.Warn("Failed to flush consumer offsets", "shard", shardID, "error", err)
-		// 		}
-		// 	}
-		// }
+		// No need to persist - mmap is automatically synced
 		return true
 	})
 
@@ -1095,13 +1091,18 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 
 	// Since processes own their shards exclusively, no need to check for changes
 
-	shard.mu.RLock()
-	defer shard.mu.RUnlock()
-
-	consumerEntry, exists := shard.index.ConsumerOffsets[c.group]
+	// Get consumer offset from mmap store
+	var consumerEntry int64
+	var exists bool
+	if shard.offsetMmap != nil {
+		consumerEntry, exists = shard.offsetMmap.Get(c.group)
+	}
 	if !exists {
 		consumerEntry = 0
 	}
+
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
 
 	// Entry-based lag calculation
 	lag := shard.index.CurrentEntryNumber - consumerEntry
@@ -1125,14 +1126,17 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 		return err
 	}
 
-	shard.mu.Lock()
+	shard.mu.RLock()
 	if entryNumber < 0 {
 		// Negative means from end
 		entryNumber = max(shard.index.CurrentEntryNumber+entryNumber, 0)
 	}
+	shard.mu.RUnlock()
 
-	shard.index.ConsumerOffsets[c.group] = entryNumber
-	shard.mu.Unlock()
+	// Update offset in mmap storage
+	if shard.offsetMmap != nil {
+		shard.offsetMmap.Set(c.group, entryNumber)
+	}
 
 	// Update in-memory offset as well
 	c.memOffsetsMu.Lock()
@@ -1150,11 +1154,7 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	}
 	c.processedMsgsMu.Unlock()
 
-	// TODO: Consumer should not overwrite the writer's index file!
-	// Skip persisting to avoid overwriting writer's data
-	// if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-	// 	c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
-	// }
+	// No need to persist - mmap is automatically synced
 
 	return nil
 }
@@ -1172,12 +1172,17 @@ func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEn
 		return err
 	}
 
-	shard.mu.Lock()
-	// Get current consumer offset
-	currentOffset, exists := shard.index.ConsumerOffsets[c.group]
+	// Get current consumer offset from mmap store
+	var currentOffset int64
+	var exists bool
+	if shard.offsetMmap != nil {
+		currentOffset, exists = shard.offsetMmap.Get(c.group)
+	}
 	if !exists {
 		currentOffset = 0
 	}
+
+	shard.mu.Lock()
 
 	// Check if we're trying to ACK beyond what we've read
 	c.highestReadMu.RLock()
@@ -1209,14 +1214,19 @@ func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEn
 			"newOffset", newOffset)
 	}
 
-	shard.index.ConsumerOffsets[c.group] = newOffset
 	shard.mu.Unlock()
 
-	// TODO: Consumer should not overwrite the writer's index file!
-	// Skip persisting to avoid overwriting writer's data
-	// if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-	// 	c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
-	// }
+	// Update offset in mmap storage
+	if shard.offsetMmap != nil {
+		shard.offsetMmap.Set(c.group, newOffset)
+	}
+
+	// Update in-memory offset for immediate consistency
+	c.memOffsetsMu.Lock()
+	c.memOffsets[shardID] = newOffset
+	c.memOffsetsMu.Unlock()
+
+	// No need to persist - mmap is automatically synced
 
 	return nil
 }
@@ -1257,9 +1267,10 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 		ConsumerOffsets: make(map[string]int64),
 	}
 
-	// Since processes own their shards exclusively, they own all consumer groups
-	// Copy all consumer offsets
-	maps.Copy(stats.ConsumerOffsets, shard.index.ConsumerOffsets)
+	// Get all consumer offsets from mmap store
+	if shard.offsetMmap != nil {
+		stats.ConsumerOffsets = shard.offsetMmap.GetAll()
+	}
 
 	// Calculate totals from files
 	for _, file := range shard.index.Files {
@@ -1367,10 +1378,10 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 			"numShards", len(candidateShards),
 			"group", c.group)
 	}
-	
+
 	reloadedCount := 0
 	skippedCount := 0
-	
+
 	for _, shardID := range candidateShards {
 		// Get or create the shard (this may trigger on-demand creation)
 		shard, err := c.client.getOrCreateShard(shardID)
@@ -1396,7 +1407,7 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 					"currentIndexUpdate", currentIndexUpdate,
 					"lastKnownUpdate", lastKnownUpdate)
 			}
-			
+
 			shard.mu.Lock()
 			oldEntries := shard.index.CurrentEntryNumber
 
@@ -1430,7 +1441,7 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 			skippedCount++
 		}
 	}
-	
+
 	if c.client.logger != nil && IsDebug() && (reloadedCount > 0 || skippedCount > 0) {
 		c.client.logger.Debug("[REFRESH] Completed refreshShardIndexes",
 			"reloadedCount", reloadedCount,

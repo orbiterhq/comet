@@ -76,10 +76,10 @@ func TestRealtimeBulletproof(t *testing.T) {
 				// Graceful shutdown - ensure final flush happens
 				written := atomic.LoadInt64(&writtenCount)
 				t.Logf("[WRITER] Stopping writes after %d messages", written)
-				
+
 				// Wait for any in-flight writes to complete
 				time.Sleep(100 * time.Millisecond)
-				
+
 				// Wait for THREE full flush cycles to ensure all messages are flushed
 				// With 32 shards, we need more time for all shards to flush
 				t.Logf("[WRITER] Waiting 3.5 seconds for periodic flushes to complete...")
@@ -90,13 +90,13 @@ func TestRealtimeBulletproof(t *testing.T) {
 				if err := writerClient.Sync(ctx); err != nil {
 					t.Logf("[WRITER] Warning: Failed to sync: %v", err)
 				}
-				
+
 				// Double sync to ensure everything is flushed
 				time.Sleep(200 * time.Millisecond)
 				if err := writerClient.Sync(ctx); err != nil {
 					t.Logf("[WRITER] Warning: Failed second sync: %v", err)
 				}
-				
+
 				// Give sync time to complete across all shards
 				time.Sleep(1000 * time.Millisecond)
 
@@ -106,63 +106,83 @@ func TestRealtimeBulletproof(t *testing.T) {
 				totalDurableMessages := int64(0)
 				totalVolatileMessages := int64(0)
 				for i := 0; i < numShards; i++ {
+					writerClient.mu.RLock()
 					shard := writerClient.shards[uint32(i)]
-					if shard != nil && shard.index.CurrentEntryNumber > 0 {
-						actualWrittenShards++
-						totalDurableMessages += shard.index.CurrentEntryNumber
-						totalVolatileMessages += shard.nextEntryNumber
-						
-						// Only log first few shards to avoid spam
-						if i < 3 || shard.nextEntryNumber != shard.index.CurrentEntryNumber {
-							t.Logf("[WRITER] Shard %d: volatile=%d, durable=%d, diff=%d",
-								i, shard.nextEntryNumber, shard.index.CurrentEntryNumber, 
-								shard.nextEntryNumber - shard.index.CurrentEntryNumber)
+					writerClient.mu.RUnlock()
+
+					if shard != nil {
+						shard.mu.RLock()
+						currentEntryNumber := shard.index.CurrentEntryNumber
+						nextEntryNumber := shard.nextEntryNumber
+						shard.mu.RUnlock()
+
+						if currentEntryNumber > 0 {
+							actualWrittenShards++
+							totalDurableMessages += currentEntryNumber
+							totalVolatileMessages += nextEntryNumber
+
+							// Only log first few shards to avoid spam
+							if i < 3 || nextEntryNumber != currentEntryNumber {
+								t.Logf("[WRITER] Shard %d: volatile=%d, durable=%d, diff=%d",
+									i, nextEntryNumber, currentEntryNumber,
+									nextEntryNumber-currentEntryNumber)
+							}
 						}
 					}
 				}
-				t.Logf("[WRITER] Total: %d shards, %d durable messages, %d volatile messages (diff=%d)", 
-					actualWrittenShards, totalDurableMessages, totalVolatileMessages, 
+				t.Logf("[WRITER] Total: %d shards, %d durable messages, %d volatile messages (diff=%d)",
+					actualWrittenShards, totalDurableMessages, totalVolatileMessages,
 					totalVolatileMessages-totalDurableMessages)
 
 				// VERIFY: Read back messages directly to confirm they're actually durable
 				t.Logf("[WRITER] Verifying messages are actually durable by reading them back...")
 				verifiedTotal := int64(0)
 				for i := 0; i < numShards; i++ {
+					writerClient.mu.RLock()
 					shard := writerClient.shards[uint32(i)]
-					if shard != nil && shard.index.CurrentEntryNumber > 0 {
-						// Create a reader to read from this shard
-						reader, err := NewReader(uint32(i), shard.index)
-						if err != nil {
-							t.Logf("[WRITER] ERROR: Failed to create reader for shard %d: %v", i, err)
-							continue
+					writerClient.mu.RUnlock()
+
+					if shard != nil {
+						shard.mu.RLock()
+						currentEntryNumber := shard.index.CurrentEntryNumber
+						indexCopy := shard.cloneIndex()
+						shard.mu.RUnlock()
+
+						if currentEntryNumber > 0 {
+							// Create a reader to read from this shard
+							reader, err := NewReader(uint32(i), indexCopy)
+							if err != nil {
+								t.Logf("[WRITER] ERROR: Failed to create reader for shard %d: %v", i, err)
+								continue
+							}
+
+							// Try to read the last entry to verify it's actually there
+							lastEntryNum := currentEntryNumber - 1
+							data, err := reader.ReadEntryByNumber(lastEntryNum)
+							if err != nil {
+								t.Logf("[WRITER] ERROR: Shard %d claims %d entries but can't read entry %d: %v",
+									i, currentEntryNumber, lastEntryNum, err)
+							} else if len(data) == 0 {
+								t.Logf("[WRITER] ERROR: Shard %d entry %d exists but is empty",
+									i, lastEntryNum)
+							} else {
+								verifiedTotal += currentEntryNumber
+							}
+							reader.Close()
 						}
-						
-						// Try to read the last entry to verify it's actually there
-						lastEntryNum := shard.index.CurrentEntryNumber - 1
-						data, err := reader.ReadEntryByNumber(lastEntryNum)
-						if err != nil {
-							t.Logf("[WRITER] ERROR: Shard %d claims %d entries but can't read entry %d: %v", 
-								i, shard.index.CurrentEntryNumber, lastEntryNum, err)
-						} else if len(data) == 0 {
-							t.Logf("[WRITER] ERROR: Shard %d entry %d exists but is empty", 
-								i, lastEntryNum)
-						} else {
-							verifiedTotal += shard.index.CurrentEntryNumber
-						}
-						reader.Close()
 					}
 				}
 				t.Logf("[WRITER] VERIFICATION: Successfully read %d/%d messages", verifiedTotal, totalDurableMessages)
-				
+
 				// VERIFY: Check CometState before closing
 				t.Logf("[WRITER] Verifying CometState before close...")
 				for i := 0; i < numShards; i++ {
 					shard := writerClient.shards[uint32(i)]
 					if shard != nil && shard.state != nil {
 						lastEntry := atomic.LoadInt64(&shard.state.LastEntryNumber)
-						if shard.index.CurrentEntryNumber > 0 && lastEntry != shard.index.CurrentEntryNumber - 1 {
+						if shard.index.CurrentEntryNumber > 0 && lastEntry != shard.index.CurrentEntryNumber-1 {
 							t.Logf("[WRITER] ERROR: Shard %d state mismatch: LastEntryNumber=%d, expected=%d",
-								i, lastEntry, shard.index.CurrentEntryNumber - 1)
+								i, lastEntry, shard.index.CurrentEntryNumber-1)
 						}
 					}
 				}
@@ -170,7 +190,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 				if err := writerClient.Close(); err != nil {
 					t.Logf("[WRITER] Warning: Failed to close: %v", err)
 				}
-				
+
 				// VERIFY: Check CometState files after close by reading them directly
 				t.Logf("[WRITER] Verifying CometState files after close...")
 				stateVerifiedTotal := int64(0)
@@ -185,7 +205,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 							stateVerifiedTotal += lastEntry + 1
 							if i < 3 { // Log first few for debugging
 								t.Logf("[WRITER] Shard %d state file: LastEntryNumber=%d (count=%d)",
-									i, lastEntry, lastEntry + 1)
+									i, lastEntry, lastEntry+1)
 							}
 						}
 					}
@@ -266,50 +286,62 @@ func TestRealtimeBulletproof(t *testing.T) {
 
 			// Give consumer more time to finish current poll cycle with 32 shards
 			time.Sleep(1000 * time.Millisecond)
-			
+
 			// The consumer's Process loop should naturally pick up the changes
 			// in its next poll cycle through refreshShardIndexes
-			
 
 			// Debug: Check what each shard thinks is available
 			// IMPORTANT: Don't create new shards, just check if directories exist
 			t.Logf("[CONSUMER] Checking final shard states from disk...")
 			t.Logf("[CONSUMER] Base directory: %s", dir)
-			
+
 			// Check the actual consumer client's shards to find the correct paths
 			totalUnread := int64(0)
 			actualShardCount := 0
-			
+
 			// Use the consumer client to check shard states
 			missingMessages := int64(0)
 			consumerTotal := int64(0)
 			for i := 0; i < numShards; i++ {
 				// Try to get the shard from the consumer client to see if it exists
-				if shard := consumerClient.shards[uint32(i)]; shard != nil {
+				consumerClient.mu.RLock()
+				shard := consumerClient.shards[uint32(i)]
+				consumerClient.mu.RUnlock()
+
+				if shard != nil {
 					actualShardCount++
-					consumerTotal += shard.index.CurrentEntryNumber
-					
+
+					shard.mu.RLock()
+					currentEntryNumber := shard.index.CurrentEntryNumber
+					consumerOffset := int64(0)
+					if shard.offsetMmap != nil {
+						if offset, exists := shard.offsetMmap.Get("bulletproof-test"); exists {
+							consumerOffset = offset
+						}
+					}
+					lastReload := shard.lastIndexReload.UnixNano()
+					shard.mu.RUnlock()
+
+					consumerTotal += currentEntryNumber
+
 					// Check the shard's view of LastIndexUpdate
 					var lastIndexUpdate int64
-					var lastReload int64
 					var stateLastEntry int64 = -1
 					if shard.state != nil {
 						lastIndexUpdate = shard.state.GetLastIndexUpdate()
-						lastReload = shard.lastIndexReload.UnixNano()
 						stateLastEntry = atomic.LoadInt64(&shard.state.LastEntryNumber)
 					}
-					
+
 					// Check consumer offset
-					offset := shard.index.ConsumerOffsets["bulletproof-test"]
-					unread := shard.index.CurrentEntryNumber - offset
+					unread := currentEntryNumber - consumerOffset
 					totalUnread += unread
-					
+
 					// Only log shards with unread messages or issues
 					if unread > 0 || unread < 0 || i < 3 {
-						t.Logf("[CONSUMER] Shard %d: CurrentEntryNumber=%d, offset=%d, unread=%d, LastIndexUpdate=%d, lastReload=%d, stateLastEntry=%d", 
-							i, shard.index.CurrentEntryNumber, offset, unread, lastIndexUpdate, lastReload, stateLastEntry)
+						t.Logf("[CONSUMER] Shard %d: CurrentEntryNumber=%d, offset=%d, unread=%d, LastIndexUpdate=%d, lastReload=%d, stateLastEntry=%d",
+							i, currentEntryNumber, consumerOffset, unread, lastIndexUpdate, lastReload, stateLastEntry)
 						// Log if we need to reload but haven't
-						if lastIndexUpdate > lastReload && shard.index.CurrentEntryNumber == 0 {
+						if lastIndexUpdate > lastReload && currentEntryNumber == 0 {
 							t.Logf("[CONSUMER]   -> Shard %d needs reload: LastIndexUpdate %d > lastReload %d", i, lastIndexUpdate, lastReload)
 						}
 						if unread > 0 {
@@ -319,9 +351,9 @@ func TestRealtimeBulletproof(t *testing.T) {
 				}
 			}
 			t.Logf("[CONSUMER] Consumer sees total %d messages (writer wrote %d)", consumerTotal, writtenTotal)
-			t.Logf("[CONSUMER] Total shards with data: %d out of %d, missing messages: %d", 
+			t.Logf("[CONSUMER] Total shards with data: %d out of %d, missing messages: %d",
 				actualShardCount, numShards, missingMessages)
-			
+
 			// VERIFY: Check what the CometState files say
 			t.Logf("[CONSUMER] Verifying CometState files...")
 			stateFileTotal := int64(0)
@@ -355,7 +387,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 							testConsumer := NewConsumer(consumerClient, ConsumerOptions{
 								Group: "bulletproof-test-verify",
 							})
-							
+
 							// Try to read from this specific shard
 							messages, err := testConsumer.Read(ctx, []uint32{uint32(i)}, int(unread))
 							if err != nil {
@@ -393,13 +425,13 @@ func TestRealtimeBulletproof(t *testing.T) {
 			catchupTimeout := time.After(15 * time.Second)
 			ticker := time.NewTicker(500 * time.Millisecond)
 			defer ticker.Stop()
-			
+
 			var finalCatchup int64
 			for {
 				select {
 				case <-catchupTimeout:
 					finalCatchup = atomic.LoadInt64(&readCount)
-					t.Logf("[CONSUMER] Catch-up timeout: captured %d additional messages (total: %d)", 
+					t.Logf("[CONSUMER] Catch-up timeout: captured %d additional messages (total: %d)",
 						finalCatchup-startCatchup, finalCatchup)
 					cancel()
 					return
@@ -413,7 +445,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 						cancel()
 						return
 					}
-					t.Logf("[CONSUMER] Catch-up progress: %d/%d messages (%.1f%%)", 
+					t.Logf("[CONSUMER] Catch-up progress: %d/%d messages (%.1f%%)",
 						currentRead, writtenTotal, float64(currentRead)*100/float64(writtenTotal))
 				}
 			}
@@ -468,7 +500,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 	// Expectations for writer performance - with 32 shards, we expect some overhead
 	// Allow more tolerance since we're distributing across many shards
 	if written < expectedWrites*70/100 {
-		t.Errorf("Writer underperformed: expected at least %d (70%% of %d), got %d", 
+		t.Errorf("Writer underperformed: expected at least %d (70%% of %d), got %d",
 			expectedWrites*70/100, expectedWrites, written)
 	}
 

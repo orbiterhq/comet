@@ -73,8 +73,12 @@ func TestACKConcurrentPersistence(t *testing.T) {
 	// Check offsets before close
 	shard, _ := client.getOrCreateShard(0)
 	shard.mu.RLock()
-	offset0 := shard.index.ConsumerOffsets["consumer-0"]
-	offset1 := shard.index.ConsumerOffsets["consumer-1"]
+	offset0 := int64(0)
+	offset1 := int64(0)
+	if shard.offsetMmap != nil {
+		offset0, _ = shard.offsetMmap.Get("consumer-0")
+		offset1, _ = shard.offsetMmap.Get("consumer-1")
+	}
 	shard.mu.RUnlock()
 
 	t.Logf("Before close: consumer-0 offset=%d, consumer-1 offset=%d", offset0, offset1)
@@ -97,15 +101,23 @@ func TestACKConcurrentPersistence(t *testing.T) {
 
 	shard2.mu.RLock()
 	// Both should be persisted when using the same client
-	if shard2.index.ConsumerOffsets["consumer-0"] != 10 {
-		t.Errorf("Consumer 0: Expected offset 10, got %d", shard2.index.ConsumerOffsets["consumer-0"])
+	offset0Check := int64(0)
+	offset1Check := int64(0)
+	if shard2.offsetMmap != nil {
+		offset0Check, _ = shard2.offsetMmap.Get("consumer-0")
+		offset1Check, _ = shard2.offsetMmap.Get("consumer-1")
 	}
-	if shard2.index.ConsumerOffsets["consumer-1"] != 10 {
-		t.Errorf("Consumer 1: Expected offset 10, got %d", shard2.index.ConsumerOffsets["consumer-1"])
-	}
-	t.Logf("✓ Sequential test passed: both consumer offsets persisted correctly")
-
 	shard2.mu.RUnlock()
+
+	if offset0Check != 10 {
+		t.Errorf("Consumer 0: Expected offset 10, got %d", offset0Check)
+	}
+	if offset1Check != 10 {
+		t.Errorf("Consumer 1: Expected offset 10, got %d", offset1Check)
+	}
+	if offset0Check == 10 && offset1Check == 10 {
+		t.Logf("✓ Sequential test passed: both consumer offsets persisted correctly")
+	}
 	client2.Close()
 
 	// Now test the problematic scenario with separate clients
@@ -118,10 +130,11 @@ func TestACKConcurrentPersistence(t *testing.T) {
 	}
 	shard3, _ := client3.getOrCreateShard(0)
 	shard3.mu.Lock()
-	delete(shard3.index.ConsumerOffsets, "consumer-0")
-	delete(shard3.index.ConsumerOffsets, "consumer-1")
+	if shard3.offsetMmap != nil {
+		shard3.offsetMmap.Remove("consumer-0")
+		shard3.offsetMmap.Remove("consumer-1")
+	}
 	shard3.mu.Unlock()
-	shard3.persistIndex()
 	client3.Close()
 
 	// Run concurrent consumers with separate clients
@@ -177,8 +190,12 @@ func TestACKConcurrentPersistence(t *testing.T) {
 
 	shard4, _ := client4.getOrCreateShard(0)
 	shard4.mu.RLock()
-	offset0Final := shard4.index.ConsumerOffsets["consumer-0"]
-	offset1Final := shard4.index.ConsumerOffsets["consumer-1"]
+	offset0Final := int64(0)
+	offset1Final := int64(0)
+	if shard4.offsetMmap != nil {
+		offset0Final, _ = shard4.offsetMmap.Get("consumer-0")
+		offset1Final, _ = shard4.offsetMmap.Get("consumer-1")
+	}
 	shard4.mu.RUnlock()
 
 	t.Logf("After concurrent clients: consumer-0 offset=%d, consumer-1 offset=%d", offset0Final, offset1Final)
@@ -262,13 +279,19 @@ func TestACKConcurrentPersistence(t *testing.T) {
 	// Check shard 0
 	shard0, _ := client6.getOrCreateShard(0)
 	shard0.mu.RLock()
-	offset0MP := shard0.index.ConsumerOffsets["mp-consumer-0"]
+	offset0MP := int64(0)
+	if shard0.offsetMmap != nil {
+		offset0MP, _ = shard0.offsetMmap.Get("mp-consumer-0")
+	}
 	shard0.mu.RUnlock()
 
 	// Check shard 1
 	shard1, _ := client6.getOrCreateShard(1)
 	shard1.mu.RLock()
-	offset1MP := shard1.index.ConsumerOffsets["mp-consumer-1"]
+	offset1MP := int64(0)
+	if shard1.offsetMmap != nil {
+		offset1MP, _ = shard1.offsetMmap.Get("mp-consumer-1")
+	}
 	shard1.mu.RUnlock()
 
 	t.Logf("With proper multi-process config: mp-consumer-0 offset=%d, mp-consumer-1 offset=%d", offset0MP, offset1MP)
