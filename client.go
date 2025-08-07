@@ -455,8 +455,18 @@ type Client struct {
 // Fields ordered for optimal memory alignment (64-bit words first)
 type Shard struct {
 	// 64-bit aligned fields first (8 bytes each)
-	readerCount        int64     // Lock-free reader tracking
-	nextEntryNumber    int64     // Next entry number to assign (includes pending)
+	readerCount int64 // Lock-free reader tracking
+
+	// Entry number tracking - critical for consistency:
+	// - nextEntryNumber: Next entry number to allocate. Incremented when entries
+	//   are assigned numbers, before they're written anywhere.
+	// - lastWrittenEntryNumber: Last entry that has been written to the buffered
+	//   writer. These entries are in OS buffers but NOT yet durable.
+	// - index.CurrentEntryNumber: Last entry that has been synced to disk and is
+	//   durable. Only updated after fsync. This is what consumers can safely read.
+	nextEntryNumber        int64 // Next entry number to allocate
+	lastWrittenEntryNumber int64 // Last entry written to OS buffers (not durable)
+
 	pendingWriteOffset int64     // Current write offset including pending writes
 	lastCheckpoint     time.Time // 64-bit on most systems
 	lastIndexReload    time.Time // Last time index was reloaded from disk
@@ -891,6 +901,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 
 	// Initialize nextEntryNumber from index (what's on disk)
 	shard.nextEntryNumber = shard.index.CurrentEntryNumber
+	shard.lastWrittenEntryNumber = shard.index.CurrentEntryNumber
 	shard.pendingWriteOffset = shard.index.CurrentWriteOffset
 
 	// Synchronize state with index if index has data and state is uninitialized
@@ -1074,6 +1085,13 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 
 	// Track metrics after successful write
 	s.trackWriteMetrics(startTime, entries, compressedEntries, clientMetrics)
+
+	// Update lastWrittenEntryNumber to reflect what's been written to the buffer
+	// Note: This is in the writer's buffer, not necessarily on disk yet
+	if len(writeReq.IDs) > 0 {
+		lastID := writeReq.IDs[len(writeReq.IDs)-1]
+		atomic.StoreInt64(&s.lastWrittenEntryNumber, lastID.EntryNumber+1)
+	}
 
 	// Post-write operations (checkpointing, rotation check)
 	if err := s.performPostWriteOperations(config, clientMetrics); err != nil {
@@ -1580,6 +1598,16 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	oldFile := s.dataFile
 	oldWriter := s.writer
 
+	// Flush old writer BEFORE swapping to ensure all data is in the file
+	// This ensures our entry count is accurate
+	if oldWriter != nil {
+		if err := oldWriter.Flush(); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("Failed to flush before rotation", "error", err)
+			}
+		}
+	}
+
 	// Quick swap to new file (fast operation)
 	s.dataFile = newFile
 	bufferSize := 64 * 1024 // 64KB buffer
@@ -1591,15 +1619,14 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 		current.EndTime = time.Now()
 		current.EndOffset = currentWriteOffset
 		// Calculate actual entry count for this file
-		// TODO: This uses nextEntryNumber which includes pending writes
-		// We should track what's actually been written to avoid inconsistency
-		current.Entries = s.nextEntryNumber - current.StartEntry
+		// After flush, lastWrittenEntryNumber reflects what's in the file
+		current.Entries = atomic.LoadInt64(&s.lastWrittenEntryNumber) - current.StartEntry
 	}
 
 	// Add new file to index
 	newFileInfo := FileInfo{
 		Path:       newFilePath,
-		StartEntry: s.nextEntryNumber, // Use nextEntryNumber for pending writes
+		StartEntry: atomic.LoadInt64(&s.lastWrittenEntryNumber), // Start from last written entry
 		StartTime:  time.Now(),
 		Entries:    0,
 		EndOffset:  0,
@@ -1626,14 +1653,7 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	s.writeMu.Unlock()
 
 	// Do slow I/O operations AFTER releasing write lock (still holding main lock)
-	if oldWriter != nil {
-		if err := oldWriter.Flush(); err != nil {
-			// Log but don't fail - data is already written
-			if s.logger != nil {
-				s.logger.Warn("Failed to flush old writer during rotation", "error", err)
-			}
-		}
-	}
+	// Note: We already flushed the writer before swapping files
 
 	if oldFile != nil {
 		// For now, do this synchronously to fix tests
@@ -1958,8 +1978,9 @@ func (s *Shard) openDataFileWithConfig(shardDir string) error {
 					}
 					// DO NOT update CurrentEntryNumber during crash recovery!
 					// The index tracks durable state. Extra data in the file might not be synced.
-					// Only update nextEntryNumber for future writes
+					// Update nextEntryNumber and lastWrittenEntryNumber for future writes
 					s.nextEntryNumber = lastFile.StartEntry + entryCount
+					s.lastWrittenEntryNumber = lastFile.StartEntry + entryCount
 					if s.logger != nil {
 						s.logger.Info("Updated file entry count after crash recovery",
 							"file", lastFile.Path,
@@ -2116,8 +2137,9 @@ func (s *Shard) recoverFromCrash() error {
 		lastFile.Entries = entryCount
 		s.index.CurrentWriteOffset = actualSize
 		s.index.CurrentEntryNumber = lastFile.StartEntry + entryCount
-		// Keep nextEntryNumber in sync
+		// Keep nextEntryNumber and lastWrittenEntryNumber in sync
 		s.nextEntryNumber = s.index.CurrentEntryNumber
+		s.lastWrittenEntryNumber = s.index.CurrentEntryNumber
 	}
 
 	return nil
@@ -3504,7 +3526,8 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 					syncStart := time.Now()
 					if err := s.dataFile.Sync(); err == nil {
 						// Only update CurrentEntryNumber after successful sync
-						s.index.CurrentEntryNumber = s.nextEntryNumber
+						// Use lastWrittenEntryNumber which reflects what's actually been written
+						s.index.CurrentEntryNumber = atomic.LoadInt64(&s.lastWrittenEntryNumber)
 
 						if state := s.state; state != nil {
 							syncDuration := time.Since(syncStart).Nanoseconds()
@@ -3530,7 +3553,7 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 							current := &s.index.Files[len(s.index.Files)-1]
 							current.EndOffset = s.index.CurrentWriteOffset
 							current.EndTime = time.Now()
-							current.Entries = s.index.CurrentEntryNumber - current.StartEntry
+							current.Entries = atomic.LoadInt64(&s.lastWrittenEntryNumber) - current.StartEntry
 						}
 					}
 				}
