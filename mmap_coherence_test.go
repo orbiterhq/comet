@@ -12,7 +12,7 @@ func TestMmapCoherenceRace(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 10 // Fast periodic flush
+	config.Storage.FlushInterval = 10 * time.Millisecond // Fast periodic flush
 
 	client, err := NewClient(dir, config)
 	if err != nil {

@@ -302,7 +302,7 @@ func TestConsumerOffsetDurability(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0
-	config.Storage.CheckpointInterval = 1 // Checkpoint every 1ms (effectively after every write)
+	config.Storage.CheckpointInterval = 1 * time.Millisecond // Checkpoint every 1ms (effectively after every write)
 	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
@@ -1560,7 +1560,7 @@ func TestMmapExhaustion(t *testing.T) {
 func TestConsumerGroupSplitBrain(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Storage.CheckpointInterval = 1 // Fast checkpointing
+	config.Storage.CheckpointInterval = 1 * time.Millisecond // Fast checkpointing
 
 	client, err := NewClient(dir, config)
 	if err != nil {

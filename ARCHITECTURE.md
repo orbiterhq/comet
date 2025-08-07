@@ -606,6 +606,6 @@ This design ensures that even after catastrophic failures, Comet can recover to 
 
 ### Resource Usage
 
-- **Memory**: ~1KB state + configurable cache
+- **Memory**: ~65KB state + configurable memory-mapped file cache
 - **Disk**: Efficient compression, automatic cleanup
 - **CPU**: Minimal (compression optional)

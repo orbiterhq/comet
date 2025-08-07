@@ -12,7 +12,7 @@ import (
 func TestIndexPersistenceAfterClose(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultCometConfig()
-	cfg.Storage.FlushInterval = 100 // Fast flush for testing
+	cfg.Storage.FlushInterval = 100 * time.Millisecond // Fast flush for testing
 	ctx := context.Background()
 
 	// Step 1: Create writer and write messages

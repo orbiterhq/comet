@@ -12,7 +12,7 @@ func TestConsumerOffsetDebug(t *testing.T) {
 	dataDir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 10
+	config.Storage.FlushInterval = 10 * time.Millisecond
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {

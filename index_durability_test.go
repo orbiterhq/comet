@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // TestIndexOnlyTracksDurableState verifies that the index only reflects what has been explicitly synced
@@ -13,7 +14,7 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 	dataDir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 1000 // Don't auto-flush
+	config.Storage.FlushInterval = 1 * time.Second // Don't auto-flush
 
 	// Create client and write some data
 	client, err := NewClient(dataDir, config)
@@ -155,7 +156,7 @@ func TestConsumerNeverSeesUnflushedData(t *testing.T) {
 	dataDir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 1000 // Don't auto-flush
+	config.Storage.FlushInterval = 1 * time.Second // Don't auto-flush
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
@@ -236,7 +237,7 @@ func TestAppendReturnsPendingEntryNumbers(t *testing.T) {
 	dataDir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 1000 // Don't auto-flush
+	config.Storage.FlushInterval = 1 * time.Second // Don't auto-flush
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {

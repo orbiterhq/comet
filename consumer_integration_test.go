@@ -11,7 +11,7 @@ import (
 func TestConsumerBasicFlow(t *testing.T) {
 	dataDir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 50 // 50ms flush interval
+	config.Storage.FlushInterval = 50 * time.Millisecond // 50ms flush interval
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
@@ -74,7 +74,7 @@ func TestConsumerBasicFlow(t *testing.T) {
 func TestConsumerThroughRotations(t *testing.T) {
 	dataDir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 20
+	config.Storage.FlushInterval = 20 * time.Millisecond
 	config.Storage.MaxFileSize = 5 * 1024 // 5KB files to force rotations
 
 	client, err := NewClient(dataDir, config)
@@ -149,7 +149,7 @@ func TestConsumerThroughRotations(t *testing.T) {
 func TestConsumerHighFrequencyWrites(t *testing.T) {
 	dataDir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 10 // Very fast flushes
+	config.Storage.FlushInterval = 10 * time.Millisecond // Very fast flushes
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
@@ -232,7 +232,7 @@ func TestConsumerHighFrequencyWrites(t *testing.T) {
 func TestMultipleConsumerGroups(t *testing.T) {
 	dataDir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 50
+	config.Storage.FlushInterval = 50 * time.Millisecond
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {

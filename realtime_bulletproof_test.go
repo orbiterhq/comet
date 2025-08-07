@@ -22,8 +22,8 @@ func TestRealtimeBulletproof(t *testing.T) {
 
 	// Real-world production configuration - no cheating!
 	cfg := DefaultCometConfig()
-	cfg.Storage.FlushInterval = 1000      // 1 second flush (production default)
-	cfg.Storage.CheckpointInterval = 2000 // 2 second checkpoint (production default)
+	cfg.Storage.FlushInterval = 1 * time.Second      // 1 second flush (production default)
+	cfg.Storage.CheckpointInterval = 2 * time.Second // 2 second checkpoint (production default)
 
 	ctx := context.Background()
 	// Use many shards to properly stress test the system

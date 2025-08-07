@@ -13,7 +13,7 @@ func TestOffsetCalculationRace(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 5 // Very fast flush
+	config.Storage.FlushInterval = 5 * time.Millisecond // Very fast flush
 	// Disable the retry logic temporarily
 
 	client, err := NewClient(dir, config)

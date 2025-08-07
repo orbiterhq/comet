@@ -116,7 +116,7 @@ func TestCompressionEdgeCaseMetrics(t *testing.T) {
 func TestCheckpointMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
-	config.Storage.CheckpointInterval = 10 // Short interval
+	config.Storage.CheckpointInterval = 10 * time.Millisecond // Short interval
 
 	client, err := NewClient(dir, config)
 	if err != nil {

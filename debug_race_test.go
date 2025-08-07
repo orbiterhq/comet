@@ -12,7 +12,7 @@ func TestDebugRaceCondition(t *testing.T) {
 	dir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 5 // Very fast flushes
+	config.Storage.FlushInterval = 5 * time.Millisecond // Very fast flushes
 
 	client, err := NewClient(dir, config)
 	if err != nil {

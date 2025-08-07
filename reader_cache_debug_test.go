@@ -14,8 +14,8 @@ func TestReaderCacheDebug(t *testing.T) {
 
 	// Configure for frequent rotations and easy debugging
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 10     // 10ms flush
-	config.Storage.MaxFileSize = 1 * 1024 // 1KB files to force quick rotations
+	config.Storage.FlushInterval = 10 * time.Millisecond // 10ms flush
+	config.Storage.MaxFileSize = 1 * 1024                // 1KB files to force quick rotations
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {

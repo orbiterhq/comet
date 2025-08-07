@@ -15,7 +15,7 @@ func TestConsumerContinuousStream(t *testing.T) {
 
 	// Create client with short flush interval
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 10 // 10ms flush interval for faster testing
+	config.Storage.FlushInterval = 10 * time.Millisecond // 10ms flush interval for faster testing
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
@@ -203,7 +203,7 @@ func TestConsumerContinuousStreamWithRestart(t *testing.T) {
 
 	// Create client with short flush interval
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 10 // 10ms flush interval
+	config.Storage.FlushInterval = 10 * time.Millisecond // 10ms flush interval
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
