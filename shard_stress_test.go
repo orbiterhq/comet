@@ -76,7 +76,7 @@ func BenchmarkShardStress(b *testing.B) {
 				dir := b.TempDir()
 				config := DefaultCometConfig()
 				config.Storage.MaxFileSize = cfg.fileSize
-				config.Storage.CheckpointTime = 60000 // Disable time-based
+				config.Storage.CheckpointInterval = 60 * time.Second // Disable time-based
 
 				// Scale checkpoint/flush with file size
 				entriesPerMB := 1024 // ~1KB entries

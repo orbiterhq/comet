@@ -5,9 +5,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -385,11 +387,32 @@ func (r *Reader) ReadEntryAtPosition(pos EntryPosition) ([]byte, error) {
 		}
 	}
 
-	return r.readEntryFromFileData(data, pos.ByteOffset)
+	// Try to read the entry
+	result, err := r.readEntryFromFileData(data, pos.ByteOffset)
+	if err != nil && strings.Contains(err.Error(), "mmap coherence issue") {
+		// This is the specific mmap coherence race - force a remap
+		// The file has grown on disk but our mmap view is stale
+		// Use force=true to ensure we remap even if stat() shows same size
+		if err := r.checkAndRemapIfGrownForce(pos.FileIndex, mapped, true); err != nil {
+			return nil, fmt.Errorf("failed to remap after mmap coherence issue: %w", err)
+		}
+
+		// Get the new data and try once more
+		data = mapped.data.Load().([]byte)
+		return r.readEntryFromFileData(data, pos.ByteOffset)
+	}
+
+	return result, err
 }
 
 // checkAndRemapIfGrown checks if a file has grown and remaps it if necessary
 func (r *Reader) checkAndRemapIfGrown(fileIndex int, mapped *MappedFile) error {
+	return r.checkAndRemapIfGrownForce(fileIndex, mapped, false)
+}
+
+// checkAndRemapIfGrownForce checks if a file has grown and remaps it if necessary
+// If force is true, it always remaps regardless of size checks
+func (r *Reader) checkAndRemapIfGrownForce(fileIndex int, mapped *MappedFile, force bool) error {
 	if mapped.file == nil {
 		return nil // Can't check growth without file handle
 	}
@@ -405,8 +428,9 @@ func (r *Reader) checkAndRemapIfGrown(fileIndex int, mapped *MappedFile) error {
 	// Check if we need to remap:
 	// 1. File has grown
 	// 2. Current mapping is empty but file now has data
+	// 3. Force is true (mmap coherence issue detected)
 	currentData := mapped.data.Load().([]byte)
-	needsRemap := currentSize > mapped.lastSize || (len(currentData) == 0 && currentSize > 0)
+	needsRemap := force || currentSize > mapped.lastSize || (len(currentData) == 0 && currentSize > 0)
 
 	// If file has grown or was empty but now has data, we need to remap it
 	if needsRemap {
@@ -415,7 +439,7 @@ func (r *Reader) checkAndRemapIfGrown(fileIndex int, mapped *MappedFile) error {
 
 		// Double-check under lock
 		currentData = mapped.data.Load().([]byte)
-		needsRemap = currentSize > mapped.lastSize || (len(currentData) == 0 && currentSize > 0)
+		needsRemap = force || currentSize > mapped.lastSize || (len(currentData) == 0 && currentSize > 0)
 		if needsRemap {
 			// Unmap old mapping
 			if data := mapped.data.Load(); data != nil {
@@ -425,6 +449,40 @@ func (r *Reader) checkAndRemapIfGrown(fileIndex int, mapped *MappedFile) error {
 					}
 					// Update memory tracking
 					atomic.AddInt64(&r.localMemory, -int64(len(dataBytes)))
+				}
+			}
+
+			// If force is true, we need to close and reopen the file to get a fresh view
+			if force && mapped.file != nil {
+				oldSize := mapped.lastSize
+
+				// Close the old file
+				mapped.file.Close()
+
+				// Reopen the file
+				newFile, err := os.Open(mapped.FileInfo.Path)
+				if err != nil {
+					return fmt.Errorf("failed to reopen file for forced remap: %w", err)
+				}
+				mapped.file = newFile
+
+				// Re-stat to get the actual current size
+				stat, err = newFile.Stat()
+				if err != nil {
+					return fmt.Errorf("failed to stat reopened file: %w", err)
+				}
+				currentSize = stat.Size()
+
+				// If the size still hasn't changed, we have a real coherence issue
+				if currentSize == oldSize && currentSize == int64(len(currentData)) {
+					// The OS is still showing the old size even with a fresh file handle
+					// This can happen due to OS-level caching. Try a small delay.
+					time.Sleep(10 * time.Millisecond)
+
+					// Check size again
+					if stat2, err := newFile.Stat(); err == nil {
+						currentSize = stat2.Size()
+					}
 				}
 			}
 
@@ -578,8 +636,18 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 	fileSize := int64(len(data))
 
 	// Check for overflow and bounds
-	if byteOffset >= fileSize || byteOffset > fileSize-headerSize {
-		return nil, fmt.Errorf("offset %d beyond file size %d", byteOffset, fileSize)
+	if byteOffset > fileSize || byteOffset > fileSize-headerSize {
+		// This can happen when the memory-mapped view is stale even after fsync
+		// The index shows an entry exists and it's been synced to disk, but the
+		// mmap view hasn't caught up yet. This is a known OS-level race condition.
+		return nil, fmt.Errorf("offset %d beyond file size %d (mmap coherence issue)", byteOffset, fileSize)
+	}
+
+	// Special case: if offset equals file size, the entry hasn't been written yet
+	if byteOffset == fileSize {
+		// The index claims this entry exists, but it's exactly at EOF
+		// This means the entry is about to be written but isn't there yet
+		return nil, fmt.Errorf("offset %d at EOF of file size %d (mmap coherence issue)", byteOffset, fileSize)
 	}
 
 	// Read header
@@ -718,12 +786,38 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 			if relativeEntryNum == 0 {
 				// First entry in file - starts at offset 0
 				pos := EntryPosition{FileIndex: fileIndex, ByteOffset: 0}
-				return r.ReadEntryAtPosition(pos)
+				data, err := r.ReadEntryAtPosition(pos)
+				if err != nil && r.state != nil {
+					// Check if we should refresh on error
+					currentIndexUpdate := r.state.GetLastIndexUpdate()
+					lastKnown := atomic.LoadInt64(&r.lastKnownIndexUpdate)
+					if currentIndexUpdate > lastKnown {
+						// Index has been updated, refresh and retry
+						if refreshErr := r.refreshFromLiveIndex(); refreshErr == nil {
+							atomic.StoreInt64(&r.lastKnownIndexUpdate, currentIndexUpdate)
+							return r.ReadEntryByNumber(entryNumber)
+						}
+					}
+				}
+				return data, err
 			}
 
 			// For non-first entries, we need to scan from the beginning
 			// This should rarely happen if the binary index is properly maintained
-			return r.readEntryByScanning(fileIndex, relativeEntryNum)
+			data, err := r.readEntryByScanning(fileIndex, relativeEntryNum)
+			if err != nil && r.state != nil {
+				// Check if we should refresh on error
+				currentIndexUpdate := r.state.GetLastIndexUpdate()
+				lastKnown := atomic.LoadInt64(&r.lastKnownIndexUpdate)
+				if currentIndexUpdate > lastKnown {
+					// Index has been updated, refresh and retry
+					if refreshErr := r.refreshFromLiveIndex(); refreshErr == nil {
+						atomic.StoreInt64(&r.lastKnownIndexUpdate, currentIndexUpdate)
+						return r.ReadEntryByNumber(entryNumber)
+					}
+				}
+			}
+			return data, err
 		}
 	}
 
@@ -732,22 +826,10 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 		currentIndexUpdate := r.state.GetLastIndexUpdate()
 		lastKnown := atomic.LoadInt64(&r.lastKnownIndexUpdate)
 
-		if IsDebug() {
-			fmt.Printf("[DEBUG] Reader.ReadEntryByNumber: entry=%d, currentIndexUpdate=%d, lastKnown=%d, stale=%v\n",
-				entryNumber, currentIndexUpdate, lastKnown, currentIndexUpdate > lastKnown)
-		}
-
 		if currentIndexUpdate > lastKnown {
 			// Reader index is stale - try to refresh from the live index
-			if IsDebug() {
-				fmt.Printf("[DEBUG] Reader index is stale: entry=%d, currentUpdate=%d > lastKnown=%d, attempting refresh\n",
-					entryNumber, currentIndexUpdate, lastKnown)
-			}
 
 			if err := r.refreshFromLiveIndex(); err != nil {
-				if IsDebug() {
-					fmt.Printf("[DEBUG] Failed to refresh reader index: %v\n", err)
-				}
 				return nil, fmt.Errorf("reader index is stale and refresh failed: %w", err)
 			}
 
@@ -776,10 +858,7 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 			if err == nil {
 				return data, nil
 			}
-			// Log read errors for debugging
-			if IsDebug() {
-				fmt.Printf("[DEBUG] Error reading entry 0 from file 0: %v\n", err)
-			}
+
 		}
 	}
 
@@ -806,6 +885,7 @@ func (r *Reader) readEntryByScanning(fileIndex int, relativeEntryNum int64) ([]b
 		return nil, fmt.Errorf("failed to check file growth: %w", err)
 	}
 
+	// Reload data after potential remapping
 	data := mapped.data.Load().([]byte)
 	if len(data) == 0 {
 		return nil, fmt.Errorf("file %d is empty", fileIndex)
@@ -841,5 +921,17 @@ func (r *Reader) readEntryByScanning(fileIndex int, relativeEntryNum int64) ([]b
 	}
 
 	// Now read the target entry at currentOffset
-	return r.readEntryFromFileData(data, currentOffset)
+	result, err := r.readEntryFromFileData(data, currentOffset)
+	if err != nil && strings.Contains(err.Error(), "mmap coherence issue") {
+		// Mmap coherence issue in scanning - force a remap
+		if err := r.checkAndRemapIfGrownForce(fileIndex, mapped, true); err != nil {
+			return nil, fmt.Errorf("failed to remap after mmap coherence issue in scanning: %w", err)
+		}
+
+		// Get the new data and try once more
+		data = mapped.data.Load().([]byte)
+		return r.readEntryFromFileData(data, currentOffset)
+	}
+
+	return result, err
 }

@@ -295,7 +295,7 @@ func TestBrowseConcurrentAccess(t *testing.T) {
 	config := DefaultCometConfig()
 	config.Concurrency.ProcessCount = 0 // Ensure single-process mode
 	// Use frequent checkpoints to ensure data is persisted
-	config.Storage.CheckpointTime = 10
+	config.Storage.CheckpointInterval = 10 * time.Millisecond
 	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)

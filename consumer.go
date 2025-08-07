@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"slices"
@@ -109,6 +109,32 @@ func (c *Consumer) getAssignedShards(candidateShards []uint32) []uint32 {
 		}
 	}
 	return assigned
+}
+
+// findExistingShards scans filesystem for existing shard directories
+func (c *Consumer) findExistingShards() ([]uint32, error) {
+	var shards []uint32
+
+	shardDirs, err := filepath.Glob(filepath.Join(c.client.dataDir, "shard-*"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan for shard directories: %w", err)
+	}
+
+	for _, shardDir := range shardDirs {
+		// Extract shard ID from directory name (e.g., "shard-0166" -> 166)
+		dirName := filepath.Base(shardDir)
+		if !strings.HasPrefix(dirName, "shard-") {
+			continue
+		}
+
+		shardIDStr := strings.TrimPrefix(dirName, "shard-")
+		var shardID uint64
+		if _, parseErr := fmt.Sscanf(shardIDStr, "%04d", &shardID); parseErr == nil {
+			shards = append(shards, uint32(shardID))
+		}
+	}
+
+	return shards, nil
 }
 
 // ProcessFunc handles a batch of messages, returning error to trigger retry
@@ -363,14 +389,19 @@ func (c *Consumer) Close() error {
 			// Return index to pool after use
 			defer returnIndexToPool(indexCopy)
 
-			// Persist without holding the lock
-			shard.indexMu.Lock()
-			err := shard.saveBinaryIndex(indexCopy)
-			shard.indexMu.Unlock()
+			// TODO: Consumer should not overwrite the writer's index file!
+			// This is a temporary fix - we need to separate consumer offsets from the shard index
+			// For now, skip persisting to avoid overwriting writer's data
+			if false {
+				// Persist without holding the lock
+				shard.indexMu.Lock()
+				err := shard.saveBinaryIndex(indexCopy)
+				shard.indexMu.Unlock()
 
-			if err != nil && c.client.logger != nil {
-				c.client.logger.Warn("Failed to persist consumer offsets on close",
-					"error", err, "shard", shardID, "group", c.group)
+				if err != nil && c.client.logger != nil {
+					c.client.logger.Warn("Failed to persist consumer offsets on close",
+						"error", err, "shard", shardID, "group", c.group)
+				}
 			}
 		}
 		return true
@@ -412,8 +443,10 @@ func (c *Consumer) cleanupProcessedMessages() {
 	c.client.mu.RLock()
 	for shardID, shard := range c.client.shards {
 		shard.mu.RLock()
-		if offset, exists := shard.index.ConsumerOffsets[c.group]; exists {
-			shardOffsets[shardID] = offset
+		if shard.offsetMmap != nil {
+			if offset, exists := shard.offsetMmap.Get(c.group); exists {
+				shardOffsets[shardID] = offset
+			}
 		}
 		shard.mu.RUnlock()
 	}
@@ -466,10 +499,14 @@ func (c *Consumer) Read(ctx context.Context, shards []uint32, count int) ([]Stre
 	var messages []StreamMessage
 	remaining := count
 
-	for _, shardID := range shards {
-		if remaining <= 0 {
-			break
-		}
+	// Pick random shards without replacement to ensure fair reading
+	for i := 0; i < len(shards) && remaining > 0; i++ {
+		// Pick a random shard from the remaining ones
+		j := rand.Intn(len(shards) - i)
+		shardID := shards[j]
+
+		// Swap the used shard to the end so we don't pick it again
+		shards[j], shards[len(shards)-1-i] = shards[len(shards)-1-i], shards[j]
 
 		// Use getOrCreateShard to ensure we can read from existing shards after restart
 		shard, err := c.client.getOrCreateShard(shardID)
@@ -526,10 +563,11 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 
 	// Determine candidate shards to process
 	var candidateShards []uint32
+
 	if len(cfg.shards) > 0 {
 		candidateShards = cfg.shards
 	} else if cfg.stream != "" {
-		// Auto-discover shards from stream pattern
+		// Auto-discover shards from stream pattern using systematic polling
 		discoveredShards, err := c.discoverShards(cfg.stream, cfg.consumerID, cfg.consumerCount)
 		if err != nil {
 			return fmt.Errorf("failed to discover shards: %w", err)
@@ -549,6 +587,23 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 
 		// Consumer group coordination: get deterministically assigned shards
 		shards := c.getAssignedShards(candidateShards)
+
+		// Re-discover shards when we have no work - with systematic polling, catches new shards immediately
+		if cfg.stream != "" && len(shards) == 0 {
+			newShards, err := c.discoverShards(cfg.stream, cfg.consumerID, cfg.consumerCount)
+			if err == nil && len(newShards) > len(candidateShards) {
+				oldCount := len(candidateShards)
+				candidateShards = newShards
+				if IsDebug() && c.client.logger != nil {
+					c.client.logger.Debug("Systematic rediscovery found new shards",
+						"old_count", oldCount,
+						"new_count", len(candidateShards),
+						"shards", candidateShards)
+				}
+				// Re-run shard assignment with new candidates
+				continue
+			}
+		}
 		if len(shards) == 0 {
 			// No shards available for this consumer group - wait and retry
 			select {
@@ -559,8 +614,18 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 			}
 		}
 
+		// Proactively refresh indexes for all candidate shards to ensure real-time visibility
+		// This catches updates from other processes even when we're not actively reading from all shards
+		c.refreshShardIndexes(candidateShards)
+
 		start := time.Now()
 		messages, err := c.Read(ctx, shards, cfg.batchSize)
+		if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Consumer read attempt",
+				"messages_count", len(messages),
+				"batch_size", cfg.batchSize,
+				"error", err)
+		}
 		if err != nil {
 			if cfg.onError != nil {
 				cfg.onError(err, 0)
@@ -636,12 +701,22 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 	if value, ok := c.readers.Load(shard.shardID); ok {
 		reader := value.(*Reader)
 
-		// Reader exists - it will handle its own staleness detection and refresh
-		// Track reader cache hit
+		// Check if the cached reader is stale by comparing LastIndexUpdate
 		if shard.state != nil {
-			atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
+			currentIndexUpdate := shard.state.GetLastIndexUpdate()
+			if currentIndexUpdate > reader.lastKnownIndexUpdate {
+				// Reader is stale, remove it and create a new one
+				c.readers.Delete(shard.shardID)
+				// Fall through to create new reader
+			} else {
+				// Reader is still fresh
+				atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
+				return reader, nil
+			}
+		} else {
+			// No state to check, assume reader is still valid
+			return reader, nil
 		}
-		return reader, nil
 	}
 
 	// Create new reader with current index - reader will refresh itself when stale
@@ -678,25 +753,106 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 
 // readFromShard reads entries from a single shard using entry-based positioning
 func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int) ([]StreamMessage, error) {
+	if IsDebug() && c.client.logger != nil {
+		c.client.logger.Debug("readFromShard called", "shardID", shard.shardID, "maxCount", maxCount)
+	}
+
 	// Track this shard for persistence on close
 	c.shards.Store(shard.shardID, true)
 	// Lock-free reader tracking
 	atomic.AddInt64(&shard.readerCount, 1)
 	defer atomic.AddInt64(&shard.readerCount, -1)
 
-	// Since processes own their shards exclusively, no need to check for changes
+	// Check if index has been updated by another process using memory-mapped atomic state
+	// This is much more efficient than time-based reloading since we only reload when actually needed
+	var needsReload bool
+	var lastKnownUpdate int64
+
+	var currentIndexUpdate int64
+	if shard.state != nil {
+		currentIndexUpdate = shard.state.GetLastIndexUpdate()
+		shard.mu.RLock()
+		lastKnownUpdate = shard.lastIndexReload
+		shard.mu.RUnlock()
+		needsReload = currentIndexUpdate > lastKnownUpdate
+
+		if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Index reload check",
+				"shardID", shard.shardID,
+				"currentIndexUpdate", currentIndexUpdate,
+				"lastKnownUpdate", lastKnownUpdate,
+				"needsReload", needsReload)
+		}
+
+		if needsReload && IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Index update detected via memory-mapped state",
+				"shard", shard.shardID,
+				"current_update", currentIndexUpdate,
+				"last_known", lastKnownUpdate)
+		}
+	} else {
+		if c.client.logger != nil && IsDebug() {
+			c.client.logger.Debug("No shard state available for index update detection",
+				"shard", shard.shardID)
+		}
+	}
+
+	if needsReload {
+		shard.mu.Lock()
+		oldEntries := shard.index.CurrentEntryNumber
+
+		if err := shard.loadIndex(); err != nil {
+			// Log but don't fail - continue with current index
+			if c.client.logger != nil {
+				c.client.logger.Warn("Failed to reload index, using cached state",
+					"shard", shard.shardID,
+					"error", err)
+			}
+		} else {
+			newEntries := shard.index.CurrentEntryNumber
+
+			// Only update lastIndexReload if we actually loaded a non-empty index
+			// This prevents marking an empty index as "up to date" when it's not
+			if newEntries > 0 || len(shard.index.Files) > 0 {
+				shard.lastIndexReload = currentIndexUpdate
+
+				if c.client.logger != nil && IsDebug() {
+					c.client.logger.Debug("Reloaded index after state change",
+						"shard", shard.shardID,
+						"old_entries", oldEntries,
+						"new_entries", newEntries,
+						"entries_added", newEntries-oldEntries,
+						"files", len(shard.index.Files),
+						"updated_lastReload", true)
+				}
+			} else {
+				if c.client.logger != nil && IsDebug() {
+					c.client.logger.Debug("Reloaded empty index, NOT updating lastIndexReload",
+						"shard", shard.shardID,
+						"currentIndexUpdate", currentIndexUpdate,
+						"keeping_lastReload", shard.lastIndexReload)
+				}
+			}
+		}
+		shard.mu.Unlock()
+	}
 
 	// First check in-memory offset for immediate consistency
 	c.memOffsetsMu.RLock()
 	memOffset, hasMemOffset := c.memOffsets[shard.shardID]
 	c.memOffsetsMu.RUnlock()
 
-	shard.mu.RLock()
-	// Get consumer entry offset from persistent index
-	persistedOffset, exists := shard.index.ConsumerOffsets[c.group]
+	// Get consumer entry offset from mmap store
+	var persistedOffset int64
+	var exists bool
+	if shard.offsetMmap != nil {
+		persistedOffset, exists = shard.offsetMmap.Get(c.group)
+	}
 	if !exists {
 		persistedOffset = 0
 	}
+
+	shard.mu.RLock()
 
 	// Use the higher of memory or persisted offset for consistency
 	startEntryNum := persistedOffset
@@ -716,6 +872,19 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	endEntryNum := shard.index.CurrentEntryNumber // Only read durable data
 	fileCount := len(shard.index.Files)
 	shard.mu.RUnlock()
+
+	// If we just reloaded the index, re-capture the updated endEntryNum
+	if needsReload {
+		shard.mu.RLock()
+		endEntryNum = shard.index.CurrentEntryNumber
+		shard.mu.RUnlock()
+
+		if c.client.logger != nil && IsDebug() {
+			c.client.logger.Debug("Updated endEntryNum after index reload",
+				"shard", shard.shardID,
+				"end_entry_num", endEntryNum)
+		}
+	}
 
 	// The reader cache invalidation in getOrCreateReader now handles stale data detection
 	// No need for the hacky workaround anymore
@@ -753,32 +922,55 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		// Use the new ReadEntryByNumber method which handles position finding internally
 		data, err := reader.ReadEntryByNumber(entryNum)
 		if err != nil {
-			// With immutable cloned indexes, errors indicate either:
-			// 1. Entry doesn't exist yet (reading ahead)
-			// 2. Reader index is stale (needs fresh Reader)
-			// 3. Real file corruption issues
+			// Check if this is a transient error that can occur during concurrent operations
+			errStr := err.Error()
+			if strings.Contains(errStr, "mmap coherence issue") ||
+				strings.Contains(errStr, "not found in any file") ||
+				strings.Contains(errStr, "file too short") {
+				// These errors can happen when:
+				// 1. Reading very recently written data (mmap coherence)
+				// 2. The reader's index is stale and doesn't know about new files yet
+				// 3. File rotation happened but data wasn't fully flushed (file too short)
 
-			// For "not found" errors, skip the entry in multi-process scenarios
-			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "stale") {
-				// CRITICAL: Update memory offset even for skipped entries to prevent infinite loops
-				c.memOffsetsMu.Lock()
-				if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
-					if IsDebug() {
-						fmt.Printf("[DEBUG] Consumer updating memOffset for 'not found': shard=%d, entryNum=%d, newOffset=%d\n",
-							shard.shardID, entryNum, entryNum+1)
+				// Force the reader to refresh its index from the live shard
+				if refreshErr := reader.refreshFromLiveIndex(); refreshErr == nil {
+					// Try reading again with refreshed index
+					data, err = reader.ReadEntryByNumber(entryNum)
+					if err == nil {
+						// Success after refresh
+						goto gotData
 					}
-					c.memOffsets[shard.shardID] = entryNum + 1 // Next entry to try
 				}
-				c.memOffsetsMu.Unlock()
-				continue
-			}
-			// Track read error in CometState
-			if state := shard.state; state != nil {
-				atomic.AddUint64(&state.ReadErrors, 1)
-			}
-			return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
 
+				// If still failing, give the system a moment to catch up
+				time.Sleep(10 * time.Millisecond)
+
+				// Try once more
+				data, err = reader.ReadEntryByNumber(entryNum)
+				if err != nil && (strings.Contains(err.Error(), "mmap coherence issue") ||
+					strings.Contains(err.Error(), "not found in any file") ||
+					strings.Contains(err.Error(), "file too short")) {
+					// Still failing - skip this entry for now
+					if IsDebug() && c.client.logger != nil {
+						c.client.logger.Debug("Skipping entry due to persistent read issue",
+							"shard", shard.shardID,
+							"entry", entryNum,
+							"error", err)
+					}
+					continue
+				}
+			}
+
+			if err != nil {
+				// This is a real error
+				if state := shard.state; state != nil {
+					atomic.AddUint64(&state.ReadErrors, 1)
+				}
+				return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
+			}
 		}
+
+	gotData:
 
 		message := StreamMessage{
 			Stream: fmt.Sprintf("shard:%04d", shard.shardID),
@@ -862,7 +1054,22 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		}
 
 		if maxEntry >= 0 {
+			// Get shard first to check durable limit
+			shard, err := c.client.getOrCreateShard(shardID)
+			if err != nil {
+				return err
+			}
+
+			// Never advance offset beyond what's durable
+			shard.mu.RLock()
+			durableLimit := shard.index.CurrentEntryNumber
+			shard.mu.RUnlock()
+
 			newOffset := maxEntry + 1
+			// Cap offset at durable limit to prevent reading non-existent entries
+			if newOffset > durableLimit {
+				newOffset = durableLimit
+			}
 
 			// Update in-memory offset immediately for read consistency
 			c.memOffsetsMu.Lock()
@@ -871,32 +1078,32 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 			}
 			c.memOffsetsMu.Unlock()
 
-			// Get shard for persistence
-			shard, err := c.client.getOrCreateShard(shardID)
-			if err != nil {
-				return err
-			}
-
 			// Track this shard for persistence on close
 			c.shards.Store(shardID, true)
 
-			shard.mu.Lock()
 			// Check if this is a new consumer group
-			currentOffset, groupExists := shard.index.ConsumerOffsets[c.group]
+			var currentOffset int64
+			var groupExists bool
+			if shard.offsetMmap != nil {
+				currentOffset, groupExists = shard.offsetMmap.Get(c.group)
+			}
 			if !groupExists {
 				if state := shard.state; state != nil {
 					atomic.AddUint64(&state.ConsumerGroups, 1)
 				}
-				shard.index.ConsumerOffsets[c.group] = newOffset
+				if shard.offsetMmap != nil {
+					shard.offsetMmap.Set(c.group, newOffset)
+				}
 			} else if newOffset > currentOffset {
 				// Only update if the new offset is higher
-				shard.index.ConsumerOffsets[c.group] = newOffset
+				if shard.offsetMmap != nil {
+					shard.offsetMmap.Set(c.group, newOffset)
+				}
 			}
 			// Track acked entries
 			if state := shard.state; state != nil {
 				atomic.AddUint64(&state.AckedEntries, uint64(len(ids)))
 			}
-			shard.mu.Unlock()
 
 			// Don't persist on every ACK - let the background flusher handle it
 			// This preserves read-after-write consistency via in-memory offsets
@@ -913,23 +1120,8 @@ func (c *Consumer) FlushACKs(ctx context.Context) error {
 	// Persist all shards that have been accessed
 	var lastErr error
 	c.shards.Range(func(key, value any) bool {
-		shardID := key.(uint32)
-		shard, err := c.client.getOrCreateShard(shardID)
-		if err != nil {
-			lastErr = err
-			return true
-		}
-
-		// Force persist the current state
-		if err := shard.persistIndex(); err != nil {
-			lastErr = err
-			if c.client.logger != nil {
-				// Only log if it's not a "directory not found" error (common in tests)
-				if !os.IsNotExist(err) && !strings.Contains(err.Error(), "no such file or directory") {
-					c.client.logger.Warn("Failed to flush consumer offsets", "shard", shardID, "error", err)
-				}
-			}
-		}
+		// shardID := key.(uint32)
+		// No need to persist - mmap is automatically synced
 		return true
 	})
 
@@ -950,13 +1142,18 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 
 	// Since processes own their shards exclusively, no need to check for changes
 
-	shard.mu.RLock()
-	defer shard.mu.RUnlock()
-
-	consumerEntry, exists := shard.index.ConsumerOffsets[c.group]
+	// Get consumer offset from mmap store
+	var consumerEntry int64
+	var exists bool
+	if shard.offsetMmap != nil {
+		consumerEntry, exists = shard.offsetMmap.Get(c.group)
+	}
 	if !exists {
 		consumerEntry = 0
 	}
+
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
 
 	// Entry-based lag calculation
 	lag := shard.index.CurrentEntryNumber - consumerEntry
@@ -980,14 +1177,17 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 		return err
 	}
 
-	shard.mu.Lock()
+	shard.mu.RLock()
 	if entryNumber < 0 {
 		// Negative means from end
 		entryNumber = max(shard.index.CurrentEntryNumber+entryNumber, 0)
 	}
+	shard.mu.RUnlock()
 
-	shard.index.ConsumerOffsets[c.group] = entryNumber
-	shard.mu.Unlock()
+	// Update offset in mmap storage
+	if shard.offsetMmap != nil {
+		shard.offsetMmap.Set(c.group, entryNumber)
+	}
 
 	// Update in-memory offset as well
 	c.memOffsetsMu.Lock()
@@ -1005,10 +1205,7 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	}
 	c.processedMsgsMu.Unlock()
 
-	// Persist consumer offset change immediately to prevent data loss
-	if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-		c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
-	}
+	// No need to persist - mmap is automatically synced
 
 	return nil
 }
@@ -1026,12 +1223,17 @@ func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEn
 		return err
 	}
 
-	shard.mu.Lock()
-	// Get current consumer offset
-	currentOffset, exists := shard.index.ConsumerOffsets[c.group]
+	// Get current consumer offset from mmap store
+	var currentOffset int64
+	var exists bool
+	if shard.offsetMmap != nil {
+		currentOffset, exists = shard.offsetMmap.Get(c.group)
+	}
 	if !exists {
 		currentOffset = 0
 	}
+
+	shard.mu.Lock()
 
 	// Check if we're trying to ACK beyond what we've read
 	c.highestReadMu.RLock()
@@ -1063,13 +1265,19 @@ func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEn
 			"newOffset", newOffset)
 	}
 
-	shard.index.ConsumerOffsets[c.group] = newOffset
 	shard.mu.Unlock()
 
-	// Persist consumer offset change immediately to prevent data loss
-	if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-		c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
+	// Update offset in mmap storage
+	if shard.offsetMmap != nil {
+		shard.offsetMmap.Set(c.group, newOffset)
 	}
+
+	// Update in-memory offset for immediate consistency
+	c.memOffsetsMu.Lock()
+	c.memOffsets[shardID] = newOffset
+	c.memOffsetsMu.Unlock()
+
+	// No need to persist - mmap is automatically synced
 
 	return nil
 }
@@ -1110,9 +1318,10 @@ func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamSt
 		ConsumerOffsets: make(map[string]int64),
 	}
 
-	// Since processes own their shards exclusively, they own all consumer groups
-	// Copy all consumer offsets
-	maps.Copy(stats.ConsumerOffsets, shard.index.ConsumerOffsets)
+	// Get all consumer offsets from mmap store
+	if shard.offsetMmap != nil {
+		stats.ConsumerOffsets = shard.offsetMmap.GetAll()
+	}
 
 	// Calculate totals from files
 	for _, file := range shard.index.Files {
@@ -1152,63 +1361,50 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 			"Got: %s", streamPattern)
 	}
 
-	baseStream := strings.TrimSuffix(streamPattern, "*")
-
-	// Discover all available shards
-	// Discover shards by scanning existing shard directories
-	// This is much more efficient than checking every possible shard ID
+	// Adaptive discovery: start with existing shards, expand range if needed
 	var allShards []uint32
-
-	// Use filesystem-based discovery for efficiency - check for existing shard directories
-	// This is much faster than calling Len() on every possible shard
-	shardDirs, err := filepath.Glob(filepath.Join(c.client.dataDir, "shard-*"))
+	// First, find existing shards via filesystem scan
+	existingShards, err := c.findExistingShards()
 	if err != nil {
-		return nil, fmt.Errorf("failed to scan for shard directories: %w", err)
+		return nil, fmt.Errorf("failed to find existing shards: %w", err)
 	}
 
-	if IsDebug() && c.client.logger != nil {
-		c.client.logger.Debug("discoverShards: found shard directories",
-			"count", len(shardDirs),
-			"dirs", shardDirs,
-			"baseStream", baseStream)
-	}
-
-	for _, shardDir := range shardDirs {
-		// Extract shard ID from directory name (e.g., "shard-0166" -> 166)
-		dirName := filepath.Base(shardDir)
-		if !strings.HasPrefix(dirName, "shard-") {
-			continue
+	// If no existing shards, generate a small initial range for on-demand creation
+	if len(existingShards) == 0 {
+		// Start with a reasonable initial range (0-31) for on-demand shard creation
+		for shardID := uint32(0); shardID < 32; shardID++ {
+			allShards = append(allShards, shardID)
 		}
+		if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("No existing shards found, using initial range for on-demand creation",
+				"pattern", streamPattern,
+				"range", "0-31")
+		}
+	} else {
+		// Use existing shards as base, but expand range to catch potential gaps
+		allShards = existingShards
 
-		shardIDStr := strings.TrimPrefix(dirName, "shard-")
-		var shardID uint64
-		if _, parseErr := fmt.Sscanf(shardIDStr, "%04d", &shardID); parseErr == nil {
-			// In multi-process mode, we need to check if ANY process might own this shard
-			// Since consumer groups can span multiple processes, we need to discover all shards
-			// that match our pattern, regardless of which process owns them
-
-			// For now, just check if the shard directory exists and matches our pattern
-			streamName := fmt.Sprintf("%s%04d", baseStream, shardID)
-
-			// Simple check: if shard directory exists and stream name matches pattern, include it
-			// This avoids the complexity of trying to read shards owned by other processes
-			allShards = append(allShards, uint32(shardID))
-
-			if IsDebug() && c.client.logger != nil {
-				c.client.logger.Debug("Shard discovery: found matching shard",
-					"shardDir", shardDir,
-					"shardID", shardID,
-					"streamName", streamName)
+		// Find the max existing shard ID
+		var maxShardID uint32 = 0
+		for _, shardID := range existingShards {
+			if shardID > maxShardID {
+				maxShardID = shardID
 			}
-		} else if IsDebug() && c.client.logger != nil {
-			c.client.logger.Debug("Failed to parse shard ID",
-				"shardIDStr", shardIDStr,
-				"error", parseErr)
 		}
-	}
 
-	if len(allShards) == 0 {
-		return nil, fmt.Errorf("no shards found for pattern %s", streamPattern)
+		// Add some buffer beyond max to catch new shards
+		bufferSize := uint32(16) // Add 16 more potential shards beyond the max
+		for shardID := maxShardID + 1; shardID <= maxShardID+bufferSize; shardID++ {
+			allShards = append(allShards, shardID)
+		}
+
+		if IsDebug() && c.client.logger != nil {
+			c.client.logger.Debug("Found existing shards, expanded with buffer",
+				"existing_count", len(existingShards),
+				"max_existing", maxShardID,
+				"total_range", len(allShards),
+				"buffer", bufferSize)
+		}
 	}
 
 	// Sort shards for predictable assignment
@@ -1223,4 +1419,84 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 	}
 
 	return assignedShards, nil
+}
+
+// refreshShardIndexes proactively checks and reloads indexes for all candidate shards
+// This ensures real-time visibility of updates from other processes
+func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
+	if c.client.logger != nil && IsDebug() {
+		c.client.logger.Debug("[REFRESH] Starting refreshShardIndexes",
+			"numShards", len(candidateShards),
+			"group", c.group)
+	}
+
+	reloadedCount := 0
+	skippedCount := 0
+
+	for _, shardID := range candidateShards {
+		// Get or create the shard (this may trigger on-demand creation)
+		shard, err := c.client.getOrCreateShard(shardID)
+		if err != nil {
+			continue // Skip this shard on error
+		}
+
+		// Check if index needs reloading using the same logic as readFromShard
+		var needsReload bool
+		var currentIndexUpdate int64
+		var lastKnownUpdate int64
+
+		if shard.state != nil {
+			currentIndexUpdate = shard.state.GetLastIndexUpdate()
+			lastKnownUpdate = shard.lastIndexReload
+			needsReload = currentIndexUpdate > lastKnownUpdate
+		}
+
+		if needsReload {
+			if c.client.logger != nil && IsDebug() {
+				c.client.logger.Debug("[REFRESH] Shard needs reload",
+					"shard", shardID,
+					"currentIndexUpdate", currentIndexUpdate,
+					"lastKnownUpdate", lastKnownUpdate)
+			}
+
+			shard.mu.Lock()
+			oldEntries := shard.index.CurrentEntryNumber
+
+			if err := shard.loadIndex(); err != nil {
+				// Log but don't fail - continue with current index
+				if c.client.logger != nil && IsDebug() {
+					c.client.logger.Debug("[REFRESH] Failed to reload index during refresh, using cached state",
+						"shard", shard.shardID,
+						"error", err)
+				}
+			} else {
+				newEntries := shard.index.CurrentEntryNumber
+
+				// Only update lastIndexReload if we actually loaded a non-empty index
+				// This prevents marking an empty index as "up to date" when it's not
+				if newEntries > 0 || len(shard.index.Files) > 0 {
+					shard.lastIndexReload = currentIndexUpdate
+					reloadedCount++
+				}
+
+				if c.client.logger != nil && IsDebug() {
+					c.client.logger.Debug("[REFRESH] Reloaded index",
+						"shard", shard.shardID,
+						"old_entries", oldEntries,
+						"new_entries", newEntries,
+						"entries_added", newEntries-oldEntries)
+				}
+			}
+			shard.mu.Unlock()
+		} else {
+			skippedCount++
+		}
+	}
+
+	if c.client.logger != nil && IsDebug() && (reloadedCount > 0 || skippedCount > 0) {
+		c.client.logger.Debug("[REFRESH] Completed refreshShardIndexes",
+			"reloadedCount", reloadedCount,
+			"skippedCount", skippedCount,
+			"totalShards", len(candidateShards))
+	}
 }

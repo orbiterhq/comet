@@ -1367,7 +1367,7 @@ func BenchmarkAllocation_CompressionImpact(b *testing.B) {
 		cfg.Compression.MinCompressSize = config.threshold
 		cfg.Indexing.BoundaryInterval = 100
 		cfg.Storage.MaxFileSize = 1 << 30
-		cfg.Storage.CheckpointTime = 2000
+		cfg.Storage.CheckpointInterval = 2 * time.Second
 		client, err := NewClient(dir, cfg)
 		if err != nil {
 			b.Fatalf("failed to create client: %v", err)

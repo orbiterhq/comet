@@ -15,8 +15,8 @@ func TestHighCompressionConfig(t *testing.T) {
 	}
 
 	// The config inherits other settings from DefaultCometConfig
-	if config.Storage.CheckpointTime != 2000 {
-		t.Errorf("Expected checkpoint time 2000ms, got %d", config.Storage.CheckpointTime)
+	if config.Storage.CheckpointInterval != 2*time.Second {
+		t.Errorf("Expected checkpoint time 2s, got %v", config.Storage.CheckpointInterval)
 	}
 }
 
@@ -28,8 +28,8 @@ func TestHighThroughputConfig(t *testing.T) {
 	if config.Compression.MinCompressSize != 1024*1024 {
 		t.Errorf("Expected MinCompressSize 1048576, got %d", config.Compression.MinCompressSize)
 	}
-	if config.Storage.CheckpointTime != 10000 {
-		t.Errorf("Expected checkpoint time 10000ms, got %d", config.Storage.CheckpointTime)
+	if config.Storage.CheckpointInterval != 10*time.Second {
+		t.Errorf("Expected checkpoint time 10s, got %v", config.Storage.CheckpointInterval)
 	}
 }
 

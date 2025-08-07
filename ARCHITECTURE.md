@@ -23,8 +23,8 @@ Comet is a high-performance embedded segmented log designed for edge observabili
 ├─────────────────────┤    ├──────────────────────┤
 │ - nextEntryNumber   │    │ - Index              │
 │ - pendingWrites     │    │ - Data Files         │
-│ - writeBuffers      │    │ - Consumer Offsets   │
-│ - fileSize          │    │ - State File         │
+│ - writeBuffers      │    │ - State File         │
+│ - fileSize          │    │                      │
 └─────────────────────┘    └──────────────────────┘
          │                           ▲
          │                           │
@@ -93,13 +93,20 @@ Each shard represents an independent data stream partition with strict state sep
 │ Durable State:                       │
 │ - Binary searchable index            │
 │ - Memory-mapped state file           │
-│ - Consumer offsets                   │
 │ - File metadata                      │
+│                                      │
+│ Consumer State (Separate):           │
+│ - Memory-mapped offset file          │
+│ - Lock-free consumer tracking        │
 └──────────────────────────────────────┘
          │              │              │
          ▼              ▼              ▼
     Data Files     Index File    State File
     (.comet)       (.bin)        (.state)
+                                       │
+                                       ▼
+                              Consumer Offsets
+                              (offsets.state)
 ```
 
 **Critical State Management:**
@@ -142,7 +149,8 @@ Key features:
 
 - **Exactly-once semantics**: Through ACK tracking
 - **Deterministic assignment**: Consistent hashing for multi-consumer
-- **In-memory offsets**: Fast read-after-ACK consistency
+- **Separate offset storage**: Consumer offsets stored independently from writer's index
+- **Lock-free offset updates**: Memory-mapped storage for multi-process safety
 - **Batch operations**: Amortizes overhead across messages
 
 ### 4. Reader
@@ -244,14 +252,14 @@ For each shard:
      ├─→ Binary search index (durable entries only)
      ├─→ Read entries from mapped files
      ├─→ Decompress if needed
-     └─→ Update consumer offsets (on ACK)
+     └─→ Update consumer offsets in mmap (on ACK)
 ```
 
 **Key Points:**
 
 - Consumers only see entries in index.CurrentEntryNumber
 - Reader cache automatically detects stale mappings
-- Consumer offsets are persisted with index
+- Consumer offsets are stored separately in memory-mapped files
 - No unflushed/pending data is ever visible
 
 ### Retention Path
@@ -270,6 +278,8 @@ Client.cleanupShard()
 ```
 
 ## Memory-Mapped State
+
+### Writer State (comet.state)
 
 Each shard maintains a 1KB state file with cache-line aligned sections:
 
@@ -362,6 +372,43 @@ Benefits:
 - **Atomic access**: Lock-free updates
 - **Fixed size**: Predictable memory usage
 
+### Consumer Offset Storage (offsets.state)
+
+Each shard maintains a separate 64KB memory-mapped file for consumer offsets:
+
+```
+┌─────────────────────────┐ Header (64 bytes)
+│ Version (4B)            │ Format version (1)
+│ Magic (4B)              │ 0xC0FE0FF5
+│ Reserved (56B)          │ Future expansion
+├─────────────────────────┤ Consumer Entries (512 × 128 bytes)
+│ Entry 0 (128B)          │ First consumer group
+│ ├─ GroupName (48B)      │ Null-terminated string
+│ ├─ Offset (8B)          │ Current consumer offset
+│ ├─ LastUpdate (8B)      │ Unix nano timestamp
+│ ├─ AckCount (8B)        │ Total acknowledgments
+│ └─ Reserved (56B)       │ Future use
+│ Entry 1 (128B)          │ Second consumer group
+│ ...                     │
+│ Entry 511 (128B)        │ Last consumer group
+└─────────────────────────┘
+```
+
+**Key Features:**
+
+- **Lock-free access**: Atomic operations for multi-process safety
+- **512 consumer groups**: Per shard with linear probing hash table
+- **Memory-mapped**: Changes visible immediately across processes
+- **Cache-line aligned**: Each entry is exactly 2 cache lines (128 bytes)
+- **Automatic migration**: From old file-based format to mmap format
+
+**Consumer Group Management:**
+
+- Groups allocated using FNV-1a hash with linear probing
+- Empty slots detected by null GroupName[0]
+- Atomic slot claiming prevents race conditions
+- No explicit locking required for reads or writes
+
 ## Wire Format
 
 Each entry follows a simple, efficient format:
@@ -402,11 +449,6 @@ Binary format for fast lookups and persistence:
 │ Index node count (4B)      │
 ├────────────────────────────┤
 │ File count (4B)            │
-├────────────────────────────┤
-│ Consumer offsets           │ For each consumer:
-│ - Group name length (1B)   │ - Length of group name
-│ - Group name (N bytes)     │ - UTF-8 group name
-│ - Offset (8B)              │ - Consumer offset
 ├────────────────────────────┤
 │ Binary search nodes        │ For each node (20B):
 │ - Entry number (8B)        │ - Entry number
@@ -511,13 +553,13 @@ For each shard:
 
 - All data flushed to disk
 - Index reflects actual state
-- Consumer offsets saved
+- Consumer offsets preserved in separate memory-mapped files
 
 **After Crash:**
 
 - Only synced data is recoverable
 - Index rebuilt from actual files
-- Consumer offsets reset to last known good state
+- Consumer offsets preserved independently in offsets.state files
 - Unflushed writes are lost (by design)
 
 ### Recovery Scenarios
@@ -564,6 +606,6 @@ This design ensures that even after catastrophic failures, Comet can recover to 
 
 ### Resource Usage
 
-- **Memory**: ~1KB state + configurable cache
+- **Memory**: ~65KB state + configurable memory-mapped file cache
 - **Disk**: Efficient compression, automatic cleanup
 - **CPU**: Minimal (compression optional)

@@ -112,8 +112,8 @@ type CometState struct {
 	ReaderCacheEvicts uint64   // 680-687: Files evicted due to pressure
 	_pad9             [80]byte // 688-767: Padding to end of cache line 11
 
-	// ======== Cache Lines 12-15 (768-1023): Reserved for future ========
-	_reserved [256]byte // 768-1023: Future expansion space
+	// ======== Cache Lines 12-15 (768-1023): Global coordination ========
+	_reserved [256]byte // 776-1023: Future expansion space
 }
 
 // Compile-time checks

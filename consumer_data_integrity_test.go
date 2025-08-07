@@ -11,7 +11,7 @@ import (
 func TestConsumerDataIntegrity(t *testing.T) {
 	dataDir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 20
+	config.Storage.FlushInterval = 20 * time.Millisecond
 	config.Storage.MaxFileSize = 5 * 1024 // Force rotations
 
 	client, err := NewClient(dataDir, config)

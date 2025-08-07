@@ -14,7 +14,7 @@ func TestConsumerReceivesEventsWithoutRestart(t *testing.T) {
 
 	// Create client with short flush interval for faster testing
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 50 // 50ms flush interval
+	config.Storage.FlushInterval = 50 * time.Millisecond // 50ms flush interval
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {

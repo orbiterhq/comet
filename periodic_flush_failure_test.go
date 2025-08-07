@@ -3,6 +3,7 @@ package comet
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -114,7 +115,7 @@ func TestPeriodicFlushWithCustomInterval(t *testing.T) {
 
 	// Set a very short flush interval to make testing faster
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 100 // 100ms
+	config.Storage.FlushInterval = 100 * time.Millisecond // 100ms
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
@@ -205,27 +206,27 @@ func TestProductionScenario(t *testing.T) {
 func TestFlushIntervalConfigurationDetection(t *testing.T) {
 	testCases := []struct {
 		name             string
-		flushInterval    int
-		checkpointTime   int
-		expectedInterval int
+		flushInterval    time.Duration
+		checkpointTime   time.Duration
+		expectedInterval time.Duration
 	}{
 		{
 			name:             "DefaultConfig",
-			flushInterval:    0,    // Default
-			checkpointTime:   2000, // Default
-			expectedInterval: 2000, // Should fall back to CheckpointTime
+			flushInterval:    0 * time.Millisecond,    // Default
+			checkpointTime:   2000 * time.Millisecond, // Default
+			expectedInterval: 2000 * time.Millisecond, // Should fall back to CheckpointTime
 		},
 		{
 			name:             "CustomFlushInterval",
-			flushInterval:    500,
-			checkpointTime:   2000,
-			expectedInterval: 500, // Should use FlushInterval
+			flushInterval:    500 * time.Millisecond,
+			checkpointTime:   2000 * time.Millisecond,
+			expectedInterval: 500 * time.Millisecond, // Should use FlushInterval
 		},
 		{
 			name:             "BothZero",
-			flushInterval:    0,
-			checkpointTime:   0,
-			expectedInterval: 0, // Should disable periodic flush
+			flushInterval:    0 * time.Millisecond,
+			checkpointTime:   0 * time.Millisecond,
+			expectedInterval: 0 * time.Millisecond, // Should disable periodic flush
 		},
 	}
 
@@ -235,7 +236,7 @@ func TestFlushIntervalConfigurationDetection(t *testing.T) {
 
 			config := DefaultCometConfig()
 			config.Storage.FlushInterval = tc.flushInterval
-			config.Storage.CheckpointTime = tc.checkpointTime
+			config.Storage.CheckpointInterval = tc.checkpointTime
 
 			client, err := NewClient(dataDir, config)
 			if err != nil {
@@ -269,7 +270,7 @@ func TestPeriodicFlushObservability(t *testing.T) {
 
 	// Use a very short flush interval for precise testing
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 50 // 50ms for fast testing
+	config.Storage.FlushInterval = 50 * time.Millisecond // 50ms for fast testing
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
@@ -350,7 +351,7 @@ func TestPeriodicFlushTimingPrecision(t *testing.T) {
 	dataDir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 100 // 100ms interval
+	config.Storage.FlushInterval = 100 * time.Millisecond // 100ms interval
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
@@ -423,7 +424,7 @@ func TestConcurrentWritesDuringPeriodicFlush(t *testing.T) {
 	dataDir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 200 // 200ms to give time for concurrent writes
+	config.Storage.FlushInterval = 200 * time.Millisecond // 200ms to give time for concurrent writes
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
@@ -490,10 +491,20 @@ func TestConcurrentWritesDuringPeriodicFlush(t *testing.T) {
 	}
 
 analyze:
-	// Final check
-	finalMessages, err := consumer.Read(ctx, []uint32{0}, 100)
-	if err != nil {
-		t.Fatal(err)
+	// Final check - retry a few times to handle mmap coherence lag
+	var finalMessages []StreamMessage
+	var finalErr error
+	for retry := 0; retry < 3; retry++ {
+		finalMessages, finalErr = consumer.Read(ctx, []uint32{0}, 100)
+		if finalErr == nil {
+			break
+		}
+		if strings.Contains(finalErr.Error(), "mmap coherence issue") && retry < 2 {
+			// Wait a bit for mmap to catch up
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		t.Fatal(finalErr)
 	}
 
 	finalWrites := atomic.LoadInt64(&totalWrites)

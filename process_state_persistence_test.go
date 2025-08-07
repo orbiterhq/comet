@@ -18,9 +18,9 @@ func TestProcessStatePersistence(t *testing.T) {
 
 	// Configure for frequent rotations to test file boundary handling
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 10      // 10ms flush
-	config.Storage.MaxFileSize = 10 * 1024 // 10KB files to force rotations
-	config.Indexing.BoundaryInterval = 10  // Index every 10 entries
+	config.Storage.FlushInterval = 10 * time.Millisecond // 10ms flush
+	config.Storage.MaxFileSize = 10 * 1024               // 10KB files to force rotations
+	config.Indexing.BoundaryInterval = 10                // Index every 10 entries
 
 	// Phase 1: Start writer process that will run continuously
 	t.Log("=== PHASE 1: Starting continuous writer ===")

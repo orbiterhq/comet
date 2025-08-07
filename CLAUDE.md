@@ -83,6 +83,23 @@ This architecture ensures:
 
 For a more detailed explanation, please refer to the [Architecture](ARCHITECTURE.md) document.
 
+### Consumer Offset Storage
+
+**IMPORTANT**: Consumer offsets are stored separately from the writer's index to maintain architectural separation:
+
+- **Location**: `shard-XXXX/offsets.state` (memory-mapped file)
+- **Structure**: Fixed-size slots for up to 512 consumer groups per shard
+- **Access**: Lock-free using atomic operations for multi-process safety
+- **Migration**: Automatically migrates from old `offsets.bin` format if found
+
+Key points:
+
+- Consumers NEVER write to the writer's `index.bin` file
+- Offsets are immediately visible across processes (memory-mapped)
+- No explicit sync needed - OS handles memory-mapped file persistence
+- Consumer group names limited to 48 bytes
+- Maximum 512 consumer groups per shard
+
 ## Configuration
 
 The package uses a hierarchical configuration structure:
@@ -139,3 +156,4 @@ deadcode -test ./...
 - Tests should be comprehensive and cover failure modes, resource exhaustion, and the _critical_ edge cases.
 - To run the benchmarks we care _most_ about not regressing, use `mise run bench:core`
 - Run `go vet ./...`, `go test ./...`, `go test ./... -bench=. -benchmem` after significant changes.
+- Use `COMET_DEBUG=1` to enable debug logging.

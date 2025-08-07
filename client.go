@@ -74,11 +74,11 @@ type IndexingConfig struct {
 
 // StorageConfig controls file storage behavior
 type StorageConfig struct {
-	MaxFileSize       int64 `json:"max_file_size"`      // Maximum size per file before rotation
-	CheckpointTime    int   `json:"checkpoint_time_ms"` // Checkpoint every N milliseconds
-	CheckpointEntries int   `json:"checkpoint_entries"` // Checkpoint every N entries (default: 100000)
-	FlushInterval     int   `json:"flush_interval_ms"`  // Flush to OS cache every N ms (memory management, not durability)
-	FlushEntries      int   `json:"flush_entries"`      // Flush to OS cache every N entries (memory management, not durability)
+	MaxFileSize        int64         `json:"max_file_size"`       // Maximum size per file before rotation
+	CheckpointInterval time.Duration `json:"checkpoint_interval"` // Checkpoint interval
+	CheckpointEntries  int           `json:"checkpoint_entries"`  // Checkpoint every N entries (default: 100000)
+	FlushInterval      time.Duration `json:"flush_interval"`      // Flush to OS cache interval (memory management, not durability)
+	FlushEntries       int           `json:"flush_entries"`       // Flush to OS cache every N entries (memory management, not durability)
 }
 
 // ConcurrencyConfig controls multi-process behavior
@@ -163,11 +163,11 @@ func DefaultCometConfig() CometConfig {
 
 		// Storage - optimized for 256MB files
 		Storage: StorageConfig{
-			MaxFileSize:       maxFileSize,
-			CheckpointTime:    2000,   // Checkpoint every 2 seconds
-			CheckpointEntries: 100000, // Checkpoint every 100k entries
-			FlushEntries:      50000,  // Flush every 50k entries (~5MB) - optimal for large batches
-			FlushInterval:     1000,   // Flush and make data visible every 1 second
+			MaxFileSize:        maxFileSize,
+			CheckpointInterval: 2 * time.Second, // Checkpoint every 2 seconds
+			CheckpointEntries:  100000,          // Checkpoint every 100k entries
+			FlushEntries:       50000,           // Flush every 50k entries (~5MB) - optimal for large batches
+			FlushInterval:      1 * time.Second, // Flush and make data visible every 1 second
 		},
 
 		// Concurrency - single-process mode by default
@@ -190,8 +190,12 @@ func DefaultCometConfig() CometConfig {
 
 		// Logging
 		Log: LogConfig{
-			Level:       "info",
-			EnableDebug: false,
+			Level: func() string {
+				if os.Getenv("COMET_DEBUG") != "" && os.Getenv("COMET_DEBUG") != "0" && strings.ToLower(os.Getenv("COMET_DEBUG")) != "false" {
+					return "debug"
+				}
+				return "info"
+			}(),
 		},
 	}
 
@@ -225,11 +229,11 @@ func HighCompressionConfig() CometConfig {
 // HighThroughputConfig returns a config optimized for write throughput
 func HighThroughputConfig() CometConfig {
 	cfg := DefaultCometConfig()
-	cfg.Storage.CheckpointTime = 10000            // Less frequent checkpoints
-	cfg.Storage.CheckpointEntries = 200000        // Checkpoint every 200k entries (infrequent syncs)
-	cfg.Storage.FlushEntries = 100000             // Flush every 100k entries for large batch throughput
-	cfg.Compression.MinCompressSize = 1024 * 1024 // Only compress very large entries
-	cfg.Indexing.BoundaryInterval = 1000          // Less frequent index entries
+	cfg.Storage.CheckpointInterval = 10 * time.Second // Less frequent checkpoints
+	cfg.Storage.CheckpointEntries = 200000            // Checkpoint every 200k entries (infrequent syncs)
+	cfg.Storage.FlushEntries = 100000                 // Flush every 100k entries for large batch throughput
+	cfg.Compression.MinCompressSize = 1024 * 1024     // Only compress very large entries
+	cfg.Indexing.BoundaryInterval = 1000              // Less frequent index entries
 	// Reader config is set to defaults in DefaultReaderConfig()
 	return cfg
 }
@@ -268,7 +272,7 @@ func OptimizedConfig(shardCount int, memoryBudget int) CometConfig {
 
 	// For high shard counts, reduce checkpoint time to avoid memory pressure
 	if shardCount >= 256 {
-		cfg.Storage.CheckpointTime = 5000 // 5 seconds for many shards
+		cfg.Storage.CheckpointInterval = 5 * time.Second // 5 seconds for many shards
 	}
 
 	return cfg
@@ -279,8 +283,8 @@ func validateConfig(cfg *CometConfig) error {
 	if cfg.Storage.MaxFileSize <= 0 {
 		cfg.Storage.MaxFileSize = 256 << 20 // 256MB default
 	}
-	if cfg.Storage.CheckpointTime <= 0 {
-		cfg.Storage.CheckpointTime = 2000 // 2 seconds default
+	if cfg.Storage.CheckpointInterval <= 0 {
+		cfg.Storage.CheckpointInterval = 2 * time.Second // 2 seconds default
 	}
 	if cfg.Storage.CheckpointEntries <= 0 {
 		cfg.Storage.CheckpointEntries = 100000 // 100k entries default
@@ -451,17 +455,29 @@ type Client struct {
 // Fields ordered for optimal memory alignment (64-bit words first)
 type Shard struct {
 	// 64-bit aligned fields first (8 bytes each)
-	readerCount        int64     // Lock-free reader tracking
-	nextEntryNumber    int64     // Next entry number to assign (includes pending)
-	pendingWriteOffset int64     // Current write offset including pending writes
-	lastCheckpoint     time.Time // 64-bit on most systems
+	readerCount int64 // Lock-free reader tracking
+
+	// Entry number tracking - critical for consistency:
+	// - nextEntryNumber: Next entry number to allocate. Incremented when entries
+	//   are assigned numbers, before they're written anywhere.
+	// - lastWrittenEntryNumber: Last entry that has been written to the buffered
+	//   writer. These entries are in OS buffers but NOT yet durable.
+	// - index.CurrentEntryNumber: Last entry that has been synced to disk and is
+	//   durable. Only updated after fsync. This is what consumers can safely read.
+	nextEntryNumber        int64 // Next entry number to allocate
+	lastWrittenEntryNumber int64 // Last entry written to OS buffers (not durable)
+
+	pendingWriteOffset int64 // Current write offset including pending writes
+	lastCheckpoint     int64 // Unix nanoseconds of last checkpoint
+	lastIndexReload    int64 // Unix nanoseconds when index was last reloaded from disk
 	// lastMmapCheck removed - processes own their shards exclusively
 
 	// Pointers (8 bytes each on 64-bit)
-	dataFile   *os.File      // Data file handle
-	writer     *bufio.Writer // Buffered writer
-	compressor *zstd.Encoder // Compression engine
-	index      *ShardIndex   // Shard metadata
+	dataFile   *os.File            // Data file handle
+	writer     *bufio.Writer       // Buffered writer
+	compressor *zstd.Encoder       // Compression engine
+	index      *ShardIndex         // Shard metadata
+	offsetMmap *ConsumerOffsetMmap // Memory-mapped consumer offset storage
 	// Lock files removed - processes own their shards exclusively
 	state  *CometState // Unified memory-mapped state for all metrics and coordination
 	logger Logger      // Logger for this shard
@@ -623,11 +639,6 @@ func NewClient(dataDir string, config ...CometConfig) (*Client, error) {
 	// Create logger based on config
 	logger := createLogger(cfg.Log)
 
-	// Set debug mode from config
-	if cfg.Log.EnableDebug || os.Getenv("COMET_DEBUG") != "" {
-		SetDebug(true)
-	}
-
 	c := &Client{
 		dataDir:   dataDir,
 		config:    cfg,
@@ -758,7 +769,7 @@ func (c *Client) Sync(ctx context.Context) error {
 		shard.updateMmapState()
 
 		shard.writesSinceCheckpoint = 0
-		shard.lastCheckpoint = time.Now()
+		shard.lastCheckpoint = time.Now().UnixNano()
 		shard.mu.Unlock()
 
 		// Persist the index - this will also update metrics
@@ -795,7 +806,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	c.mu.RUnlock()
 
 	if exists {
-		if c.logger != nil {
+		if c.logger != nil && IsDebug() {
 			c.logger.Debug("getOrCreateShard: shard already exists in memory",
 				"shardID", shardID,
 				"pid", processID)
@@ -857,7 +868,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 				Nodes:         make([]EntryIndexNode, 0),
 			},
 		},
-		lastCheckpoint: time.Now(),
+		lastCheckpoint: time.Now().UnixNano(),
 	}
 
 	// Initialize unified state (memory-mapped in multi-process mode, in-memory otherwise)
@@ -882,6 +893,19 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 		return nil, err
 	}
 
+	// Initialize memory-mapped consumer offset storage
+	offsetMmap, err := NewConsumerOffsetMmap(shardDir, shardID)
+	if err != nil {
+		// Log error but continue - offsets will be in-memory only
+		if c.logger != nil {
+			c.logger.Warn("Failed to initialize consumer offset mmap, using in-memory only",
+				"shardID", shardID,
+				"error", err)
+		}
+	} else {
+		shard.offsetMmap = offsetMmap
+	}
+
 	if c.logger != nil {
 		c.logger.Debug("getOrCreateShard: after loadIndex",
 			"shardID", shardID,
@@ -891,6 +915,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 
 	// Initialize nextEntryNumber from index (what's on disk)
 	shard.nextEntryNumber = shard.index.CurrentEntryNumber
+	shard.lastWrittenEntryNumber = shard.index.CurrentEntryNumber
 	shard.pendingWriteOffset = shard.index.CurrentWriteOffset
 
 	// Synchronize state with index if index has data and state is uninitialized
@@ -1074,6 +1099,13 @@ func (s *Shard) appendEntries(entries [][]byte, clientMetrics *ClientMetrics, co
 
 	// Track metrics after successful write
 	s.trackWriteMetrics(startTime, entries, compressedEntries, clientMetrics)
+
+	// Update lastWrittenEntryNumber to reflect what's been written to the buffer
+	// Note: This is in the writer's buffer, not necessarily on disk yet
+	if len(writeReq.IDs) > 0 {
+		lastID := writeReq.IDs[len(writeReq.IDs)-1]
+		atomic.StoreInt64(&s.lastWrittenEntryNumber, lastID.EntryNumber+1)
+	}
 
 	// Post-write operations (checkpointing, rotation check)
 	if err := s.performPostWriteOperations(config, clientMetrics); err != nil {
@@ -1449,7 +1481,7 @@ func (s *Shard) performPostWriteOperations(config *CometConfig, clientMetrics *C
 // shouldCheckpoint determines if checkpoint is needed
 func (s *Shard) shouldCheckpoint(config *CometConfig) bool {
 	// Time-based checkpoint
-	if time.Since(s.lastCheckpoint) > time.Duration(config.Storage.CheckpointTime)*time.Millisecond {
+	if time.Now().UnixNano()-s.lastCheckpoint > int64(config.Storage.CheckpointInterval) {
 		return true
 	}
 
@@ -1481,7 +1513,7 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 	// Clone index while holding lock
 	indexCopy := s.cloneIndex()
 	s.writesSinceCheckpoint = 0
-	s.lastCheckpoint = time.Now()
+	s.lastCheckpoint = time.Now().UnixNano()
 	s.mu.Unlock()
 
 	// Return index to pool after use
@@ -1495,6 +1527,7 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 		clientMetrics.IndexPersistErrors.Add(1)
 		clientMetrics.ErrorCount.Add(1)
 	} else {
+		// LastIndexUpdate is now updated inside saveBinaryIndex
 		if clientMetrics != nil {
 			clientMetrics.CheckpointsWritten.Add(1)
 		}
@@ -1504,6 +1537,8 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 			atomic.StoreInt64(&state.LastCheckpointNanos, time.Now().UnixNano())
 			checkpointDuration := time.Since(checkpointStart).Nanoseconds()
 			atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
+
+			// LastIndexUpdate is now updated inside saveBinaryIndex
 		}
 	}
 }
@@ -1555,13 +1590,14 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 
 	// Take locks for the critical section
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Note: We'll unlock manually after persisting the index
 
 	s.writeMu.Lock()
 
 	// Double-check rotation is still needed
 	if s.pendingWriteOffset < config.Storage.MaxFileSize {
 		s.writeMu.Unlock()
+		s.mu.Unlock() // Must unlock before returning
 		newFile.Close()
 		os.Remove(newFilePath)
 		return nil
@@ -1576,6 +1612,16 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	oldFile := s.dataFile
 	oldWriter := s.writer
 
+	// Flush old writer BEFORE swapping to ensure all data is in the file
+	// This ensures our entry count is accurate
+	if oldWriter != nil {
+		if err := oldWriter.Flush(); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("Failed to flush before rotation", "error", err)
+			}
+		}
+	}
+
 	// Quick swap to new file (fast operation)
 	s.dataFile = newFile
 	bufferSize := 64 * 1024 // 64KB buffer
@@ -1587,13 +1633,14 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 		current.EndTime = time.Now()
 		current.EndOffset = currentWriteOffset
 		// Calculate actual entry count for this file
-		current.Entries = s.nextEntryNumber - current.StartEntry
+		// After flush, lastWrittenEntryNumber reflects what's in the file
+		current.Entries = atomic.LoadInt64(&s.lastWrittenEntryNumber) - current.StartEntry
 	}
 
 	// Add new file to index
 	newFileInfo := FileInfo{
 		Path:       newFilePath,
-		StartEntry: s.nextEntryNumber, // Use nextEntryNumber for pending writes
+		StartEntry: atomic.LoadInt64(&s.lastWrittenEntryNumber), // Start from last written entry
 		StartTime:  time.Now(),
 		Entries:    0,
 		EndOffset:  0,
@@ -1620,14 +1667,7 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 	s.writeMu.Unlock()
 
 	// Do slow I/O operations AFTER releasing write lock (still holding main lock)
-	if oldWriter != nil {
-		if err := oldWriter.Flush(); err != nil {
-			// Log but don't fail - data is already written
-			if s.logger != nil {
-				s.logger.Warn("Failed to flush old writer during rotation", "error", err)
-			}
-		}
-	}
+	// Note: We already flushed the writer before swapping files
 
 	if oldFile != nil {
 		// For now, do this synchronously to fix tests
@@ -1650,8 +1690,27 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 		}
 	}
 
-	// Skip checkpoint during rotation to avoid deadlock
-	// The periodic flush and regular checkpoints will handle persistence
+	// Persist the index with new file info to avoid reader confusion
+	// Clone the index while we still hold the main lock
+	indexCopy := s.cloneIndex()
+	s.mu.Unlock() // Release main lock before doing I/O
+
+	// Return index to pool after use
+	defer returnIndexToPool(indexCopy)
+
+	// Persist the index with the new file information
+	s.indexMu.Lock()
+	indexErr := s.saveBinaryIndex(indexCopy)
+	s.indexMu.Unlock()
+
+	if indexErr != nil {
+		if s.logger != nil {
+			s.logger.Warn("Failed to persist index after rotation", "error", indexErr)
+		}
+		// Don't fail the rotation - data is safe, just index update failed
+	} else {
+		// LastIndexUpdate is now updated inside saveBinaryIndex
+	}
 
 	// Track rotation time
 	if state := s.state; state != nil {
@@ -1729,8 +1788,8 @@ func (s *Shard) updateMmapState() {
 		atomic.StoreUint64(&state.ActiveFileIndex, uint64(len(s.index.Files)-1))
 	}
 
-	// Update timestamp to signal state change
-	state.SetLastIndexUpdate(time.Now().UnixNano())
+	// Note: LastIndexUpdate is now ONLY updated after index persistence
+	// to ensure readers always see consistent state on disk
 
 	// For compatibility with the simplified state update
 	s.updateLastEntryState()
@@ -1927,15 +1986,27 @@ func (s *Shard) openDataFileWithConfig(shardDir string) error {
 							break
 						}
 					}
-					s.index.CurrentEntryNumber = lastFile.StartEntry + entryCount
-					// Also update nextEntryNumber to stay in sync
-					s.nextEntryNumber = s.index.CurrentEntryNumber
+					// Update entry counters to reflect what was found on disk during recovery
+					// For true crash recovery: only update file metadata, not CurrentEntryNumber
+					// CurrentEntryNumber tracks only explicitly durable state
+					s.nextEntryNumber = lastFile.StartEntry + entryCount
+					s.lastWrittenEntryNumber = lastFile.StartEntry + entryCount
+					// Note: CurrentEntryNumber is NOT updated - it reflects last known durable state
+					if s.logger != nil {
+						s.logger.Info("CRASH RECOVERY: Found extra entries on disk",
+							"shard", s.shardID,
+							"currentEntryNumber", s.index.CurrentEntryNumber,
+							"nextEntryNumber", s.nextEntryNumber,
+							"startEntry", lastFile.StartEntry,
+							"entryCount", entryCount)
+					}
 					if s.logger != nil {
 						s.logger.Info("Updated file entry count after crash recovery",
 							"file", lastFile.Path,
 							"entries", entryCount,
 							"shard", s.shardID)
 					}
+					// LastIndexUpdate will be updated when persistIndex is called
 				}
 			}
 		}
@@ -1969,6 +2040,14 @@ func (s *Shard) loadIndex() error {
 	index, err := s.loadBinaryIndexWithConfig(s.index.BoundaryInterval, int(s.index.BinaryIndex.MaxNodes))
 	if err != nil {
 		return fmt.Errorf("failed to load binary index: %w", err)
+	}
+
+	if s.logger != nil && IsDebug() {
+		s.logger.Debug("[LOAD] Loaded index from disk",
+			"shard", s.shardID,
+			"oldCurrentEntryNumber", s.index.CurrentEntryNumber,
+			"newCurrentEntryNumber", index.CurrentEntryNumber,
+			"numFiles", len(index.Files))
 	}
 
 	// Preserve certain fields that should not be overwritten
@@ -2016,11 +2095,7 @@ func (s *Shard) persistIndex() error {
 		return fmt.Errorf("failed to persist index: %w", err)
 	}
 
-	// Update mmap timestamp to signal index change to other processes
-	if state != nil {
-		state.SetLastIndexUpdate(time.Now().UnixNano())
-		atomic.AddUint64(&state.IndexPersistCount, 1)
-	}
+	// LastIndexUpdate is now updated inside saveBinaryIndex
 
 	return nil
 }
@@ -2082,8 +2157,9 @@ func (s *Shard) recoverFromCrash() error {
 		lastFile.Entries = entryCount
 		s.index.CurrentWriteOffset = actualSize
 		s.index.CurrentEntryNumber = lastFile.StartEntry + entryCount
-		// Keep nextEntryNumber in sync
+		// Keep nextEntryNumber and lastWrittenEntryNumber in sync
 		s.nextEntryNumber = s.index.CurrentEntryNumber
+		s.lastWrittenEntryNumber = s.index.CurrentEntryNumber
 	}
 
 	return nil
@@ -2304,7 +2380,54 @@ func (c *Client) Close() error {
 		// Wait for background operations to complete BEFORE acquiring locks
 		shard.wg.Wait()
 
+		// CRITICAL: Flush writer buffer to disk to preserve data even during crash
+		// This ensures buffered writes make it to the file before we close
+		shard.writeMu.Lock()
+		if shard.writer != nil {
+			if err := shard.writer.Flush(); err != nil {
+				if c.logger != nil {
+					c.logger.Error("Failed to flush writer during close",
+						"shard", shard.shardID,
+						"error", err)
+				}
+			}
+		} else if c.logger != nil && IsDebug() {
+			c.logger.Debug("Writer is nil during close", "shard", shard.shardID)
+		}
+		shard.writeMu.Unlock()
+
 		shard.mu.Lock()
+
+		// After flushing, sync the data and update the index to make it durable
+		if shard.dataFile != nil {
+			if err := shard.dataFile.Sync(); err == nil {
+				// Check file size after sync
+				if stat, err := shard.dataFile.Stat(); err == nil && c.logger != nil && IsDebug() {
+					c.logger.Debug("File state after sync during close",
+						"shard", shard.shardID,
+						"fileSize", stat.Size(),
+						"pendingWriteOffset", shard.pendingWriteOffset)
+				}
+				// Update CurrentEntryNumber to reflect what's now durable
+				shard.index.CurrentEntryNumber = atomic.LoadInt64(&shard.lastWrittenEntryNumber)
+
+				// CRITICAL: Update CometState LastEntryNumber so other processes can see the final state
+				if shard.state != nil && shard.index.CurrentEntryNumber > 0 {
+					atomic.StoreInt64(&shard.state.LastEntryNumber, shard.index.CurrentEntryNumber-1)
+				}
+
+				// Update file metadata to reflect actual state
+				if len(shard.index.Files) > 0 {
+					current := &shard.index.Files[len(shard.index.Files)-1]
+					if stat, err := shard.dataFile.Stat(); err == nil {
+						current.EndOffset = stat.Size()
+						current.EndTime = time.Now()
+						current.Entries = shard.index.CurrentEntryNumber - current.StartEntry
+						shard.index.CurrentWriteOffset = stat.Size()
+					}
+				}
+			}
+		}
 
 		// Final checkpoint - do it directly since we already hold the lock
 		// Always checkpoint on close to ensure index is persisted
@@ -2312,10 +2435,10 @@ func (c *Client) Close() error {
 			// Track checkpoint timing
 			checkpointStart := time.Now()
 
-			// Clone index while holding lock
+			// Clone index while holding lock (now includes all entries)
 			indexCopy := shard.cloneIndex()
 			shard.writesSinceCheckpoint = 0
-			shard.lastCheckpoint = time.Now()
+			shard.lastCheckpoint = time.Now().UnixNano()
 
 			// Persist index outside lock
 			shard.mu.Unlock() // Release for the persistence operation
@@ -2331,6 +2454,11 @@ func (c *Client) Close() error {
 			if err != nil {
 				c.metrics.IndexPersistErrors.Add(1)
 				c.metrics.ErrorCount.Add(1)
+				if c.logger != nil {
+					c.logger.Error("Failed to persist index during close",
+						"shard", shard.shardID,
+						"error", err)
+				}
 			} else {
 				c.metrics.CheckpointsWritten.Add(1)
 				// Track checkpoint metrics in state
@@ -2339,6 +2467,8 @@ func (c *Client) Close() error {
 					atomic.StoreInt64(&state.LastCheckpointNanos, time.Now().UnixNano())
 					checkpointDuration := time.Since(checkpointStart).Nanoseconds()
 					atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
+
+					// LastIndexUpdate is now updated inside saveBinaryIndex
 				}
 			}
 		}
@@ -2346,21 +2476,7 @@ func (c *Client) Close() error {
 		// Acquire write lock to ensure no writes are in progress
 		shard.writeMu.Lock()
 
-		// Close direct writer and sync to disk
-		if shard.writer != nil {
-			shard.writer.Flush()
-		}
-
-		// Ensure data is persisted to disk before closing
-		if shard.dataFile != nil {
-			syncStart := time.Now()
-			if err := shard.dataFile.Sync(); err == nil && shard.state != nil {
-				// Track sync latency during close
-				syncDuration := time.Since(syncStart).Nanoseconds()
-				atomic.AddInt64(&shard.state.SyncLatencyNanos, syncDuration)
-				atomic.AddUint64(&shard.state.SyncCount, 1)
-			}
-		}
+		// Writer already flushed and synced above, no need to do it again
 
 		// Close compressor
 		if shard.compressor != nil {
@@ -2376,6 +2492,16 @@ func (c *Client) Close() error {
 		shard.mu.Unlock()
 
 		// Lock files removed - processes own their shards exclusively
+
+		// Close consumer offset mmap
+		if shard.offsetMmap != nil {
+			if err := shard.offsetMmap.Close(); err != nil && c.logger != nil {
+				c.logger.Warn("Failed to close consumer offset mmap",
+					"shard", shard.shardID,
+					"error", err)
+			}
+			shard.offsetMmap = nil
+		}
 
 		// Now safe to unmap unified state
 		if shard.stateData != nil {
@@ -3247,25 +3373,56 @@ func (s *Shard) loadIndexWithRecovery() error {
 		return fmt.Errorf("failed to create shard directory: %w", err)
 	}
 
-	// First try to load normally
-	err := s.loadIndex()
-	if err == nil {
-		// Check if we need to rebuild despite successful load
-		// This handles the case where index is missing but data files exist
-		dataFiles, _ := filepath.Glob(filepath.Join(shardDir, "log-*.comet"))
-		if len(dataFiles) > 0 && len(s.index.Files) == 0 {
-			// We have data files but no index - rebuild needed
-			if s.logger != nil {
-				s.logger.Info("Index is empty but data files exist, rebuilding",
-					"shard", s.shardID,
-					"dataFiles", len(dataFiles))
+	// First check if we should try to recover
+	shouldRecover := false
+	if _, err := os.Stat(s.indexPath); os.IsNotExist(err) {
+		// Index file doesn't exist
+		// Check if state indicates there should be entries
+		if s.state != nil {
+			lastEntry := atomic.LoadInt64(&s.state.LastEntryNumber)
+			if lastEntry >= 0 {
+				// State indicates entries exist but no index file
+				shouldRecover = true
+				if s.logger != nil && IsDebug() {
+					s.logger.Debug("Index file missing but state shows entries, will recover",
+						"shard", s.shardID,
+						"lastEntry", lastEntry)
+				}
 			}
-			// Fall through to rebuild logic
-		} else {
-			return nil
 		}
-	} else if os.IsNotExist(err) {
-		// If it's just a missing file and no data files, that's OK for a new shard
+		// Also check for data files
+		dataFiles, _ := filepath.Glob(filepath.Join(shardDir, "log-*.comet"))
+		if len(dataFiles) > 0 {
+			shouldRecover = true
+		}
+	}
+
+	// If we don't need to recover, try normal load
+	if !shouldRecover {
+		err := s.loadIndex()
+		if err == nil {
+			// Check if we need to rebuild despite successful load
+			// This handles the case where index is missing but data files exist
+			dataFiles, _ := filepath.Glob(filepath.Join(shardDir, "log-*.comet"))
+			if len(dataFiles) > 0 && len(s.index.Files) == 0 {
+				// We have data files but no index - rebuild needed
+				if s.logger != nil {
+					s.logger.Info("Index is empty but data files exist, rebuilding",
+						"shard", s.shardID,
+						"dataFiles", len(dataFiles))
+				}
+				shouldRecover = true
+			} else {
+				return nil
+			}
+		} else if !os.IsNotExist(err) {
+			// Some other error occurred
+			return err
+		}
+	}
+
+	// If we don't need recovery and it's just a missing file with no data, that's OK
+	if !shouldRecover {
 		dataFiles, _ := filepath.Glob(filepath.Join(shardDir, "log-*.comet"))
 		if len(dataFiles) == 0 {
 			return nil
@@ -3273,11 +3430,10 @@ func (s *Shard) loadIndexWithRecovery() error {
 		// Fall through to rebuild if we have data files
 	}
 
-	// Log the error
+	// Log recovery attempt
 	if s.logger != nil {
-		s.logger.Warn("Failed to load index, attempting recovery",
-			"shard", s.shardID,
-			"error", err)
+		s.logger.Info("Attempting index recovery",
+			"shard", s.shardID)
 	}
 
 	// Track recovery attempt
@@ -3423,7 +3579,7 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 	flushInterval := config.Storage.FlushInterval
 	if flushInterval <= 0 {
 		// Default to checkpoint interval if not specified
-		flushInterval = config.Storage.CheckpointTime
+		flushInterval = config.Storage.CheckpointInterval
 	}
 	if flushInterval <= 0 {
 		// No periodic flush needed
@@ -3434,35 +3590,63 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 	go func() {
 		defer s.wg.Done()
 
-		ticker := time.NewTicker(time.Duration(flushInterval) * time.Millisecond)
+		ticker := time.NewTicker(flushInterval)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
 				// Perform both data flush AND index update to make data visible to consumers
-				s.mu.Lock()
+				// CRITICAL: Take locks in same order as write path (writeMu first, then mu)
+				// to prevent deadlocks with concurrent writes
 
 				// Flush buffered writes first
+				s.writeMu.Lock()
+				var flushErr error
 				if s.writer != nil {
-					s.writeMu.Lock()
-					if err := s.writer.Flush(); err != nil {
-						s.writeMu.Unlock()
-						s.mu.Unlock()
-						if s.logger != nil {
-							s.logger.Error("Periodic flush failed",
-								"shard", s.shardID,
-								"error", err)
-						}
-						continue
+					flushErr = s.writer.Flush()
+				}
+				s.writeMu.Unlock()
+
+				if flushErr != nil {
+					if s.logger != nil {
+						s.logger.Error("Periodic flush failed",
+							"shard", s.shardID,
+							"error", flushErr)
 					}
-					s.writeMu.Unlock()
+					continue
 				}
 
+				// Now take mu lock for index updates
+				s.mu.Lock()
+
 				// Critical: Update index to make flushed data visible to consumers
-				// This is what was missing - periodic flush wasn't updating the index!
 				oldCurrentEntry := s.index.CurrentEntryNumber
-				s.index.CurrentEntryNumber = s.nextEntryNumber
+
+				// Sync to ensure data is durable before updating CurrentEntryNumber
+				if s.dataFile != nil {
+					syncStart := time.Now()
+					if err := s.dataFile.Sync(); err == nil {
+						// Only update CurrentEntryNumber after successful sync
+						// Use lastWrittenEntryNumber which reflects what's actually been written
+						s.index.CurrentEntryNumber = atomic.LoadInt64(&s.lastWrittenEntryNumber)
+
+						if state := s.state; state != nil {
+							// Update LastEntryNumber so other processes can see the new entries
+							if s.index.CurrentEntryNumber > 0 {
+								atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber-1)
+							}
+
+							syncDuration := time.Since(syncStart).Nanoseconds()
+							atomic.AddInt64(&state.SyncLatencyNanos, syncDuration)
+							atomic.AddUint64(&state.SyncCount, 1)
+						}
+					} else if s.logger != nil {
+						s.logger.Error("Periodic sync failed",
+							"shard", s.shardID,
+							"error", err)
+					}
+				}
 
 				// Update offsets to reflect actual file state
 				if s.dataFile != nil {
@@ -3476,6 +3660,7 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 							current := &s.index.Files[len(s.index.Files)-1]
 							current.EndOffset = s.index.CurrentWriteOffset
 							current.EndTime = time.Now()
+							// Use CurrentEntryNumber (durable entries) not lastWrittenEntryNumber (includes buffered)
 							current.Entries = s.index.CurrentEntryNumber - current.StartEntry
 						}
 					}

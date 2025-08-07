@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // TestIndexOnlyTracksDurableState verifies that the index only reflects what has been explicitly synced
@@ -13,7 +14,7 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 	dataDir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 1000 // Don't auto-flush
+	config.Storage.FlushInterval = 1 * time.Second // Don't auto-flush
 
 	// Create client and write some data
 	client, err := NewClient(dataDir, config)
@@ -66,13 +67,19 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 	// Check index state - it should NOT show unflushed entries
 	shard.mu.RLock()
 	entriesBeforeClose := shard.index.CurrentEntryNumber
+	nextEntryNumber := shard.nextEntryNumber
 	shard.mu.RUnlock()
 
-	t.Logf("Before close (unflushed): CurrentEntryNumber = %d", entriesBeforeClose)
+	t.Logf("Before close (unflushed): CurrentEntryNumber = %d, nextEntryNumber = %d", entriesBeforeClose, nextEntryNumber)
 
 	// EXPECTATION: Index should still show 5, not 10
+	// nextEntryNumber tracks all writes (including pending), CurrentEntryNumber tracks durable state
 	if entriesBeforeClose != 5 {
 		t.Errorf("Index incorrectly shows unflushed entries: expected 5, got %d", entriesBeforeClose)
+	}
+
+	if nextEntryNumber != 10 {
+		t.Errorf("nextEntryNumber should track all writes: expected 10, got %d", nextEntryNumber)
 	}
 
 	// Close the client - this will flush buffers as part of graceful shutdown
@@ -98,10 +105,10 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 
 	t.Logf("After reopen: CurrentEntryNumber = %d", entriesAfterReopen)
 
-	// EXPECTATION: Should see all 10 entries because Close() flushes buffers
-	// This is the correct behavior - we only lose data on hard crashes
+	// After close and reopen, we should see all data since Close() flushes buffers
+	// Close() performs graceful shutdown which makes all pending writes durable
 	if entriesAfterReopen != 10 {
-		t.Errorf("After recovery, expected 10 entries (all flushed on close), got %d", entriesAfterReopen)
+		t.Errorf("After clean shutdown and recovery, expected 10 entries (all flushed), got %d", entriesAfterReopen)
 	}
 
 	// Verify consumer can read all entries
@@ -113,11 +120,13 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 		t.Fatalf("Failed to read: %v", err)
 	}
 
-	if len(messages) != 10 {
-		t.Errorf("Expected to read 10 messages, got %d", len(messages))
+	// Now the index shows all entries since Close() flushed everything
+	// And we can read all 10 messages (5 flushed + 5 unflushed that were flushed during Close)
+	if int64(len(messages)) != entriesAfterReopen {
+		t.Errorf("Mismatch: index shows %d entries but %d messages are readable", entriesAfterReopen, len(messages))
 	}
 
-	// Verify we got both flushed and unflushed messages
+	// Verify we got all messages (both originally flushed and those flushed during Close)
 	for i, msg := range messages {
 		var expected string
 		if i < 5 {
@@ -147,7 +156,7 @@ func TestConsumerNeverSeesUnflushedData(t *testing.T) {
 	dataDir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 1000 // Don't auto-flush
+	config.Storage.FlushInterval = 1 * time.Second // Don't auto-flush
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
@@ -228,7 +237,7 @@ func TestAppendReturnsPendingEntryNumbers(t *testing.T) {
 	dataDir := t.TempDir()
 
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 1000 // Don't auto-flush
+	config.Storage.FlushInterval = 1 * time.Second // Don't auto-flush
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {

@@ -584,8 +584,8 @@ func TestWriteMetrics(t *testing.T) {
 func TestIndexMetrics(t *testing.T) {
 	dir := t.TempDir()
 	config := DeprecatedMultiProcessConfig(0, 2)
-	config.Storage.CheckpointTime = 10    // Short checkpoint interval
-	config.Indexing.BoundaryInterval = 10 // Create binary index nodes every 10 entries
+	config.Storage.CheckpointInterval = 10 * time.Millisecond // Short checkpoint interval
+	config.Indexing.BoundaryInterval = 10                     // Create binary index nodes every 10 entries
 
 	client, err := NewClient(dir, config)
 	if err != nil {

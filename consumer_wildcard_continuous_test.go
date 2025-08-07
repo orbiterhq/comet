@@ -15,7 +15,7 @@ func TestConsumerWildcardContinuous(t *testing.T) {
 	defer SetDebug(false)
 	dataDir := t.TempDir()
 	config := DefaultCometConfig()
-	config.Storage.FlushInterval = 50
+	config.Storage.FlushInterval = 50 * time.Millisecond
 
 	client, err := NewClient(dataDir, config)
 	if err != nil {
