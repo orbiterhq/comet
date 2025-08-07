@@ -658,11 +658,12 @@ func TestCrashRecoveryFileEntries(t *testing.T) {
 		t.Log("SUCCESS: File entry count correctly updated after crash recovery")
 	}
 
-	// Total entries should also be updated
-	if recoveredTotalEntries != originalEntries+1 {
-		t.Errorf("Total entries incorrect: got %d, expected %d", recoveredTotalEntries, originalEntries+1)
+	// Total entries should NOT be updated by crash recovery
+	// The index tracks durable state only
+	if recoveredTotalEntries != originalEntries {
+		t.Errorf("Total entries incorrect: got %d, expected %d (index should only track durable state)", recoveredTotalEntries, originalEntries)
 	} else {
-		t.Log("Total entries were correctly updated to", recoveredTotalEntries)
+		t.Log("Total entries correctly remained at", recoveredTotalEntries, "(index tracks durable state only)")
 	}
 }
 

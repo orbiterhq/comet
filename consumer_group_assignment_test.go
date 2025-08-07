@@ -33,6 +33,12 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	
+	// Sync to ensure messages are durable
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	
 	client.Close()
 
 	// Small delay to ensure multi-process state is fully persisted
@@ -103,20 +109,21 @@ func TestConsumerGroupShardAssignment(t *testing.T) {
 		var wg sync.WaitGroup
 		results := make([]int, 3)
 
-		// Use a single shared client to avoid race conditions from separate clients
-		sharedClient2, err := NewClient(dir, DefaultCometConfig())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer sharedClient2.Close()
-
-		// Start 3 consumers in different groups
+		// Start 3 consumers in different groups, each with its own client to avoid race conditions
 		for i := 0; i < 3; i++ {
 			wg.Add(1)
 			go func(consumerID int) {
 				defer wg.Done()
 
-				consumer := NewConsumer(sharedClient2, ConsumerOptions{
+				// Each consumer gets its own client to avoid race conditions
+				client, err := NewClient(dir, DefaultCometConfig())
+				if err != nil {
+					t.Errorf("Consumer %d failed to create client: %v", consumerID, err)
+					return
+				}
+				defer client.Close()
+
+				consumer := NewConsumer(client, ConsumerOptions{
 					Group: fmt.Sprintf("group-%d", consumerID), // Different groups
 				})
 				defer consumer.Close()
@@ -167,6 +174,12 @@ func TestConsumerFailover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	
+	// Sync to ensure messages are durable
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	
 	client.Close()
 
 	// Small delay to ensure multi-process state is fully persisted
@@ -257,6 +270,12 @@ func TestMultiShardConsumerGroup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	
+	// Sync to ensure messages are durable
+	if err := client.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	
 	client.Close()
 
 	// Small delay to ensure multi-process state is fully persisted
@@ -383,6 +402,12 @@ func TestDebugMessageLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("Append result: %v", result)
+	
+	// Sync to ensure messages are durable
+	if err := client.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	
 	client.Close()
 
 	time.Sleep(100 * time.Millisecond)

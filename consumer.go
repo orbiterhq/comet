@@ -755,7 +755,9 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	var currentIndexUpdate int64
 	if shard.state != nil {
 		currentIndexUpdate = shard.state.GetLastIndexUpdate()
+		shard.mu.RLock()
 		lastKnownUpdate = shard.lastIndexReload.UnixNano()
+		shard.mu.RUnlock()
 		needsReload = currentIndexUpdate > lastKnownUpdate
 
 		if IsDebug() && c.client.logger != nil {
