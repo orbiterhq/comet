@@ -1976,11 +1976,20 @@ func (s *Shard) openDataFileWithConfig(shardDir string) error {
 							break
 						}
 					}
-					// DO NOT update CurrentEntryNumber during crash recovery!
-					// The index tracks durable state. Extra data in the file might not be synced.
-					// Update nextEntryNumber and lastWrittenEntryNumber for future writes
-					s.nextEntryNumber = lastFile.StartEntry + entryCount
-					s.lastWrittenEntryNumber = lastFile.StartEntry + entryCount
+					// Update entry counters to reflect what was found on disk during recovery
+					// Data that survived a crash and can be read from disk IS durable by definition
+					newCurrentEntry := lastFile.StartEntry + entryCount
+					s.index.CurrentEntryNumber = newCurrentEntry
+					s.nextEntryNumber = newCurrentEntry
+					s.lastWrittenEntryNumber = newCurrentEntry
+					if s.logger != nil {
+						s.logger.Info("CRASH RECOVERY: Updated CurrentEntryNumber",
+							"shard", s.shardID,
+							"oldCurrentEntry", s.index.CurrentEntryNumber,
+							"newCurrentEntry", newCurrentEntry,
+							"startEntry", lastFile.StartEntry,
+							"entryCount", entryCount)
+					}
 					if s.logger != nil {
 						s.logger.Info("Updated file entry count after crash recovery",
 							"file", lastFile.Path,
@@ -2360,7 +2369,34 @@ func (c *Client) Close() error {
 		// Wait for background operations to complete BEFORE acquiring locks
 		shard.wg.Wait()
 
+		// CRITICAL: Flush writer buffer to disk to preserve data even during crash
+		// This ensures buffered writes make it to the file before we close
+		shard.writeMu.Lock()
+		if shard.writer != nil {
+			shard.writer.Flush()
+		}
+		shard.writeMu.Unlock()
+
 		shard.mu.Lock()
+
+		// After flushing, sync the data and update the index to make it durable
+		if shard.dataFile != nil {
+			if err := shard.dataFile.Sync(); err == nil {
+				// Update CurrentEntryNumber to reflect what's now durable
+				shard.index.CurrentEntryNumber = atomic.LoadInt64(&shard.lastWrittenEntryNumber)
+
+				// Update file metadata to reflect actual state
+				if len(shard.index.Files) > 0 {
+					current := &shard.index.Files[len(shard.index.Files)-1]
+					if stat, err := shard.dataFile.Stat(); err == nil {
+						current.EndOffset = stat.Size()
+						current.EndTime = time.Now()
+						current.Entries = shard.index.CurrentEntryNumber - current.StartEntry
+						shard.index.CurrentWriteOffset = stat.Size()
+					}
+				}
+			}
+		}
 
 		// Final checkpoint - do it directly since we already hold the lock
 		// Always checkpoint on close to ensure index is persisted
