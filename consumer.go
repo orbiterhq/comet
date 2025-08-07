@@ -906,28 +906,56 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			// 2. Reader index is stale (needs fresh Reader)
 			// 3. Real file corruption issues
 
-			// For "not found" errors or file boundary issues, skip the entry in multi-process scenarios
-			// These indicate the reader's view is stale and needs refreshing
-			if strings.Contains(err.Error(), "not found") ||
-				strings.Contains(err.Error(), "stale") ||
-				strings.Contains(err.Error(), "beyond file size") {
-				// CRITICAL: Update memory offset even for skipped entries to prevent infinite loops
+			// For file boundary issues, invalidate the reader and retry once
+			if strings.Contains(err.Error(), "beyond file size") {
+				// Invalidate the cached reader to force a fresh one
+				c.readers.Delete(shard.shardID)
+
+				// Force index reload to get latest file info
+				shard.mu.Lock()
+				if err := shard.loadIndex(); err == nil {
+					shard.lastIndexReload = time.Now()
+				}
+				shard.mu.Unlock()
+
+				// Get a fresh reader and retry the same entry
+				reader, err = c.getOrCreateReader(shard)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get fresh reader for shard %d: %w", shard.shardID, err)
+				}
+
+				// Retry reading the same entry with fresh reader
+				data, err = reader.ReadEntryByNumber(entryNum)
+				if err != nil {
+					// If still failing, check if it's a "not found" error
+					if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "stale") {
+						// Entry genuinely doesn't exist, skip it
+						c.memOffsetsMu.Lock()
+						if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
+							c.memOffsets[shard.shardID] = entryNum + 1
+						}
+						c.memOffsetsMu.Unlock()
+						continue
+					}
+					// Still failing, return the error
+					return nil, fmt.Errorf("failed to read entry %d from shard %d after retry: %w", entryNum, shard.shardID, err)
+				}
+				// Success on retry, continue with normal processing
+			} else if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "stale") {
+				// For "not found" errors, skip the entry
 				c.memOffsetsMu.Lock()
 				if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
-
 					c.memOffsets[shard.shardID] = entryNum + 1 // Next entry to try
 				}
 				c.memOffsetsMu.Unlock()
-
-				// Invalidate the cached reader to force a fresh one on next read
-				c.readers.Delete(shard.shardID)
 				continue
+			} else {
+				// Other errors, track and return
+				if state := shard.state; state != nil {
+					atomic.AddUint64(&state.ReadErrors, 1)
+				}
+				return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
 			}
-			// Track read error in CometState
-			if state := shard.state; state != nil {
-				atomic.AddUint64(&state.ReadErrors, 1)
-			}
-			return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
 
 		}
 
