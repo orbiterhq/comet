@@ -1012,7 +1012,22 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 		}
 
 		if maxEntry >= 0 {
+			// Get shard first to check durable limit
+			shard, err := c.client.getOrCreateShard(shardID)
+			if err != nil {
+				return err
+			}
+
+			// Never advance offset beyond what's durable
+			shard.mu.RLock()
+			durableLimit := shard.index.CurrentEntryNumber
+			shard.mu.RUnlock()
+
 			newOffset := maxEntry + 1
+			// Cap offset at durable limit to prevent reading non-existent entries
+			if newOffset > durableLimit {
+				newOffset = durableLimit
+			}
 
 			// Update in-memory offset immediately for read consistency
 			c.memOffsetsMu.Lock()
@@ -1020,12 +1035,6 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 				c.memOffsets[shardID] = newOffset
 			}
 			c.memOffsetsMu.Unlock()
-
-			// Get shard for persistence
-			shard, err := c.client.getOrCreateShard(shardID)
-			if err != nil {
-				return err
-			}
 
 			// Track this shard for persistence on close
 			c.shards.Store(shardID, true)

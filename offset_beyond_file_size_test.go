@@ -39,7 +39,18 @@ func TestOffsetBeyondFileSize(t *testing.T) {
 				errorCh <- fmt.Errorf("write error: %w", err)
 				return
 			}
+			// Sync periodically to make data durable
+			if i%5 == 4 {
+				if err := client.Sync(ctx); err != nil {
+					errorCh <- fmt.Errorf("sync error: %w", err)
+					return
+				}
+			}
 			time.Sleep(5 * time.Millisecond)
+		}
+		// Final sync
+		if err := client.Sync(ctx); err != nil {
+			errorCh <- fmt.Errorf("final sync error: %w", err)
 		}
 	}()
 
@@ -54,6 +65,14 @@ func TestOffsetBeyondFileSize(t *testing.T) {
 				return
 			}
 			t.Logf("Read %d messages", len(messages))
+
+			// ACK the messages
+			for _, msg := range messages {
+				if err := consumer.Ack(ctx, msg.ID); err != nil {
+					errorCh <- fmt.Errorf("ack error: %w", err)
+					return
+				}
+			}
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
