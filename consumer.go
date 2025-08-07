@@ -906,8 +906,11 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			// 2. Reader index is stale (needs fresh Reader)
 			// 3. Real file corruption issues
 
-			// For "not found" errors, skip the entry in multi-process scenarios
-			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "stale") {
+			// For "not found" errors or file boundary issues, skip the entry in multi-process scenarios
+			// These indicate the reader's view is stale and needs refreshing
+			if strings.Contains(err.Error(), "not found") ||
+				strings.Contains(err.Error(), "stale") ||
+				strings.Contains(err.Error(), "beyond file size") {
 				// CRITICAL: Update memory offset even for skipped entries to prevent infinite loops
 				c.memOffsetsMu.Lock()
 				if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
@@ -915,6 +918,9 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 					c.memOffsets[shard.shardID] = entryNum + 1 // Next entry to try
 				}
 				c.memOffsetsMu.Unlock()
+
+				// Invalidate the cached reader to force a fresh one on next read
+				c.readers.Delete(shard.shardID)
 				continue
 			}
 			// Track read error in CometState
