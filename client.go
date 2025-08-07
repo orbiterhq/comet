@@ -2374,8 +2374,14 @@ func (c *Client) Close() error {
 		if shard.dataFile != nil {
 			syncStart := time.Now()
 			if err := shard.dataFile.Sync(); err == nil {
-				// Update CurrentEntryNumber to reflect what's now durable
-				shard.index.CurrentEntryNumber = atomic.LoadInt64(&shard.lastWrittenEntryNumber)
+				// Only update CurrentEntryNumber if this shard has actually written entries
+				// Some shards might be created by consumers but never written to
+				if shard.nextEntryNumber > shard.index.CurrentEntryNumber {
+					// Update CurrentEntryNumber to reflect what's now durable
+					// During Close, all allocated entries have been written (writer flushed above)
+					// so nextEntryNumber accurately reflects what's on disk
+					shard.index.CurrentEntryNumber = shard.nextEntryNumber
+				}
 
 				// Track sync metrics
 				if shard.state != nil {

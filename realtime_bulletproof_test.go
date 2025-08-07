@@ -181,33 +181,37 @@ func TestRealtimeBulletproof(t *testing.T) {
 			time.Sleep(200 * time.Millisecond)
 
 			// Debug: Check what each shard thinks is available
-			t.Logf("[CONSUMER] Checking final shard states...")
+			// IMPORTANT: Don't create new shards, just check if directories exist
+			t.Logf("[CONSUMER] Checking final shard states from disk...")
 			totalUnread := int64(0)
+			actualShardCount := 0
 			for i := 0; i < len(shards); i++ {
-				shard, err := consumerClient.getOrCreateShard(uint32(i))
-				if err == nil && shard != nil {
-					// Check if index file exists
-					indexPath := shard.indexPath
-					if stat, err := os.Stat(indexPath); err == nil {
-						t.Logf("[CONSUMER] Shard %d index file exists: %s (size=%d bytes)", i, indexPath, stat.Size())
-					} else {
-						t.Logf("[CONSUMER] Shard %d index file missing: %s", i, indexPath)
-					}
+				shardDir := fmt.Sprintf("%s/001/shard-%04d", dir, i)
 
-					// Force reload the index to get latest state
-					shard.mu.Lock()
-					if err := shard.loadIndex(); err == nil {
-						entries := shard.index.CurrentEntryNumber
-						offset := shard.index.ConsumerOffsets[consumer.group]
-						unread := entries - offset
-						totalUnread += unread
-						t.Logf("[CONSUMER] Shard %d after reload: entries=%d, offset=%d, unread=%d",
-							i, entries, offset, unread)
-					} else {
-						t.Logf("[CONSUMER] Shard %d failed to reload index: %v", i, err)
+				// Check if shard directory exists (was actually used by writer)
+				if _, err := os.Stat(shardDir); err == nil {
+					actualShardCount++
+					t.Logf("[CONSUMER] Shard %d directory exists: %s", i, shardDir)
+
+					// List files in the directory
+					if files, err := os.ReadDir(shardDir); err == nil {
+						for _, f := range files {
+							if info, err := f.Info(); err == nil {
+								t.Logf("[CONSUMER]   - %s (size=%d bytes)", f.Name(), info.Size())
+							}
+						}
 					}
-					shard.mu.Unlock()
+				} else {
+					t.Logf("[CONSUMER] Shard %d directory does not exist (never written to)", i)
 				}
+			}
+			t.Logf("[CONSUMER] Total shards with data: %d out of %d", actualShardCount, len(shards))
+
+			// Since we can't easily load the index without creating shards,
+			// just give the consumer time to read any remaining messages
+			if actualShardCount > 0 {
+				t.Logf("[CONSUMER] Waiting for continuous consumer to read remaining messages...")
+				totalUnread = 1 // Force wait since we can't calculate exact unread count
 			}
 			t.Logf("[CONSUMER] Total unread messages across all shards: %d", totalUnread)
 
