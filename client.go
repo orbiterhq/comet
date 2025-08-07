@@ -1558,13 +1558,14 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 
 	// Take locks for the critical section
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Note: We'll unlock manually after persisting the index
 
 	s.writeMu.Lock()
 
 	// Double-check rotation is still needed
 	if s.pendingWriteOffset < config.Storage.MaxFileSize {
 		s.writeMu.Unlock()
+		s.mu.Unlock() // Must unlock before returning
 		newFile.Close()
 		os.Remove(newFilePath)
 		return nil
@@ -1590,6 +1591,8 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 		current.EndTime = time.Now()
 		current.EndOffset = currentWriteOffset
 		// Calculate actual entry count for this file
+		// TODO: This uses nextEntryNumber which includes pending writes
+		// We should track what's actually been written to avoid inconsistency
 		current.Entries = s.nextEntryNumber - current.StartEntry
 	}
 
@@ -1653,8 +1656,31 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 		}
 	}
 
-	// Skip checkpoint during rotation to avoid deadlock
-	// The periodic flush and regular checkpoints will handle persistence
+	// Persist the index with new file info to avoid reader confusion
+	// Clone the index while we still hold the main lock
+	indexCopy := s.cloneIndex()
+	s.mu.Unlock() // Release main lock before doing I/O
+
+	// Return index to pool after use
+	defer returnIndexToPool(indexCopy)
+
+	// Persist the index with the new file information
+	s.indexMu.Lock()
+	indexErr := s.saveBinaryIndex(indexCopy)
+	s.indexMu.Unlock()
+
+	if indexErr != nil {
+		if s.logger != nil {
+			s.logger.Warn("Failed to persist index after rotation", "error", indexErr)
+		}
+		// Don't fail the rotation - data is safe, just index update failed
+	} else {
+		// Only update LastIndexUpdate AFTER index is persisted
+		// This ensures readers see consistent state
+		if state := s.state; state != nil {
+			state.SetLastIndexUpdate(time.Now().UnixNano())
+		}
+	}
 
 	// Track rotation time
 	if state := s.state; state != nil {
@@ -1732,8 +1758,8 @@ func (s *Shard) updateMmapState() {
 		atomic.StoreUint64(&state.ActiveFileIndex, uint64(len(s.index.Files)-1))
 	}
 
-	// Update timestamp to signal state change
-	state.SetLastIndexUpdate(time.Now().UnixNano())
+	// Note: LastIndexUpdate is now ONLY updated after index persistence
+	// to ensure readers always see consistent state on disk
 
 	// For compatibility with the simplified state update
 	s.updateLastEntryState()
@@ -1939,6 +1965,10 @@ func (s *Shard) openDataFileWithConfig(shardDir string) error {
 							"file", lastFile.Path,
 							"entries", entryCount,
 							"shard", s.shardID)
+					}
+					// Update LastIndexUpdate so readers know the index has changed
+					if state := s.state; state != nil {
+						state.SetLastIndexUpdate(time.Now().UnixNano())
 					}
 				}
 			}
@@ -3467,9 +3497,26 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 				}
 
 				// Critical: Update index to make flushed data visible to consumers
-				// This is what was missing - periodic flush wasn't updating the index!
 				oldCurrentEntry := s.index.CurrentEntryNumber
-				s.index.CurrentEntryNumber = s.nextEntryNumber
+
+				// Sync to ensure data is durable before updating CurrentEntryNumber
+				if s.dataFile != nil {
+					syncStart := time.Now()
+					if err := s.dataFile.Sync(); err == nil {
+						// Only update CurrentEntryNumber after successful sync
+						s.index.CurrentEntryNumber = s.nextEntryNumber
+
+						if state := s.state; state != nil {
+							syncDuration := time.Since(syncStart).Nanoseconds()
+							atomic.AddInt64(&state.SyncLatencyNanos, syncDuration)
+							atomic.AddUint64(&state.SyncCount, 1)
+						}
+					} else if s.logger != nil {
+						s.logger.Error("Periodic sync failed",
+							"shard", s.shardID,
+							"error", err)
+					}
+				}
 
 				// Update offsets to reflect actual file state
 				if s.dataFile != nil {

@@ -911,19 +911,8 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		// Use the new ReadEntryByNumber method which handles position finding internally
 		data, err := reader.ReadEntryByNumber(entryNum)
 		if err != nil {
-			// With proactive staleness checking, most errors are real issues
-			// Only skip entries that genuinely don't exist (e.g., reading ahead of writer)
-			if strings.Contains(err.Error(), "not found in index") {
-				// Entry doesn't exist yet, skip it and try next
-				c.memOffsetsMu.Lock()
-				if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
-					c.memOffsets[shard.shardID] = entryNum + 1
-				}
-				c.memOffsetsMu.Unlock()
-				continue
-			}
-
-			// Track read error
+			// All errors are real problems - our architecture ensures the index only
+			// tracks durable state, so any read error is a bug
 			if state := shard.state; state != nil {
 				atomic.AddUint64(&state.ReadErrors, 1)
 			}

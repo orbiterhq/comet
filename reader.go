@@ -579,6 +579,8 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 
 	// Check for overflow and bounds
 	if byteOffset >= fileSize || byteOffset > fileSize-headerSize {
+		// This can happen during file rotation when the index shows an entry exists
+		// but it hasn't been written to the new file yet. The reader should refresh.
 		return nil, fmt.Errorf("offset %d beyond file size %d", byteOffset, fileSize)
 	}
 
@@ -718,12 +720,38 @@ func (r *Reader) ReadEntryByNumber(entryNumber int64) ([]byte, error) {
 			if relativeEntryNum == 0 {
 				// First entry in file - starts at offset 0
 				pos := EntryPosition{FileIndex: fileIndex, ByteOffset: 0}
-				return r.ReadEntryAtPosition(pos)
+				data, err := r.ReadEntryAtPosition(pos)
+				if err != nil && r.state != nil {
+					// Check if we should refresh on error
+					currentIndexUpdate := r.state.GetLastIndexUpdate()
+					lastKnown := atomic.LoadInt64(&r.lastKnownIndexUpdate)
+					if currentIndexUpdate > lastKnown {
+						// Index has been updated, refresh and retry
+						if refreshErr := r.refreshFromLiveIndex(); refreshErr == nil {
+							atomic.StoreInt64(&r.lastKnownIndexUpdate, currentIndexUpdate)
+							return r.ReadEntryByNumber(entryNumber)
+						}
+					}
+				}
+				return data, err
 			}
 
 			// For non-first entries, we need to scan from the beginning
 			// This should rarely happen if the binary index is properly maintained
-			return r.readEntryByScanning(fileIndex, relativeEntryNum)
+			data, err := r.readEntryByScanning(fileIndex, relativeEntryNum)
+			if err != nil && r.state != nil {
+				// Check if we should refresh on error
+				currentIndexUpdate := r.state.GetLastIndexUpdate()
+				lastKnown := atomic.LoadInt64(&r.lastKnownIndexUpdate)
+				if currentIndexUpdate > lastKnown {
+					// Index has been updated, refresh and retry
+					if refreshErr := r.refreshFromLiveIndex(); refreshErr == nil {
+						atomic.StoreInt64(&r.lastKnownIndexUpdate, currentIndexUpdate)
+						return r.ReadEntryByNumber(entryNumber)
+					}
+				}
+			}
+			return data, err
 		}
 	}
 
