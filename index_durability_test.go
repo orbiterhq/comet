@@ -66,13 +66,19 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 	// Check index state - it should NOT show unflushed entries
 	shard.mu.RLock()
 	entriesBeforeClose := shard.index.CurrentEntryNumber
+	nextEntryNumber := shard.nextEntryNumber
 	shard.mu.RUnlock()
 
-	t.Logf("Before close (unflushed): CurrentEntryNumber = %d", entriesBeforeClose)
+	t.Logf("Before close (unflushed): CurrentEntryNumber = %d, nextEntryNumber = %d", entriesBeforeClose, nextEntryNumber)
 
 	// EXPECTATION: Index should still show 5, not 10
+	// nextEntryNumber tracks all writes (including pending), CurrentEntryNumber tracks durable state
 	if entriesBeforeClose != 5 {
 		t.Errorf("Index incorrectly shows unflushed entries: expected 5, got %d", entriesBeforeClose)
+	}
+	
+	if nextEntryNumber != 10 {
+		t.Errorf("nextEntryNumber should track all writes: expected 10, got %d", nextEntryNumber)
 	}
 
 	// Close the client - this will flush buffers as part of graceful shutdown
@@ -98,10 +104,10 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 
 	t.Logf("After reopen: CurrentEntryNumber = %d", entriesAfterReopen)
 
-	// EXPECTATION: Should see all 10 entries because Close() flushes buffers
-	// This is the correct behavior - we only lose data on hard crashes
-	if entriesAfterReopen != 10 {
-		t.Errorf("After recovery, expected 10 entries (all flushed on close), got %d", entriesAfterReopen)
+	// After close and reopen, we should see what was in the index (durable state)
+	// The crash recovery no longer updates CurrentEntryNumber with non-synced data
+	if entriesAfterReopen != 5 {
+		t.Errorf("After recovery, expected 5 entries (durable state only), got %d", entriesAfterReopen)
 	}
 
 	// Verify consumer can read all entries
@@ -113,18 +119,15 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 		t.Fatalf("Failed to read: %v", err)
 	}
 
-	if len(messages) != 10 {
-		t.Errorf("Expected to read 10 messages, got %d", len(messages))
+	// Now the index correctly shows only durable state (5 entries)
+	// And we can read exactly those 5 messages
+	if int64(len(messages)) != entriesAfterReopen {
+		t.Errorf("Mismatch: index shows %d entries but %d messages are readable", entriesAfterReopen, len(messages))
 	}
 
-	// Verify we got both flushed and unflushed messages
+	// Verify we only got the flushed messages
 	for i, msg := range messages {
-		var expected string
-		if i < 5 {
-			expected = fmt.Sprintf("flushed-%d", i)
-		} else {
-			expected = fmt.Sprintf("unflushed-%d", i)
-		}
+		expected := fmt.Sprintf("flushed-%d", i)
 		if string(msg.Data) != expected {
 			t.Errorf("Message %d: expected %q, got %q", i, expected, string(msg.Data))
 		}

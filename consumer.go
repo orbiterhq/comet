@@ -493,18 +493,14 @@ func (c *Consumer) Read(ctx context.Context, shards []uint32, count int) ([]Stre
 	var messages []StreamMessage
 	remaining := count
 
-	// Randomly shuffle shards to ensure fair reading
-	shuffled := make([]uint32, len(shards))
-	copy(shuffled, shards)
-	for i := range shuffled {
-		j := rand.Intn(i + 1)
-		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
-	}
-
-	for _, shardID := range shuffled {
-		if remaining <= 0 {
-			break
-		}
+	// Pick random shards without replacement to ensure fair reading
+	for i := 0; i < len(shards) && remaining > 0; i++ {
+		// Pick a random shard from the remaining ones
+		j := rand.Intn(len(shards) - i)
+		shardID := shards[j]
+		
+		// Swap the used shard to the end so we don't pick it again
+		shards[j], shards[len(shards)-1-i] = shards[len(shards)-1-i], shards[j]
 
 		// Use getOrCreateShard to ensure we can read from existing shards after restart
 		shard, err := c.client.getOrCreateShard(shardID)

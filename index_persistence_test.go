@@ -35,14 +35,24 @@ func TestIndexPersistenceAfterClose(t *testing.T) {
 		t.Fatal("Shard 0 not found")
 	}
 
+	shard.mu.RLock()
+	nextEntry := shard.nextEntryNumber
+	currentEntry := shard.index.CurrentEntryNumber
+	shard.mu.RUnlock()
+
 	t.Logf("Before close - In memory: nextEntryNumber=%d, index.CurrentEntryNumber=%d",
-		shard.nextEntryNumber, shard.index.CurrentEntryNumber)
+		nextEntry, currentEntry)
 		
 	// Wait for flush to happen
 	time.Sleep(150 * time.Millisecond)
 	
+	shard.mu.RLock()
+	nextEntryAfter := shard.nextEntryNumber
+	currentEntryAfter := shard.index.CurrentEntryNumber
+	shard.mu.RUnlock()
+	
 	t.Logf("After flush - In memory: nextEntryNumber=%d, index.CurrentEntryNumber=%d",
-		shard.nextEntryNumber, shard.index.CurrentEntryNumber)
+		nextEntryAfter, currentEntryAfter)
 
 	// Step 2: Close the writer (should persist everything)
 	if err := writer.Close(); err != nil {

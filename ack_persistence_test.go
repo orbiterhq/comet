@@ -31,6 +31,12 @@ func TestACKPersistenceBug(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	
+	// Sync to ensure messages are durable
+	if err := client1.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	
 	client1.Close()
 
 	// Step 2: Process and ACK some messages

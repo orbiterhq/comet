@@ -1945,9 +1945,10 @@ func (s *Shard) openDataFileWithConfig(shardDir string) error {
 							break
 						}
 					}
-					s.index.CurrentEntryNumber = lastFile.StartEntry + entryCount
-					// Also update nextEntryNumber to stay in sync
-					s.nextEntryNumber = s.index.CurrentEntryNumber
+					// DO NOT update CurrentEntryNumber during crash recovery!
+					// The index tracks durable state. Extra data in the file might not be synced.
+					// Only update nextEntryNumber for future writes
+					s.nextEntryNumber = lastFile.StartEntry + entryCount
 					if s.logger != nil {
 						s.logger.Info("Updated file entry count after crash recovery",
 							"file", lastFile.Path,

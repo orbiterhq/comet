@@ -93,7 +93,11 @@ func TestOffsetMergeLogic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("Consumer 2: Read %d messages starting from entry %d", len(msgs2), msgs2[0].ID.EntryNumber)
+	if len(msgs2) > 0 {
+		t.Logf("Consumer 2: Read %d messages starting from entry %d", len(msgs2), msgs2[0].ID.EntryNumber)
+	} else {
+		t.Logf("Consumer 2: Read 0 messages")
+	}
 
 	// ACK messages
 	for _, msg := range msgs2 {

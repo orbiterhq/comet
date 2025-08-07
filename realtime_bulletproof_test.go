@@ -44,6 +44,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 
 	// Coordination channels
 	writerDone := make(chan struct{})
+	stopWriting := make(chan struct{})
 
 	t.Logf("Starting bulletproof test: duration=%v, writeInterval=%v, expectedWrites=%d",
 		testDuration, writeInterval, expectedWrites)
@@ -68,6 +69,9 @@ func TestRealtimeBulletproof(t *testing.T) {
 		for {
 			select {
 			case <-timeout:
+				// Signal to stop writing new messages
+				close(stopWriting)
+				
 				// Graceful shutdown - ensure final flush happens
 				written := atomic.LoadInt64(&writtenCount)
 				t.Logf("[WRITER] Stopping after %d writes, waiting for final flush cycles...", written)
@@ -83,18 +87,8 @@ func TestRealtimeBulletproof(t *testing.T) {
 					t.Logf("[WRITER] Warning: Failed to sync: %v", err)
 				}
 				
-				if err := writerClient.Close(); err != nil {
-					t.Logf("[WRITER] Warning: Failed to close: %v", err)
-				}
-
-				// Give time for memory-mapped state updates and index files to be fully written
-				// This is critical for cross-process coordination
-				time.Sleep(2 * time.Second)
-
-				t.Logf("[WRITER] All shards synced. Final total written: %d", written)
-				
-				// Debug: Check what's actually in the indexes after close
-				t.Logf("[WRITER] Checking shard states after close...")
+				// Debug: Check what's actually in the indexes BEFORE close
+				t.Logf("[WRITER] Checking shard states after sync...")
 				for i := 0; i < len(shards); i++ {
 					shard := writerClient.shards[uint32(i)]
 					if shard != nil {
@@ -108,12 +102,29 @@ func TestRealtimeBulletproof(t *testing.T) {
 					}
 				}
 				
+				if err := writerClient.Close(); err != nil {
+					t.Logf("[WRITER] Warning: Failed to close: %v", err)
+				}
+
+				// Give time for memory-mapped state updates and index files to be fully written
+				// This is critical for cross-process coordination
+				time.Sleep(2 * time.Second)
+
+				t.Logf("[WRITER] All shards synced and closed. Final total written: %d", written)
+				
 				// Immediately check what the consumer can see after close
 				finalRead := atomic.LoadInt64(&readCount)
 				t.Logf("[WRITER] Consumer has read %d messages immediately after writer close", finalRead)
 				return
 
 			case <-ticker.C:
+				// Check if we should stop writing
+				select {
+				case <-stopWriting:
+					continue // Don't write any more messages
+				default:
+				}
+				
 				count := atomic.AddInt64(&writtenCount, 1)
 				msg := fmt.Sprintf("event-%d-%d", time.Now().UnixMilli(), count)
 
@@ -153,6 +164,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 		consumer := NewConsumer(consumerClient, ConsumerOptions{
 			Group: "bulletproof-test",
 		})
+		defer consumer.Close()
 
 		// Consumer context that gets cancelled when writer finishes + catch-up time
 		consumerCtx, cancel := context.WithCancel(context.Background())
@@ -199,30 +211,16 @@ func TestRealtimeBulletproof(t *testing.T) {
 			}
 			t.Logf("[CONSUMER] Total unread messages across all shards: %d", totalUnread)
 			
-			// If there are unread messages, try to read them
+			// If there are unread messages, wait for the continuous consumer to pick them up
 			if totalUnread > 0 {
-				t.Logf("[CONSUMER] Attempting to read %d unread messages...", totalUnread)
-				shardIDs := make([]uint32, len(shards))
-				for i := range shards {
-					shardIDs[i] = uint32(i)
-				}
-				
-				msgs, err := consumer.Read(ctx, shardIDs, int(totalUnread))
-				if err == nil && len(msgs) > 0 {
-					atomic.AddInt64(&readCount, int64(len(msgs)))
-					t.Logf("[CONSUMER] Successfully read %d additional messages!", len(msgs))
-					for _, msg := range msgs {
-						consumer.Ack(ctx, msg.ID)
-					}
-				} else if err != nil {
-					t.Logf("[CONSUMER] Failed to read unread messages: %v", err)
-				} else {
-					t.Logf("[CONSUMER] Read returned 0 messages despite %d unread", totalUnread)
-				}
+				t.Logf("[CONSUMER] Waiting for continuous consumer to pick up %d unread messages...", totalUnread)
+				// Give the consumer.Process() loop time to pick up the unread messages
+				// With 100ms poll interval, 5 seconds should be more than enough
+				time.Sleep(5 * time.Second)
+			} else {
+				// Even if no unread messages detected, wait a bit for any in-flight messages
+				time.Sleep(2 * time.Second)
 			}
-			
-			// Now wait a bit more to see if the continuous consumer picks up anything
-			time.Sleep(2 * time.Second)
 			
 			finalCatchup := atomic.LoadInt64(&readCount)
 			t.Logf("[CONSUMER] Catch-up complete: captured %d additional messages (total: %d)", finalCatchup-startCatchup, finalCatchup)
