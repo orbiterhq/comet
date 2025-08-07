@@ -3522,23 +3522,28 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 			select {
 			case <-ticker.C:
 				// Perform both data flush AND index update to make data visible to consumers
-				s.mu.Lock()
+				// CRITICAL: Take locks in same order as write path (writeMu first, then mu)
+				// to prevent deadlocks with concurrent writes
 
 				// Flush buffered writes first
+				s.writeMu.Lock()
+				var flushErr error
 				if s.writer != nil {
-					s.writeMu.Lock()
-					if err := s.writer.Flush(); err != nil {
-						s.writeMu.Unlock()
-						s.mu.Unlock()
-						if s.logger != nil {
-							s.logger.Error("Periodic flush failed",
-								"shard", s.shardID,
-								"error", err)
-						}
-						continue
-					}
-					s.writeMu.Unlock()
+					flushErr = s.writer.Flush()
 				}
+				s.writeMu.Unlock()
+
+				if flushErr != nil {
+					if s.logger != nil {
+						s.logger.Error("Periodic flush failed",
+							"shard", s.shardID,
+							"error", flushErr)
+					}
+					continue
+				}
+
+				// Now take mu lock for index updates
+				s.mu.Lock()
 
 				// Critical: Update index to make flushed data visible to consumers
 				oldCurrentEntry := s.index.CurrentEntryNumber
