@@ -467,9 +467,9 @@ type Shard struct {
 	nextEntryNumber        int64 // Next entry number to allocate
 	lastWrittenEntryNumber int64 // Last entry written to OS buffers (not durable)
 
-	pendingWriteOffset int64     // Current write offset including pending writes
-	lastCheckpoint     time.Time // 64-bit on most systems
-	lastIndexReload    time.Time // Last time index was reloaded from disk
+	pendingWriteOffset int64 // Current write offset including pending writes
+	lastCheckpoint     int64 // Unix nanoseconds of last checkpoint
+	lastIndexReload    int64 // Unix nanoseconds when index was last reloaded from disk
 	// lastMmapCheck removed - processes own their shards exclusively
 
 	// Pointers (8 bytes each on 64-bit)
@@ -769,7 +769,7 @@ func (c *Client) Sync(ctx context.Context) error {
 		shard.updateMmapState()
 
 		shard.writesSinceCheckpoint = 0
-		shard.lastCheckpoint = time.Now()
+		shard.lastCheckpoint = time.Now().UnixNano()
 		shard.mu.Unlock()
 
 		// Persist the index - this will also update metrics
@@ -868,7 +868,7 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 				Nodes:         make([]EntryIndexNode, 0),
 			},
 		},
-		lastCheckpoint: time.Now(),
+		lastCheckpoint: time.Now().UnixNano(),
 	}
 
 	// Initialize unified state (memory-mapped in multi-process mode, in-memory otherwise)
@@ -1481,7 +1481,7 @@ func (s *Shard) performPostWriteOperations(config *CometConfig, clientMetrics *C
 // shouldCheckpoint determines if checkpoint is needed
 func (s *Shard) shouldCheckpoint(config *CometConfig) bool {
 	// Time-based checkpoint
-	if time.Since(s.lastCheckpoint) > time.Duration(config.Storage.CheckpointInterval)*time.Millisecond {
+	if time.Now().UnixNano()-s.lastCheckpoint > int64(config.Storage.CheckpointInterval)*1e6 {
 		return true
 	}
 
@@ -1513,7 +1513,7 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 	// Clone index while holding lock
 	indexCopy := s.cloneIndex()
 	s.writesSinceCheckpoint = 0
-	s.lastCheckpoint = time.Now()
+	s.lastCheckpoint = time.Now().UnixNano()
 	s.mu.Unlock()
 
 	// Return index to pool after use
@@ -2438,7 +2438,7 @@ func (c *Client) Close() error {
 			// Clone index while holding lock (now includes all entries)
 			indexCopy := shard.cloneIndex()
 			shard.writesSinceCheckpoint = 0
-			shard.lastCheckpoint = time.Now()
+			shard.lastCheckpoint = time.Now().UnixNano()
 
 			// Persist index outside lock
 			shard.mu.Unlock() // Release for the persistence operation

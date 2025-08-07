@@ -326,7 +326,7 @@ func TestRealtimeBulletproof(t *testing.T) {
 							consumerOffset = offset
 						}
 					}
-					lastReload := shard.lastIndexReload.UnixNano()
+					lastReload := shard.lastIndexReload
 					shard.mu.RUnlock()
 
 					consumerTotal += currentEntryNumber

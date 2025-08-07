@@ -772,7 +772,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 	if shard.state != nil {
 		currentIndexUpdate = shard.state.GetLastIndexUpdate()
 		shard.mu.RLock()
-		lastKnownUpdate = shard.lastIndexReload.UnixNano()
+		lastKnownUpdate = shard.lastIndexReload
 		shard.mu.RUnlock()
 		needsReload = currentIndexUpdate > lastKnownUpdate
 
@@ -814,7 +814,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			// Only update lastIndexReload if we actually loaded a non-empty index
 			// This prevents marking an empty index as "up to date" when it's not
 			if newEntries > 0 || len(shard.index.Files) > 0 {
-				shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
+				shard.lastIndexReload = currentIndexUpdate
 
 				if c.client.logger != nil && IsDebug() {
 					c.client.logger.Debug("Reloaded index after state change",
@@ -830,7 +830,7 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 					c.client.logger.Debug("Reloaded empty index, NOT updating lastIndexReload",
 						"shard", shard.shardID,
 						"currentIndexUpdate", currentIndexUpdate,
-						"keeping_lastReload", shard.lastIndexReload.UnixNano())
+						"keeping_lastReload", shard.lastIndexReload)
 				}
 			}
 		}
@@ -1405,7 +1405,7 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 
 		if shard.state != nil {
 			currentIndexUpdate = shard.state.GetLastIndexUpdate()
-			lastKnownUpdate = shard.lastIndexReload.UnixNano()
+			lastKnownUpdate = shard.lastIndexReload
 			needsReload = currentIndexUpdate > lastKnownUpdate
 		}
 
@@ -1433,7 +1433,7 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 				// Only update lastIndexReload if we actually loaded a non-empty index
 				// This prevents marking an empty index as "up to date" when it's not
 				if newEntries > 0 || len(shard.index.Files) > 0 {
-					shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
+					shard.lastIndexReload = currentIndexUpdate
 					reloadedCount++
 				}
 
