@@ -177,12 +177,19 @@ func TestRealtimeBulletproof(t *testing.T) {
 				// VERIFY: Check CometState before closing
 				t.Logf("[WRITER] Verifying CometState before close...")
 				for i := 0; i < numShards; i++ {
+					writerClient.mu.RLock()
 					shard := writerClient.shards[uint32(i)]
+					writerClient.mu.RUnlock()
+
 					if shard != nil && shard.state != nil {
+						shard.mu.RLock()
+						currentEntryNumber := shard.index.CurrentEntryNumber
+						shard.mu.RUnlock()
+
 						lastEntry := atomic.LoadInt64(&shard.state.LastEntryNumber)
-						if shard.index.CurrentEntryNumber > 0 && lastEntry != shard.index.CurrentEntryNumber-1 {
+						if currentEntryNumber > 0 && lastEntry != currentEntryNumber-1 {
 							t.Logf("[WRITER] ERROR: Shard %d state mismatch: LastEntryNumber=%d, expected=%d",
-								i, lastEntry, shard.index.CurrentEntryNumber-1)
+								i, lastEntry, currentEntryNumber-1)
 						}
 					}
 				}
@@ -379,9 +386,20 @@ func TestRealtimeBulletproof(t *testing.T) {
 			if missingMessages > 0 {
 				t.Logf("[CONSUMER] Attempting to read missing messages directly...")
 				for i := 0; i < numShards; i++ {
-					if shard := consumerClient.shards[uint32(i)]; shard != nil {
-						offset := shard.index.ConsumerOffsets["bulletproof-test"]
-						unread := shard.index.CurrentEntryNumber - offset
+					consumerClient.mu.RLock()
+					shard := consumerClient.shards[uint32(i)]
+					consumerClient.mu.RUnlock()
+
+					if shard != nil {
+						shard.mu.RLock()
+						offset := int64(0)
+						if shard.offsetMmap != nil {
+							offset, _ = shard.offsetMmap.Get("bulletproof-test")
+						}
+						currentEntryNumber := shard.index.CurrentEntryNumber
+						shard.mu.RUnlock()
+
+						unread := currentEntryNumber - offset
 						if unread > 0 {
 							// Try to create a consumer and read these specific messages
 							testConsumer := NewConsumer(consumerClient, ConsumerOptions{
