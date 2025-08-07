@@ -3580,7 +3580,8 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 							current := &s.index.Files[len(s.index.Files)-1]
 							current.EndOffset = s.index.CurrentWriteOffset
 							current.EndTime = time.Now()
-							current.Entries = atomic.LoadInt64(&s.lastWrittenEntryNumber) - current.StartEntry
+							// Use CurrentEntryNumber (durable entries) not lastWrittenEntryNumber (includes buffered)
+							current.Entries = s.index.CurrentEntryNumber - current.StartEntry
 						}
 					}
 				}
