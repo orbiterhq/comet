@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"slices"
@@ -492,7 +493,15 @@ func (c *Consumer) Read(ctx context.Context, shards []uint32, count int) ([]Stre
 	var messages []StreamMessage
 	remaining := count
 
-	for _, shardID := range shards {
+	// Randomly shuffle shards to ensure fair reading
+	shuffled := make([]uint32, len(shards))
+	copy(shuffled, shards)
+	for i := range shuffled {
+		j := rand.Intn(i + 1)
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	}
+
+	for _, shardID := range shuffled {
 		if remaining <= 0 {
 			break
 		}
@@ -786,15 +795,29 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 					"error", err)
 			}
 		} else {
-			shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
 			newEntries := shard.index.CurrentEntryNumber
-
-			if c.client.logger != nil && IsDebug() {
-				c.client.logger.Debug("Reloaded index after state change",
-					"shard", shard.shardID,
-					"old_entries", oldEntries,
-					"new_entries", newEntries,
-					"entries_added", newEntries-oldEntries)
+			
+			// Only update lastIndexReload if we actually loaded a non-empty index
+			// This prevents marking an empty index as "up to date" when it's not
+			if newEntries > 0 || len(shard.index.Files) > 0 {
+				shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
+				
+				if c.client.logger != nil && IsDebug() {
+					c.client.logger.Debug("Reloaded index after state change",
+						"shard", shard.shardID,
+						"old_entries", oldEntries,
+						"new_entries", newEntries,
+						"entries_added", newEntries-oldEntries,
+						"files", len(shard.index.Files),
+						"updated_lastReload", true)
+				}
+			} else {
+				if c.client.logger != nil && IsDebug() {
+					c.client.logger.Debug("Reloaded empty index, NOT updating lastIndexReload",
+						"shard", shard.shardID,
+						"currentIndexUpdate", currentIndexUpdate,
+						"keeping_lastReload", shard.lastIndexReload.UnixNano())
+				}
 			}
 		}
 		shard.mu.Unlock()
@@ -1369,8 +1392,13 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 						"error", err)
 				}
 			} else {
-				shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
 				newEntries := shard.index.CurrentEntryNumber
+				
+				// Only update lastIndexReload if we actually loaded a non-empty index
+				// This prevents marking an empty index as "up to date" when it's not
+				if newEntries > 0 || len(shard.index.Files) > 0 {
+					shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
+				}
 
 				if c.client.logger != nil && IsDebug() && newEntries > oldEntries {
 					c.client.logger.Debug("Proactively reloaded index with new entries",

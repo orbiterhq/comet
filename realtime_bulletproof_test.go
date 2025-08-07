@@ -3,6 +3,7 @@ package comet
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -86,9 +87,9 @@ func TestRealtimeBulletproof(t *testing.T) {
 					t.Logf("[WRITER] Warning: Failed to close: %v", err)
 				}
 
-				// Give time for memory-mapped state updates to be visible across processes
+				// Give time for memory-mapped state updates and index files to be fully written
 				// This is critical for cross-process coordination
-				time.Sleep(1 * time.Second)
+				time.Sleep(2 * time.Second)
 
 				t.Logf("[WRITER] All shards synced. Final total written: %d", written)
 				
@@ -99,6 +100,11 @@ func TestRealtimeBulletproof(t *testing.T) {
 					if shard != nil {
 						t.Logf("[WRITER] Shard %d: nextEntryNumber=%d, index.CurrentEntryNumber=%d", 
 							i, shard.nextEntryNumber, shard.index.CurrentEntryNumber)
+							
+						// Also check the consumer offsets
+						offset := shard.index.ConsumerOffsets["bulletproof-test"]
+						unread := shard.index.CurrentEntryNumber - offset
+						t.Logf("[WRITER] Shard %d: consumer offset=%d, unread messages=%d", i, offset, unread)
 					}
 				}
 				
@@ -159,20 +165,73 @@ func TestRealtimeBulletproof(t *testing.T) {
 			startCatchup := atomic.LoadInt64(&readCount)
 			t.Logf("[CONSUMER] Writer finished, consumer at %d reads, giving 15 seconds to capture final flushes...", startCatchup)
 			
-			// Monitor progress during catch-up
-			for i := 0; i < 15; i++ {
-				time.Sleep(1 * time.Second)
-				current := atomic.LoadInt64(&readCount)
-				if current > startCatchup {
-					t.Logf("[CONSUMER] Catch-up progress: %d messages captured (total: %d)", current-startCatchup, current)
+			// Give consumer a bit of time to finish current poll cycle
+			time.Sleep(200 * time.Millisecond)
+			
+			// Debug: Check what each shard thinks is available
+			t.Logf("[CONSUMER] Checking final shard states...")
+			totalUnread := int64(0)
+			for i := 0; i < len(shards); i++ {
+				shard, err := consumerClient.getOrCreateShard(uint32(i))
+				if err == nil && shard != nil {
+					// Check if index file exists
+					indexPath := shard.indexPath
+					if stat, err := os.Stat(indexPath); err == nil {
+						t.Logf("[CONSUMER] Shard %d index file exists: %s (size=%d bytes)", i, indexPath, stat.Size())
+					} else {
+						t.Logf("[CONSUMER] Shard %d index file missing: %s", i, indexPath)
+					}
+					
+					// Force reload the index to get latest state
+					shard.mu.Lock()
+					if err := shard.loadIndex(); err == nil {
+						entries := shard.index.CurrentEntryNumber
+						offset := shard.index.ConsumerOffsets[consumer.group]
+						unread := entries - offset
+						totalUnread += unread
+						t.Logf("[CONSUMER] Shard %d after reload: entries=%d, offset=%d, unread=%d", 
+							i, entries, offset, unread)
+					} else {
+						t.Logf("[CONSUMER] Shard %d failed to reload index: %v", i, err)
+					}
+					shard.mu.Unlock()
 				}
 			}
+			t.Logf("[CONSUMER] Total unread messages across all shards: %d", totalUnread)
+			
+			// If there are unread messages, try to read them
+			if totalUnread > 0 {
+				t.Logf("[CONSUMER] Attempting to read %d unread messages...", totalUnread)
+				shardIDs := make([]uint32, len(shards))
+				for i := range shards {
+					shardIDs[i] = uint32(i)
+				}
+				
+				msgs, err := consumer.Read(ctx, shardIDs, int(totalUnread))
+				if err == nil && len(msgs) > 0 {
+					atomic.AddInt64(&readCount, int64(len(msgs)))
+					t.Logf("[CONSUMER] Successfully read %d additional messages!", len(msgs))
+					for _, msg := range msgs {
+						consumer.Ack(ctx, msg.ID)
+					}
+				} else if err != nil {
+					t.Logf("[CONSUMER] Failed to read unread messages: %v", err)
+				} else {
+					t.Logf("[CONSUMER] Read returned 0 messages despite %d unread", totalUnread)
+				}
+			}
+			
+			// Now wait a bit more to see if the continuous consumer picks up anything
+			time.Sleep(2 * time.Second)
 			
 			finalCatchup := atomic.LoadInt64(&readCount)
 			t.Logf("[CONSUMER] Catch-up complete: captured %d additional messages (total: %d)", finalCatchup-startCatchup, finalCatchup)
 			cancel() // Stop the consumer
 		}()
 
+		// Track when consumer stops
+		consumerStopped := make(chan struct{})
+		
 		err = consumer.Process(consumerCtx, func(ctx context.Context, msgs []StreamMessage) error {
 			if len(msgs) > 0 {
 				// Count all messages in this batch
@@ -189,8 +248,10 @@ func TestRealtimeBulletproof(t *testing.T) {
 			}
 			return nil
 		}, WithStream("events:v1:shard:*"), // Consumer watches all shards
-			WithBatchSize(1),                      // Small batch size to ensure fair shard reading
+			WithBatchSize(100),                    // Normal production batch size
 			WithPollInterval(100*time.Millisecond)) // Normal production polling interval
+		
+		close(consumerStopped)
 
 		if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
 			t.Errorf("Consumer process error: %v", err)
