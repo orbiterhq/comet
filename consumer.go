@@ -925,10 +925,12 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 			// Check if this is a transient error that can occur during concurrent operations
 			errStr := err.Error()
 			if strings.Contains(errStr, "mmap coherence issue") ||
-				strings.Contains(errStr, "not found in any file") {
+				strings.Contains(errStr, "not found in any file") ||
+				strings.Contains(errStr, "file too short") {
 				// These errors can happen when:
 				// 1. Reading very recently written data (mmap coherence)
 				// 2. The reader's index is stale and doesn't know about new files yet
+				// 3. File rotation happened but data wasn't fully flushed (file too short)
 
 				// Force the reader to refresh its index from the live shard
 				if refreshErr := reader.refreshFromLiveIndex(); refreshErr == nil {
@@ -946,7 +948,8 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 				// Try once more
 				data, err = reader.ReadEntryByNumber(entryNum)
 				if err != nil && (strings.Contains(err.Error(), "mmap coherence issue") ||
-					strings.Contains(err.Error(), "not found in any file")) {
+					strings.Contains(err.Error(), "not found in any file") ||
+					strings.Contains(err.Error(), "file too short")) {
 					// Still failing - skip this entry for now
 					if IsDebug() && c.client.logger != nil {
 						c.client.logger.Debug("Skipping entry due to persistent read issue",
