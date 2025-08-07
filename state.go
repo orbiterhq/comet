@@ -113,9 +113,7 @@ type CometState struct {
 	_pad9             [80]byte // 688-767: Padding to end of cache line 11
 
 	// ======== Cache Lines 12-15 (768-1023): Global coordination ========
-	GlobalMaxShardID uint32     // 768-771: Highest shard ID across all processes
-	_pad12           [4]byte    // 772-775: Padding
-	_reserved        [248]byte  // 776-1023: Future expansion space
+	_reserved [256]byte // 776-1023: Future expansion space
 }
 
 // Compile-time checks
@@ -163,24 +161,6 @@ func (s *CometState) GetLastIndexUpdate() int64 {
 
 func (s *CometState) SetLastIndexUpdate(nanos int64) {
 	atomic.StoreInt64(&s.LastIndexUpdate, nanos)
-}
-
-// Global shard coordination methods
-func (s *CometState) GetGlobalMaxShardID() uint32 {
-	return atomic.LoadUint32(&s.GlobalMaxShardID)
-}
-
-func (s *CometState) UpdateGlobalMaxShardID(shardID uint32) {
-	for {
-		current := atomic.LoadUint32(&s.GlobalMaxShardID)
-		if shardID <= current {
-			break // Already have a higher value
-		}
-		if atomic.CompareAndSwapUint32(&s.GlobalMaxShardID, current, shardID) {
-			break // Successfully updated
-		}
-		// Retry if CAS failed
-	}
 }
 
 // WriteOffset methods

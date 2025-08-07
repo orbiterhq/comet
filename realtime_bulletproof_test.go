@@ -18,10 +18,10 @@ func TestRealtimeBulletproof(t *testing.T) {
 
 	dir := t.TempDir()
 
-	// Ultra real-time configuration - near-instant flush interval
+	// Ultra high-performance production configuration - optimized for 100% realtime  
 	cfg := DefaultCometConfig()
-	cfg.Storage.FlushInterval = 10       // 10ms flush for maximum real-time visibility  
-	cfg.Storage.CheckpointInterval = 50  // 50ms checkpoint for frequent index persistence
+	cfg.Storage.FlushInterval = 25       // 25ms flush (ultra high-performance)
+	cfg.Storage.CheckpointInterval = 100 // 100ms checkpoint (ultra high-performance)
 
 	ctx := context.Background()
 	// Use 16 different shards to test lazy loading
@@ -30,10 +30,10 @@ func TestRealtimeBulletproof(t *testing.T) {
 		shards[i] = fmt.Sprintf("events:v1:shard:%04d", i)
 	}
 
-	// Test parameters - fewer shards, more messages per shard to test if the issue is single-message shards
-	testDuration := 5 * time.Second                       // 5 seconds of writing for faster testing
-	writeInterval := 100 * time.Millisecond               // Write every 100ms (more messages)
-	expectedWrites := int64(testDuration / writeInterval) // ~50 writes
+	// Realistic production test parameters - longer duration, higher message volume
+	testDuration := 30 * time.Second                     // 30 seconds of sustained writing
+	writeInterval := 50 * time.Millisecond               // Write every 50ms (high throughput: ~20/sec)
+	expectedWrites := int64(testDuration / writeInterval) // ~600 writes
 
 	var writtenCount int64
 	var readCount int64
@@ -97,15 +97,15 @@ func TestRealtimeBulletproof(t *testing.T) {
 					continue
 				}
 
-				if count%20 == 0 {
+				if count%100 == 0 {
 					t.Logf("[WRITER] Progress: %d writes across %d shards", count, len(shards))
 				}
 			}
 		}
 	}()
 
-	// Give writer time to start and create initial data
-	time.Sleep(500 * time.Millisecond)
+	// Give writer time to start and create initial data  
+	time.Sleep(1 * time.Second)
 
 	// Consumer goroutine with proper coordination
 	wg.Add(1)
@@ -127,11 +127,11 @@ func TestRealtimeBulletproof(t *testing.T) {
 		consumerCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		
-		// Wait for writer to finish, then give consumer extra time to catch up
+		// Wait for writer to finish, then give consumer reasonable catch-up time for production scenario
 		go func() {
 			<-writerDone
-			t.Logf("[CONSUMER] Writer finished, giving consumer 4 extra seconds to catch up...")
-			time.Sleep(4 * time.Second)
+			t.Logf("[CONSUMER] Writer finished, giving consumer 10 seconds to catch up...")
+			time.Sleep(10 * time.Second)
 			t.Logf("[CONSUMER] Catch-up time expired, stopping consumer...")
 			cancel() // Stop the consumer
 		}()
@@ -144,14 +144,16 @@ func TestRealtimeBulletproof(t *testing.T) {
 
 				currentWritten := atomic.LoadInt64(&writtenCount)
 
-				// Log progress for every batch that has messages
-				t.Logf("[CONSUMER] Read batch: +%d messages, total=%d, written=%d, lag=%d",
-					batchSize, newTotal, currentWritten, currentWritten-newTotal)
+				// Log progress periodically to avoid spam  
+				if newTotal%100 == 0 || batchSize >= 10 {
+					t.Logf("[CONSUMER] Read batch: +%d messages, total=%d, written=%d, lag=%d",
+						batchSize, newTotal, currentWritten, currentWritten-newTotal)
+				}
 			}
 			return nil
 		}, WithStream("events:v1:shard:*"), // Consumer watches all 16 shards
-			WithBatchSize(5),                      // Smaller batches for lower latency
-			WithPollInterval(10*time.Millisecond)) // Very aggressive polling (10ms)
+			WithBatchSize(10),                     // Small batches for minimal latency
+			WithPollInterval(25*time.Millisecond))  // Very aggressive polling matching flush interval
 
 		if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
 			t.Errorf("Consumer process error: %v", err)
@@ -180,17 +182,16 @@ func TestRealtimeBulletproof(t *testing.T) {
 		t.Errorf("Writer underperformed: expected ~%d, got %d", expectedWrites, written)
 	}
 
-	// With proper graceful shutdown and catch-up time, we should get 100%
-	// Allow tiny margin for final flush timing
-	minExpected := written * 98 / 100 // Allow 2% for timing
-	if read < minExpected {
-		t.Errorf("Failed realtime test: read %d/%d (%.1f%%), expected >98%%",
+	// With 25ms flush intervals, we demand 100% realtime performance
+	// Every single message should be captured in realtime
+	if read < written {
+		t.Errorf("Failed 100%% realtime test: read %d/%d (%.1f%%), expected 100%%",
 			read, written, float64(read)*100/float64(written))
 	}
 
-	// Success criteria
-	if read >= minExpected {
-		t.Logf("✅ BULLETPROOF SUCCESS: %.1f%% realtime performance achieved",
-			float64(read)*100/float64(written))
+	// Success criteria - must be exactly 100%
+	if read >= written {
+		t.Logf("🎯 PERFECT 100%% REALTIME SUCCESS: %d/%d messages captured instantly",
+			read, written)
 	}
 }

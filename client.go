@@ -965,11 +965,6 @@ func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 
 	c.shards[shardID] = shard
 
-	// Update global max shard ID using shard's state file for cross-process coordination
-	if shard.state != nil {
-		shard.state.UpdateGlobalMaxShardID(shardID)
-	}
-
 	// Start periodic flush goroutine for this shard
 	shard.startPeriodicFlush(&c.config)
 
