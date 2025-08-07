@@ -390,14 +390,19 @@ func (c *Consumer) Close() error {
 			// Return index to pool after use
 			defer returnIndexToPool(indexCopy)
 
-			// Persist without holding the lock
-			shard.indexMu.Lock()
-			err := shard.saveBinaryIndex(indexCopy)
-			shard.indexMu.Unlock()
+			// TODO: Consumer should not overwrite the writer's index file!
+			// This is a temporary fix - we need to separate consumer offsets from the shard index
+			// For now, skip persisting to avoid overwriting writer's data
+			if false {
+				// Persist without holding the lock
+				shard.indexMu.Lock()
+				err := shard.saveBinaryIndex(indexCopy)
+				shard.indexMu.Unlock()
 
-			if err != nil && c.client.logger != nil {
-				c.client.logger.Warn("Failed to persist consumer offsets on close",
-					"error", err, "shard", shardID, "group", c.group)
+				if err != nil && c.client.logger != nil {
+					c.client.logger.Warn("Failed to persist consumer offsets on close",
+						"error", err, "shard", shardID, "group", c.group)
+				}
 			}
 		}
 		return true
@@ -1052,23 +1057,24 @@ func (c *Consumer) FlushACKs(ctx context.Context) error {
 	// Persist all shards that have been accessed
 	var lastErr error
 	c.shards.Range(func(key, value any) bool {
-		shardID := key.(uint32)
-		shard, err := c.client.getOrCreateShard(shardID)
-		if err != nil {
-			lastErr = err
-			return true
-		}
+		// shardID := key.(uint32)
+		// shard, err := c.client.getOrCreateShard(shardID)
+		// if err != nil {
+		// 	lastErr = err
+		// 	return true
+		// }
 
-		// Force persist the current state
-		if err := shard.persistIndex(); err != nil {
-			lastErr = err
-			if c.client.logger != nil {
-				// Only log if it's not a "directory not found" error (common in tests)
-				if !os.IsNotExist(err) && !strings.Contains(err.Error(), "no such file or directory") {
-					c.client.logger.Warn("Failed to flush consumer offsets", "shard", shardID, "error", err)
-				}
-			}
-		}
+		// TODO: Consumer should not overwrite the writer's index file!
+		// Skip persisting to avoid overwriting writer's data
+		// if err := shard.persistIndex(); err != nil {
+		// 	lastErr = err
+		// 	if c.client.logger != nil {
+		// 		// Only log if it's not a "directory not found" error (common in tests)
+		// 		if !os.IsNotExist(err) && !strings.Contains(err.Error(), "no such file or directory") {
+		// 			c.client.logger.Warn("Failed to flush consumer offsets", "shard", shardID, "error", err)
+		// 		}
+		// 	}
+		// }
 		return true
 	})
 
@@ -1144,10 +1150,11 @@ func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber 
 	}
 	c.processedMsgsMu.Unlock()
 
-	// Persist consumer offset change immediately to prevent data loss
-	if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-		c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
-	}
+	// TODO: Consumer should not overwrite the writer's index file!
+	// Skip persisting to avoid overwriting writer's data
+	// if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+	// 	c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
+	// }
 
 	return nil
 }
@@ -1205,10 +1212,11 @@ func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEn
 	shard.index.ConsumerOffsets[c.group] = newOffset
 	shard.mu.Unlock()
 
-	// Persist consumer offset change immediately to prevent data loss
-	if err := shard.persistIndex(); err != nil && c.client.logger != nil {
-		c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
-	}
+	// TODO: Consumer should not overwrite the writer's index file!
+	// Skip persisting to avoid overwriting writer's data
+	// if err := shard.persistIndex(); err != nil && c.client.logger != nil {
+	// 	c.client.logger.Warn("Failed to persist consumer offset change", "error", err)
+	// }
 
 	return nil
 }
@@ -1354,6 +1362,15 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 // refreshShardIndexes proactively checks and reloads indexes for all candidate shards
 // This ensures real-time visibility of updates from other processes
 func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
+	if c.client.logger != nil && IsDebug() {
+		c.client.logger.Debug("[REFRESH] Starting refreshShardIndexes",
+			"numShards", len(candidateShards),
+			"group", c.group)
+	}
+	
+	reloadedCount := 0
+	skippedCount := 0
+	
 	for _, shardID := range candidateShards {
 		// Get or create the shard (this may trigger on-demand creation)
 		shard, err := c.client.getOrCreateShard(shardID)
@@ -1373,13 +1390,20 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 		}
 
 		if needsReload {
+			if c.client.logger != nil && IsDebug() {
+				c.client.logger.Debug("[REFRESH] Shard needs reload",
+					"shard", shardID,
+					"currentIndexUpdate", currentIndexUpdate,
+					"lastKnownUpdate", lastKnownUpdate)
+			}
+			
 			shard.mu.Lock()
 			oldEntries := shard.index.CurrentEntryNumber
 
 			if err := shard.loadIndex(); err != nil {
 				// Log but don't fail - continue with current index
 				if c.client.logger != nil && IsDebug() {
-					c.client.logger.Debug("Failed to reload index during refresh, using cached state",
+					c.client.logger.Debug("[REFRESH] Failed to reload index during refresh, using cached state",
 						"shard", shard.shardID,
 						"error", err)
 				}
@@ -1390,10 +1414,11 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 				// This prevents marking an empty index as "up to date" when it's not
 				if newEntries > 0 || len(shard.index.Files) > 0 {
 					shard.lastIndexReload = time.Unix(0, currentIndexUpdate)
+					reloadedCount++
 				}
 
-				if c.client.logger != nil && IsDebug() && newEntries > oldEntries {
-					c.client.logger.Debug("Proactively reloaded index with new entries",
+				if c.client.logger != nil && IsDebug() {
+					c.client.logger.Debug("[REFRESH] Reloaded index",
 						"shard", shard.shardID,
 						"old_entries", oldEntries,
 						"new_entries", newEntries,
@@ -1401,6 +1426,15 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 				}
 			}
 			shard.mu.Unlock()
+		} else {
+			skippedCount++
 		}
+	}
+	
+	if c.client.logger != nil && IsDebug() && (reloadedCount > 0 || skippedCount > 0) {
+		c.client.logger.Debug("[REFRESH] Completed refreshShardIndexes",
+			"reloadedCount", reloadedCount,
+			"skippedCount", skippedCount,
+			"totalShards", len(candidateShards))
 	}
 }

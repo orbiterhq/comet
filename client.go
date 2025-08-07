@@ -1513,6 +1513,7 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 		clientMetrics.IndexPersistErrors.Add(1)
 		clientMetrics.ErrorCount.Add(1)
 	} else {
+		// LastIndexUpdate is now updated inside saveBinaryIndex
 		if clientMetrics != nil {
 			clientMetrics.CheckpointsWritten.Add(1)
 		}
@@ -1523,8 +1524,7 @@ func (s *Shard) maybeCheckpoint(clientMetrics *ClientMetrics, config *CometConfi
 			checkpointDuration := time.Since(checkpointStart).Nanoseconds()
 			atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
 
-			// CRITICAL: Update LastIndexUpdate so consumers know to reload
-			state.SetLastIndexUpdate(time.Now().UnixNano())
+			// LastIndexUpdate is now updated inside saveBinaryIndex
 		}
 	}
 }
@@ -1695,11 +1695,7 @@ func (s *Shard) rotateFile(config *CometConfig) error {
 		}
 		// Don't fail the rotation - data is safe, just index update failed
 	} else {
-		// Only update LastIndexUpdate AFTER index is persisted
-		// This ensures readers see consistent state
-		if state := s.state; state != nil {
-			state.SetLastIndexUpdate(time.Now().UnixNano())
-		}
+		// LastIndexUpdate is now updated inside saveBinaryIndex
 	}
 
 	// Track rotation time
@@ -1996,10 +1992,7 @@ func (s *Shard) openDataFileWithConfig(shardDir string) error {
 							"entries", entryCount,
 							"shard", s.shardID)
 					}
-					// Update LastIndexUpdate so readers know the index has changed
-					if state := s.state; state != nil {
-						state.SetLastIndexUpdate(time.Now().UnixNano())
-					}
+					// LastIndexUpdate will be updated when persistIndex is called
 				}
 			}
 		}
@@ -2033,6 +2026,14 @@ func (s *Shard) loadIndex() error {
 	index, err := s.loadBinaryIndexWithConfig(s.index.BoundaryInterval, int(s.index.BinaryIndex.MaxNodes))
 	if err != nil {
 		return fmt.Errorf("failed to load binary index: %w", err)
+	}
+	
+	if s.logger != nil && IsDebug() {
+		s.logger.Debug("[LOAD] Loaded index from disk",
+			"shard", s.shardID,
+			"oldCurrentEntryNumber", s.index.CurrentEntryNumber,
+			"newCurrentEntryNumber", index.CurrentEntryNumber,
+			"numFiles", len(index.Files))
 	}
 
 	// Preserve certain fields that should not be overwritten
@@ -2080,11 +2081,7 @@ func (s *Shard) persistIndex() error {
 		return fmt.Errorf("failed to persist index: %w", err)
 	}
 
-	// Update mmap timestamp to signal index change to other processes
-	if state != nil {
-		state.SetLastIndexUpdate(time.Now().UnixNano())
-		atomic.AddUint64(&state.IndexPersistCount, 1)
-	}
+	// LastIndexUpdate is now updated inside saveBinaryIndex
 
 	return nil
 }
@@ -2373,7 +2370,15 @@ func (c *Client) Close() error {
 		// This ensures buffered writes make it to the file before we close
 		shard.writeMu.Lock()
 		if shard.writer != nil {
-			shard.writer.Flush()
+			if err := shard.writer.Flush(); err != nil {
+				if c.logger != nil {
+					c.logger.Error("Failed to flush writer during close",
+						"shard", shard.shardID,
+						"error", err)
+				}
+			}
+		} else if c.logger != nil && IsDebug() {
+			c.logger.Debug("Writer is nil during close", "shard", shard.shardID)
 		}
 		shard.writeMu.Unlock()
 
@@ -2382,8 +2387,20 @@ func (c *Client) Close() error {
 		// After flushing, sync the data and update the index to make it durable
 		if shard.dataFile != nil {
 			if err := shard.dataFile.Sync(); err == nil {
+				// Check file size after sync
+				if stat, err := shard.dataFile.Stat(); err == nil && c.logger != nil && IsDebug() {
+					c.logger.Debug("File state after sync during close",
+						"shard", shard.shardID,
+						"fileSize", stat.Size(),
+						"pendingWriteOffset", shard.pendingWriteOffset)
+				}
 				// Update CurrentEntryNumber to reflect what's now durable
 				shard.index.CurrentEntryNumber = atomic.LoadInt64(&shard.lastWrittenEntryNumber)
+
+				// CRITICAL: Update CometState LastEntryNumber so other processes can see the final state
+				if shard.state != nil && shard.index.CurrentEntryNumber > 0 {
+					atomic.StoreInt64(&shard.state.LastEntryNumber, shard.index.CurrentEntryNumber - 1)
+				}
 
 				// Update file metadata to reflect actual state
 				if len(shard.index.Files) > 0 {
@@ -2423,6 +2440,11 @@ func (c *Client) Close() error {
 			if err != nil {
 				c.metrics.IndexPersistErrors.Add(1)
 				c.metrics.ErrorCount.Add(1)
+				if c.logger != nil {
+					c.logger.Error("Failed to persist index during close",
+						"shard", shard.shardID,
+						"error", err)
+				}
 			} else {
 				c.metrics.CheckpointsWritten.Add(1)
 				// Track checkpoint metrics in state
@@ -2432,8 +2454,7 @@ func (c *Client) Close() error {
 					checkpointDuration := time.Since(checkpointStart).Nanoseconds()
 					atomic.AddInt64(&state.CheckpointTimeNanos, checkpointDuration)
 
-					// CRITICAL: Update LastIndexUpdate so consumers know to reload
-					state.SetLastIndexUpdate(time.Now().UnixNano())
+					// LastIndexUpdate is now updated inside saveBinaryIndex
 				}
 			}
 		}
@@ -3328,25 +3349,56 @@ func (s *Shard) loadIndexWithRecovery() error {
 		return fmt.Errorf("failed to create shard directory: %w", err)
 	}
 
-	// First try to load normally
-	err := s.loadIndex()
-	if err == nil {
-		// Check if we need to rebuild despite successful load
-		// This handles the case where index is missing but data files exist
-		dataFiles, _ := filepath.Glob(filepath.Join(shardDir, "log-*.comet"))
-		if len(dataFiles) > 0 && len(s.index.Files) == 0 {
-			// We have data files but no index - rebuild needed
-			if s.logger != nil {
-				s.logger.Info("Index is empty but data files exist, rebuilding",
-					"shard", s.shardID,
-					"dataFiles", len(dataFiles))
+	// First check if we should try to recover
+	shouldRecover := false
+	if _, err := os.Stat(s.indexPath); os.IsNotExist(err) {
+		// Index file doesn't exist
+		// Check if state indicates there should be entries
+		if s.state != nil {
+			lastEntry := atomic.LoadInt64(&s.state.LastEntryNumber)
+			if lastEntry >= 0 {
+				// State indicates entries exist but no index file
+				shouldRecover = true
+				if s.logger != nil && IsDebug() {
+					s.logger.Debug("Index file missing but state shows entries, will recover",
+						"shard", s.shardID,
+						"lastEntry", lastEntry)
+				}
 			}
-			// Fall through to rebuild logic
-		} else {
-			return nil
 		}
-	} else if os.IsNotExist(err) {
-		// If it's just a missing file and no data files, that's OK for a new shard
+		// Also check for data files
+		dataFiles, _ := filepath.Glob(filepath.Join(shardDir, "log-*.comet"))
+		if len(dataFiles) > 0 {
+			shouldRecover = true
+		}
+	}
+	
+	// If we don't need to recover, try normal load
+	if !shouldRecover {
+		err := s.loadIndex()
+		if err == nil {
+			// Check if we need to rebuild despite successful load
+			// This handles the case where index is missing but data files exist
+			dataFiles, _ := filepath.Glob(filepath.Join(shardDir, "log-*.comet"))
+			if len(dataFiles) > 0 && len(s.index.Files) == 0 {
+				// We have data files but no index - rebuild needed
+				if s.logger != nil {
+					s.logger.Info("Index is empty but data files exist, rebuilding",
+						"shard", s.shardID,
+						"dataFiles", len(dataFiles))
+				}
+				shouldRecover = true
+			} else {
+				return nil
+			}
+		} else if !os.IsNotExist(err) {
+			// Some other error occurred
+			return err
+		}
+	}
+	
+	// If we don't need recovery and it's just a missing file with no data, that's OK
+	if !shouldRecover {
 		dataFiles, _ := filepath.Glob(filepath.Join(shardDir, "log-*.comet"))
 		if len(dataFiles) == 0 {
 			return nil
@@ -3354,11 +3406,10 @@ func (s *Shard) loadIndexWithRecovery() error {
 		// Fall through to rebuild if we have data files
 	}
 
-	// Log the error
+	// Log recovery attempt
 	if s.logger != nil {
-		s.logger.Warn("Failed to load index, attempting recovery",
-			"shard", s.shardID,
-			"error", err)
+		s.logger.Info("Attempting index recovery",
+			"shard", s.shardID)
 	}
 
 	// Track recovery attempt
@@ -3557,6 +3608,11 @@ func (s *Shard) startPeriodicFlush(config *CometConfig) {
 						s.index.CurrentEntryNumber = atomic.LoadInt64(&s.lastWrittenEntryNumber)
 
 						if state := s.state; state != nil {
+							// Update LastEntryNumber so other processes can see the new entries
+							if s.index.CurrentEntryNumber > 0 {
+								atomic.StoreInt64(&state.LastEntryNumber, s.index.CurrentEntryNumber - 1)
+							}
+							
 							syncDuration := time.Since(syncStart).Nanoseconds()
 							atomic.AddInt64(&state.SyncLatencyNanos, syncDuration)
 							atomic.AddUint64(&state.SyncCount, 1)

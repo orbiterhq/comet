@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,6 +36,13 @@ const (
 
 // saveBinaryIndex writes the index in binary format
 func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
+	if s.logger != nil && IsDebug() {
+		s.logger.Debug("[INDEX] Saving binary index",
+			"shard", s.shardID,
+			"currentEntryNumber", index.CurrentEntryNumber,
+			"numFiles", len(index.Files),
+			"indexPath", s.indexPath)
+	}
 	// Create temp file with unique name to avoid race conditions
 	// Use process ID and timestamp to ensure uniqueness
 	// Build path efficiently without fmt.Sprintf
@@ -157,7 +165,18 @@ func (s *Shard) saveBinaryIndex(index *ShardIndex) error {
 	// The index will be synced during periodic checkpoints
 
 	// Atomic rename
-	return os.Rename(tempPath, s.indexPath)
+	if err := os.Rename(tempPath, s.indexPath); err != nil {
+		return err
+	}
+
+	// Update mmap timestamp to signal index change to other processes
+	// This should be the ONLY place where LastIndexUpdate is updated
+	if s.state != nil {
+		s.state.SetLastIndexUpdate(time.Now().UnixNano())
+		atomic.AddUint64(&s.state.IndexPersistCount, 1)
+	}
+
+	return nil
 }
 
 // loadBinaryIndex reads the index from binary format with default config values.
