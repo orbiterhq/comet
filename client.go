@@ -1977,16 +1977,16 @@ func (s *Shard) openDataFileWithConfig(shardDir string) error {
 						}
 					}
 					// Update entry counters to reflect what was found on disk during recovery
-					// Data that survived a crash and can be read from disk IS durable by definition
-					newCurrentEntry := lastFile.StartEntry + entryCount
-					s.index.CurrentEntryNumber = newCurrentEntry
-					s.nextEntryNumber = newCurrentEntry
-					s.lastWrittenEntryNumber = newCurrentEntry
+					// For true crash recovery: only update file metadata, not CurrentEntryNumber
+					// CurrentEntryNumber tracks only explicitly durable state
+					s.nextEntryNumber = lastFile.StartEntry + entryCount
+					s.lastWrittenEntryNumber = lastFile.StartEntry + entryCount
+					// Note: CurrentEntryNumber is NOT updated - it reflects last known durable state
 					if s.logger != nil {
-						s.logger.Info("CRASH RECOVERY: Updated CurrentEntryNumber",
+						s.logger.Info("CRASH RECOVERY: Found extra entries on disk",
 							"shard", s.shardID,
-							"oldCurrentEntry", s.index.CurrentEntryNumber,
-							"newCurrentEntry", newCurrentEntry,
+							"currentEntryNumber", s.index.CurrentEntryNumber,
+							"nextEntryNumber", s.nextEntryNumber,
 							"startEntry", lastFile.StartEntry,
 							"entryCount", entryCount)
 					}

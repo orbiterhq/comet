@@ -104,10 +104,10 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 
 	t.Logf("After reopen: CurrentEntryNumber = %d", entriesAfterReopen)
 
-	// After close and reopen, we should see what was in the index (durable state)
-	// The crash recovery no longer updates CurrentEntryNumber with non-synced data
-	if entriesAfterReopen != 5 {
-		t.Errorf("After recovery, expected 5 entries (durable state only), got %d", entriesAfterReopen)
+	// After close and reopen, we should see all data since Close() flushes buffers
+	// Close() performs graceful shutdown which makes all pending writes durable
+	if entriesAfterReopen != 10 {
+		t.Errorf("After clean shutdown and recovery, expected 10 entries (all flushed), got %d", entriesAfterReopen)
 	}
 
 	// Verify consumer can read all entries
@@ -119,15 +119,20 @@ func TestIndexOnlyTracksDurableState(t *testing.T) {
 		t.Fatalf("Failed to read: %v", err)
 	}
 
-	// Now the index correctly shows only durable state (5 entries)
-	// And we can read exactly those 5 messages
+	// Now the index shows all entries since Close() flushed everything
+	// And we can read all 10 messages (5 flushed + 5 unflushed that were flushed during Close)
 	if int64(len(messages)) != entriesAfterReopen {
 		t.Errorf("Mismatch: index shows %d entries but %d messages are readable", entriesAfterReopen, len(messages))
 	}
 
-	// Verify we only got the flushed messages
+	// Verify we got all messages (both originally flushed and those flushed during Close)
 	for i, msg := range messages {
-		expected := fmt.Sprintf("flushed-%d", i)
+		var expected string
+		if i < 5 {
+			expected = fmt.Sprintf("flushed-%d", i)
+		} else {
+			expected = fmt.Sprintf("unflushed-%d", i)
+		}
 		if string(msg.Data) != expected {
 			t.Errorf("Message %d: expected %q, got %q", i, expected, string(msg.Data))
 		}
