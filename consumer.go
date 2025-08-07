@@ -695,12 +695,22 @@ func (c *Consumer) getOrCreateReader(shard *Shard) (*Reader, error) {
 	if value, ok := c.readers.Load(shard.shardID); ok {
 		reader := value.(*Reader)
 
-		// Reader exists - it will handle its own staleness detection and refresh
-		// Track reader cache hit
+		// Check if the cached reader is stale by comparing LastIndexUpdate
 		if shard.state != nil {
-			atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
+			currentIndexUpdate := shard.state.GetLastIndexUpdate()
+			if currentIndexUpdate > reader.lastKnownIndexUpdate {
+				// Reader is stale, remove it and create a new one
+				c.readers.Delete(shard.shardID)
+				// Fall through to create new reader
+			} else {
+				// Reader is still fresh
+				atomic.AddUint64(&shard.state.ReaderCacheHits, 1)
+				return reader, nil
+			}
+		} else {
+			// No state to check, assume reader is still valid
+			return reader, nil
 		}
-		return reader, nil
 	}
 
 	// Create new reader with current index - reader will refresh itself when stale
@@ -901,62 +911,23 @@ func (c *Consumer) readFromShard(ctx context.Context, shard *Shard, maxCount int
 		// Use the new ReadEntryByNumber method which handles position finding internally
 		data, err := reader.ReadEntryByNumber(entryNum)
 		if err != nil {
-			// With immutable cloned indexes, errors indicate either:
-			// 1. Entry doesn't exist yet (reading ahead)
-			// 2. Reader index is stale (needs fresh Reader)
-			// 3. Real file corruption issues
-
-			// For file boundary issues, invalidate the reader and retry once
-			if strings.Contains(err.Error(), "beyond file size") {
-				// Invalidate the cached reader to force a fresh one
-				c.readers.Delete(shard.shardID)
-
-				// Force index reload to get latest file info
-				shard.mu.Lock()
-				if err := shard.loadIndex(); err == nil {
-					shard.lastIndexReload = time.Now()
-				}
-				shard.mu.Unlock()
-
-				// Get a fresh reader and retry the same entry
-				reader, err = c.getOrCreateReader(shard)
-				if err != nil {
-					return nil, fmt.Errorf("failed to get fresh reader for shard %d: %w", shard.shardID, err)
-				}
-
-				// Retry reading the same entry with fresh reader
-				data, err = reader.ReadEntryByNumber(entryNum)
-				if err != nil {
-					// If still failing, check if it's a "not found" error
-					if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "stale") {
-						// Entry genuinely doesn't exist, skip it
-						c.memOffsetsMu.Lock()
-						if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
-							c.memOffsets[shard.shardID] = entryNum + 1
-						}
-						c.memOffsetsMu.Unlock()
-						continue
-					}
-					// Still failing, return the error
-					return nil, fmt.Errorf("failed to read entry %d from shard %d after retry: %w", entryNum, shard.shardID, err)
-				}
-				// Success on retry, continue with normal processing
-			} else if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "stale") {
-				// For "not found" errors, skip the entry
+			// With proactive staleness checking, most errors are real issues
+			// Only skip entries that genuinely don't exist (e.g., reading ahead of writer)
+			if strings.Contains(err.Error(), "not found in index") {
+				// Entry doesn't exist yet, skip it and try next
 				c.memOffsetsMu.Lock()
 				if currentMemOffset, exists := c.memOffsets[shard.shardID]; !exists || entryNum >= currentMemOffset {
-					c.memOffsets[shard.shardID] = entryNum + 1 // Next entry to try
+					c.memOffsets[shard.shardID] = entryNum + 1
 				}
 				c.memOffsetsMu.Unlock()
 				continue
-			} else {
-				// Other errors, track and return
-				if state := shard.state; state != nil {
-					atomic.AddUint64(&state.ReadErrors, 1)
-				}
-				return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
 			}
 
+			// Track read error
+			if state := shard.state; state != nil {
+				atomic.AddUint64(&state.ReadErrors, 1)
+			}
+			return nil, fmt.Errorf("failed to read entry %d from shard %d: %w", entryNum, shard.shardID, err)
 		}
 
 		message := StreamMessage{
