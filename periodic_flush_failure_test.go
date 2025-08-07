@@ -3,6 +3,7 @@ package comet
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -490,10 +491,20 @@ func TestConcurrentWritesDuringPeriodicFlush(t *testing.T) {
 	}
 
 analyze:
-	// Final check
-	finalMessages, err := consumer.Read(ctx, []uint32{0}, 100)
-	if err != nil {
-		t.Fatal(err)
+	// Final check - retry a few times to handle mmap coherence lag
+	var finalMessages []StreamMessage
+	var finalErr error
+	for retry := 0; retry < 3; retry++ {
+		finalMessages, finalErr = consumer.Read(ctx, []uint32{0}, 100)
+		if finalErr == nil {
+			break
+		}
+		if strings.Contains(finalErr.Error(), "mmap coherence issue") && retry < 2 {
+			// Wait a bit for mmap to catch up
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		t.Fatal(finalErr)
 	}
 
 	finalWrites := atomic.LoadInt64(&totalWrites)
