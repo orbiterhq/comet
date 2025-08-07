@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -453,6 +454,8 @@ func (r *Reader) checkAndRemapIfGrownForce(fileIndex int, mapped *MappedFile, fo
 
 			// If force is true, we need to close and reopen the file to get a fresh view
 			if force && mapped.file != nil {
+				oldSize := mapped.lastSize
+
 				// Close the old file
 				mapped.file.Close()
 
@@ -469,6 +472,18 @@ func (r *Reader) checkAndRemapIfGrownForce(fileIndex int, mapped *MappedFile, fo
 					return fmt.Errorf("failed to stat reopened file: %w", err)
 				}
 				currentSize = stat.Size()
+
+				// If the size still hasn't changed, we have a real coherence issue
+				if currentSize == oldSize && currentSize == int64(len(currentData)) {
+					// The OS is still showing the old size even with a fresh file handle
+					// This can happen due to OS-level caching. Try a small delay.
+					time.Sleep(10 * time.Millisecond)
+
+					// Check size again
+					if stat2, err := newFile.Stat(); err == nil {
+						currentSize = stat2.Size()
+					}
+				}
 			}
 
 			// Check memory limits for new mapping
@@ -621,11 +636,18 @@ func (r *Reader) readEntryFromFileData(data []byte, byteOffset int64) ([]byte, e
 	fileSize := int64(len(data))
 
 	// Check for overflow and bounds
-	if byteOffset >= fileSize || byteOffset > fileSize-headerSize {
+	if byteOffset > fileSize || byteOffset > fileSize-headerSize {
 		// This can happen when the memory-mapped view is stale even after fsync
 		// The index shows an entry exists and it's been synced to disk, but the
 		// mmap view hasn't caught up yet. This is a known OS-level race condition.
 		return nil, fmt.Errorf("offset %d beyond file size %d (mmap coherence issue)", byteOffset, fileSize)
+	}
+
+	// Special case: if offset equals file size, the entry hasn't been written yet
+	if byteOffset == fileSize {
+		// The index claims this entry exists, but it's exactly at EOF
+		// This means the entry is about to be written but isn't there yet
+		return nil, fmt.Errorf("offset %d at EOF of file size %d (mmap coherence issue)", byteOffset, fileSize)
 	}
 
 	// Read header
