@@ -532,6 +532,12 @@ func TestWriteMetrics(t *testing.T) {
 		}
 	}
 
+	// Sync to ensure index is updated
+	err = client.Sync(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
 

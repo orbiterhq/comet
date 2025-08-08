@@ -58,6 +58,7 @@ func TestStructAlignment(t *testing.T) {
 		{"StdLogger", StdLogger{}},
 		{"SlogAdapter", SlogAdapter{}},
 		{"processConfig", processConfig{}},
+		{"ShardDiagnostics", ShardDiagnostics{}},
 		// NoOpLogger is empty so no alignment concerns
 	}
 

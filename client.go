@@ -334,8 +334,33 @@ func validateConfig(cfg *CometConfig) error {
 	return nil
 }
 
+// ShardDiagnostics provides detailed diagnostics for a specific shard
+// Fields ordered for optimal memory alignment
+type ShardDiagnostics struct {
+	// 8-byte aligned fields first
+	WriteRate          float64          `json:"write_rate_per_sec"`
+	ErrorRate          float64          `json:"error_rate_per_sec"`
+	TotalEntries       int64            `json:"total_entries"`
+	TotalBytes         int64            `json:"total_bytes"`
+	FileRotateFailures int64            `json:"file_rotate_failures"`
+	ConsumerLags       map[string]int64 `json:"consumer_lags"`
+	UnhealthyReasons   []string         `json:"unhealthy_reasons,omitempty"`
+	LastError          string           `json:"last_error,omitempty"`
+
+	// Time fields (24 bytes each)
+	LastWriteTime time.Time `json:"last_write_time"`
+	LastErrorTime time.Time `json:"last_error_time,omitempty"`
+
+	// Smaller fields last
+	ShardID   uint32 `json:"shard_id"`
+	FileCount int    `json:"file_count"`
+	IsHealthy bool   `json:"is_healthy"`
+	// 3 bytes padding
+}
+
 // CometStats provides runtime statistics
 type CometStats struct {
+	// Core metrics
 	TotalEntries        int64            `json:"total_entries"`
 	TotalBytes          int64            `json:"total_bytes"`
 	TotalCompressed     int64            `json:"total_compressed"`
@@ -352,6 +377,25 @@ type CometStats struct {
 	FileCount           int              `json:"file_count"`
 	IndexSize           int64            `json:"index_size"`
 	UptimeSeconds       int64            `json:"uptime_seconds"`
+
+	// Production diagnostics (calculated on-the-fly)
+	WriteErrors       int64            `json:"write_errors"`
+	ReadErrors        int64            `json:"read_errors"`
+	TotalErrors       int64            `json:"total_errors"`
+	WritesTotal       int64            `json:"writes_total"`
+	ReadsTotal        int64            `json:"reads_total"`
+	RecoveryAttempts  int64            `json:"recovery_attempts"`
+	RecoverySuccesses int64            `json:"recovery_successes"`
+	AvgWriteLatencyNs int64            `json:"avg_write_latency_ns"`
+	GoroutineCount    int              `json:"goroutine_count"`
+	ConsumerLags      map[string]int64 `json:"consumer_lags"`
+	TotalFileBytes    int64            `json:"total_file_bytes"`
+	FailedWrites      int64            `json:"failed_writes"`
+	FailedRotations   int64            `json:"failed_rotations"`
+	SyncCount         int64            `json:"sync_count"`
+	ErrorRate         float64          `json:"error_rate_per_sec"`
+	WriteRate         float64          `json:"write_rate_per_sec"`
+	ReadRate          float64          `json:"read_rate_per_sec"`
 }
 
 // ClientMetrics tracks global client metrics
@@ -2688,6 +2732,14 @@ func (c *Client) GetStats() CometStats {
 	var maxLag uint64
 	var totalFiles uint64
 	var totalEntries int64
+	var totalFileBytes int64
+	var failedWrites int64
+	var failedRotations int64
+	var syncCount int64
+	var totalBytesState int64
+	var writeLatencySum uint64
+	var writeLatencyCount uint64
+	consumerLags := make(map[string]int64)
 
 	// Aggregate stats from all shards
 	c.mu.RLock()
@@ -2700,13 +2752,25 @@ func (c *Client) GetStats() CometStats {
 		// Sum up actual entry counts from indexes
 		totalEntries += shard.index.CurrentEntryNumber
 
-		// Calculate max lag
+		// Sum file sizes
+		for _, file := range shard.index.Files {
+			totalFileBytes += file.EndOffset - file.StartOffset
+		}
+
+		// Calculate per-consumer lags
 		for group, offset := range shard.index.ConsumerOffsets {
 			lag := shard.index.CurrentEntryNumber - offset
-			if lag > 0 && uint64(lag) > maxLag {
-				maxLag = uint64(lag)
+			if lag > 0 {
+				if uint64(lag) > maxLag {
+					maxLag = uint64(lag)
+				}
+				// Add to consumer lags map
+				if existingLag, exists := consumerLags[group]; exists {
+					consumerLags[group] = existingLag + lag
+				} else {
+					consumerLags[group] = lag
+				}
 			}
-			_ = group // avoid unused variable warning
 		}
 		shard.mu.RUnlock()
 	}
@@ -2714,9 +2778,20 @@ func (c *Client) GetStats() CometStats {
 
 	uptime := time.Since(c.startTime).Seconds()
 
-	// Calculate write throughput
+	// Get metrics from ClientMetrics
 	bytesWritten := c.metrics.BytesWritten.Load()
+	writesTotal := c.metrics.WritesTotal.Load()
+	writeErrors := c.metrics.WriteErrors.Load()
+	readErrors := c.metrics.ReadErrors.Load()
+	readsTotal := c.metrics.ReadsTotal.Load()
+	recoveryAttempts := c.metrics.RecoveryAttempts.Load()
+	recoverySuccesses := c.metrics.RecoverySuccesses.Load()
+
+	// Calculate rates
 	writeThroughput := float64(bytesWritten) / uptime / (1024 * 1024) // MB/s
+	writeRate := float64(writesTotal) / uptime
+	readRate := float64(readsTotal) / uptime
+	errorRate := float64(writeErrors+readErrors) / uptime
 
 	// Calculate compression ratio
 	compressionSaves := c.metrics.CompressionSaves.Load()
@@ -2725,7 +2800,7 @@ func (c *Client) GetStats() CometStats {
 		compressionRatio = float64(bytesWritten+compressionSaves) / float64(bytesWritten)
 	}
 
-	// Aggregate compression and rotation stats from shard states
+	// Aggregate stats from shard states
 	var totalCompressed, compressedEntries, skippedCompression, fileRotations, compressionWaitNano int64
 	c.mu.RLock()
 	for _, shard := range c.shards {
@@ -2735,11 +2810,24 @@ func (c *Client) GetStats() CometStats {
 			skippedCompression += int64(atomic.LoadUint64(&shard.state.SkippedCompression))
 			fileRotations += int64(atomic.LoadUint64(&shard.state.FileRotations))
 			compressionWaitNano += atomic.LoadInt64(&shard.state.CompressionTimeNanos)
+			failedWrites += int64(atomic.LoadUint64(&shard.state.FailedWrites))
+			failedRotations += int64(atomic.LoadUint64(&shard.state.FailedRotations))
+			syncCount += int64(atomic.LoadUint64(&shard.state.SyncCount))
+			totalBytesState += int64(atomic.LoadUint64(&shard.state.TotalBytes))
+			writeLatencySum += atomic.LoadUint64(&shard.state.WriteLatencySum)
+			writeLatencyCount += atomic.LoadUint64(&shard.state.WriteLatencyCount)
 		}
 	}
 	c.mu.RUnlock()
 
+	// Calculate average write latency
+	var avgWriteLatencyNs int64
+	if writeLatencyCount > 0 {
+		avgWriteLatencyNs = int64(writeLatencySum / writeLatencyCount)
+	}
+
 	return CometStats{
+		// Core metrics
 		TotalEntries:        totalEntries,
 		TotalBytes:          int64(bytesWritten),
 		TotalCompressed:     totalCompressed,
@@ -2747,13 +2835,147 @@ func (c *Client) GetStats() CometStats {
 		SkippedCompression:  skippedCompression,
 		FileRotations:       fileRotations,
 		CompressionWaitNano: compressionWaitNano,
+		ConsumerGroups:      len(consumerLags),
+		ConsumerOffsets:     consumerLags, // DEPRECATED: use ConsumerLags
 		WriteThroughput:     writeThroughput,
 		CompressionRatio:    compressionRatio,
 		OpenReaders:         int64(totalReaders),
 		MaxLag:              int64(maxLag),
 		FileCount:           int(totalFiles),
+		IndexSize:           0, // TODO: calculate if needed
 		UptimeSeconds:       int64(uptime),
+
+		// Production diagnostics
+		WriteErrors:       int64(writeErrors),
+		ReadErrors:        int64(readErrors),
+		TotalErrors:       int64(writeErrors + readErrors),
+		WritesTotal:       int64(writesTotal),
+		ReadsTotal:        int64(readsTotal),
+		RecoveryAttempts:  int64(recoveryAttempts),
+		RecoverySuccesses: int64(recoverySuccesses),
+		AvgWriteLatencyNs: avgWriteLatencyNs,
+		GoroutineCount:    runtime.NumGoroutine(),
+		ConsumerLags:      consumerLags,
+		TotalFileBytes:    totalFileBytes,
+		FailedWrites:      failedWrites,
+		FailedRotations:   failedRotations,
+		SyncCount:         syncCount,
+		ErrorRate:         errorRate,
+		WriteRate:         writeRate,
+		ReadRate:          readRate,
 	}
+}
+
+// GetShardDiagnostics returns detailed diagnostics for a specific shard
+func (c *Client) GetShardDiagnostics(shardID uint32) *ShardDiagnostics {
+	c.mu.RLock()
+	shard, exists := c.shards[shardID]
+	c.mu.RUnlock()
+
+	if !exists {
+		return nil
+	}
+
+	uptime := time.Since(c.startTime).Seconds()
+	diag := &ShardDiagnostics{
+		ShardID:      shardID,
+		ConsumerLags: make(map[string]int64),
+		IsHealthy:    true,
+	}
+
+	// Get shard state metrics
+	if shard.state != nil {
+		totalWrites := atomic.LoadUint64(&shard.state.TotalWrites)
+		diag.WriteRate = float64(totalWrites) / uptime
+
+		errorCount := atomic.LoadUint64(&shard.state.ErrorCount)
+		diag.ErrorRate = float64(errorCount) / uptime
+
+		lastWriteNanos := atomic.LoadInt64(&shard.state.LastWriteNanos)
+		if lastWriteNanos > 0 {
+			diag.LastWriteTime = time.Unix(0, lastWriteNanos)
+		}
+
+		lastErrorNanos := atomic.LoadInt64(&shard.state.LastErrorNanos)
+		if lastErrorNanos > 0 {
+			diag.LastErrorTime = time.Unix(0, lastErrorNanos)
+			diag.LastError = "Error details not stored" // We don't store error messages
+		}
+
+		diag.FileRotateFailures = int64(atomic.LoadUint64(&shard.state.FailedRotations))
+		diag.TotalBytes = int64(atomic.LoadUint64(&shard.state.TotalBytes))
+	}
+
+	// Get index metrics
+	shard.mu.RLock()
+	diag.TotalEntries = shard.index.CurrentEntryNumber
+	diag.FileCount = len(shard.index.Files)
+
+	// Calculate consumer lags
+	for group, offset := range shard.index.ConsumerOffsets {
+		lag := shard.index.CurrentEntryNumber - offset
+		if lag > 0 {
+			diag.ConsumerLags[group] = lag
+		}
+	}
+	shard.mu.RUnlock()
+
+	// Determine health status
+	var unhealthyReasons []string
+
+	// Check for recent write activity (if no writes in 5 minutes, might be stuck)
+	if !diag.LastWriteTime.IsZero() && time.Since(diag.LastWriteTime) > 5*time.Minute && diag.WriteRate > 0 {
+		unhealthyReasons = append(unhealthyReasons, fmt.Sprintf("No writes in %v", time.Since(diag.LastWriteTime).Round(time.Second)))
+	}
+
+	// Check error rate (more than 1 error per second is concerning)
+	if diag.ErrorRate > 1.0 {
+		unhealthyReasons = append(unhealthyReasons, fmt.Sprintf("High error rate: %.2f/sec", diag.ErrorRate))
+	}
+
+	// Check for recent errors
+	if !diag.LastErrorTime.IsZero() && time.Since(diag.LastErrorTime) < 1*time.Minute {
+		unhealthyReasons = append(unhealthyReasons, "Recent errors detected")
+	}
+
+	// Check file rotation failures
+	if diag.FileRotateFailures > 0 {
+		unhealthyReasons = append(unhealthyReasons, fmt.Sprintf("%d file rotation failures", diag.FileRotateFailures))
+	}
+
+	// Check for stuck consumers (lag > 100k entries)
+	for group, lag := range diag.ConsumerLags {
+		if lag > 100000 {
+			unhealthyReasons = append(unhealthyReasons, fmt.Sprintf("Consumer '%s' lagging by %d entries", group, lag))
+		}
+	}
+
+	if len(unhealthyReasons) > 0 {
+		diag.IsHealthy = false
+		diag.UnhealthyReasons = unhealthyReasons
+	}
+
+	return diag
+}
+
+// GetUnhealthyShards returns diagnostics for all unhealthy shards
+func (c *Client) GetUnhealthyShards() []ShardDiagnostics {
+	var unhealthy []ShardDiagnostics
+
+	c.mu.RLock()
+	shardIDs := make([]uint32, 0, len(c.shards))
+	for id := range c.shards {
+		shardIDs = append(shardIDs, id)
+	}
+	c.mu.RUnlock()
+
+	for _, shardID := range shardIDs {
+		if diag := c.GetShardDiagnostics(shardID); diag != nil && !diag.IsHealthy {
+			unhealthy = append(unhealthy, *diag)
+		}
+	}
+
+	return unhealthy
 }
 
 // Smart Sharding helper functions
