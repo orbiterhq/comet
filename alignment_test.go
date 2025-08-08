@@ -51,6 +51,14 @@ func TestStructAlignment(t *testing.T) {
 		{"ConsumerOffsetHeader", ConsumerOffsetHeader{}},
 		{"ConsumerEntry", ConsumerEntry{}},
 		{"ConsumerOffsetMmap", ConsumerOffsetMmap{}},
+		// Additional structs that were missing
+		{"CometHealth", CometHealth{}},
+		{"EntryIndexMetadata", EntryIndexMetadata{}},
+		{"LogConfig", LogConfig{}},
+		{"StdLogger", StdLogger{}},
+		{"SlogAdapter", SlogAdapter{}},
+		{"processConfig", processConfig{}},
+		// NoOpLogger is empty so no alignment concerns
 	}
 
 	for _, tt := range tests {
