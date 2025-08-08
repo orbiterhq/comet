@@ -42,6 +42,9 @@ func TestMultiProcessCometStateStats(t *testing.T) {
 		t.Fatalf("Expected 3 IDs from process1, got %d", len(ids1))
 	}
 
+	// Sync to ensure index is updated
+	client1.Sync(ctx)
+
 	// Get stats from process 1
 	stats1 := client1.GetStats()
 	t.Logf("Process 1 stats: TotalEntries=%d, TotalBytes=%d", stats1.TotalEntries, stats1.TotalBytes)
@@ -168,6 +171,9 @@ func TestCometStateDirectAccess(t *testing.T) {
 		t.Fatalf("Failed to append entries: %v", err)
 	}
 
+	// Sync to ensure index is updated
+	client1.Sync(ctx)
+
 	// Access the shard to check CometState (private access for testing)
 	shards := client1.getAllShards()
 	if len(shards) == 0 {
@@ -191,7 +197,10 @@ func TestCometStateDirectAccess(t *testing.T) {
 	}
 
 	// Check that CometState metrics match what we expect
-	totalEntries := atomic.LoadInt64(&state.TotalEntries)
+	// TotalEntries removed - check index instead
+	testShard.mu.RLock()
+	totalEntries := testShard.index.CurrentEntryNumber
+	testShard.mu.RUnlock()
 	totalBytes := atomic.LoadUint64(&state.TotalBytes)
 	lastWriteNanos := atomic.LoadInt64(&state.LastWriteNanos)
 
@@ -199,7 +208,7 @@ func TestCometStateDirectAccess(t *testing.T) {
 		totalEntries, totalBytes, lastWriteNanos)
 
 	if totalEntries <= 0 {
-		t.Errorf("CometState should track entries: got %d", totalEntries)
+		t.Errorf("CurrentEntryNumber should be > 0: got %d", totalEntries)
 	}
 
 	if totalBytes <= 0 {
@@ -244,7 +253,10 @@ func TestCometStateDirectAccess(t *testing.T) {
 	}
 
 	// Check that process 2 sees the same CometState data
-	totalEntries2 := atomic.LoadInt64(&testShard2.state.TotalEntries)
+	// TotalEntries removed - check index instead
+	testShard2.mu.RLock()
+	totalEntries2 := testShard2.index.CurrentEntryNumber
+	testShard2.mu.RUnlock()
 	totalBytes2 := atomic.LoadUint64(&testShard2.state.TotalBytes)
 
 	t.Logf("Process 2 CometState: entries=%d, bytes=%d", totalEntries2, totalBytes2)

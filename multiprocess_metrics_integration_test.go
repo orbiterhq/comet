@@ -159,7 +159,10 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 		// Check write metrics
 		t.Run("WriteMetrics", func(t *testing.T) {
 			totalWrites := atomic.LoadUint64(&state.TotalWrites)
-			totalEntries := atomic.LoadInt64(&state.TotalEntries)
+			// TotalEntries removed - check shard.index.CurrentEntryNumber instead
+			shard.mu.RLock()
+			totalEntries := shard.index.CurrentEntryNumber
+			shard.mu.RUnlock()
 			totalBytes := atomic.LoadUint64(&state.TotalBytes)
 			lastWriteNanos := atomic.LoadInt64(&state.LastWriteNanos)
 
@@ -167,7 +170,7 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 				t.Error("TotalWrites = 0, expected > 0")
 			}
 			if totalEntries == 0 {
-				t.Error("TotalEntries = 0, expected > 0")
+				t.Error("CurrentEntryNumber = 0, expected > 0")
 			}
 			if totalBytes == 0 {
 				t.Error("TotalBytes = 0, expected > 0")
@@ -327,8 +330,8 @@ func TestMultiProcessMetricsIntegration(t *testing.T) {
 				{"WriteOffset", atomic.LoadUint64(&state.WriteOffset)},
 				{"LastEntryNumber", atomic.LoadInt64(&state.LastEntryNumber)},
 				{"LastIndexUpdate", atomic.LoadInt64(&state.LastIndexUpdate)},
-				{"ActiveFileIndex", atomic.LoadUint64(&state.ActiveFileIndex)},
-				{"FileSize", atomic.LoadUint64(&state.FileSize)},
+				// ActiveFileIndex removed - not used
+				// FileSize removed - not used
 				{"LastFileSequence", atomic.LoadUint64(&state.LastFileSequence)},
 				// ... (all 70 metrics would be listed in production)
 			}

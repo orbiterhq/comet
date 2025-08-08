@@ -534,28 +534,23 @@ func TestWriteMetrics(t *testing.T) {
 
 	shard, _ := client.getOrCreateShard(0)
 	state := shard.state
-	// Get a fresh count
-	shard.mu.RLock()
-	currentEntryNumber := shard.index.CurrentEntryNumber
-	shard.mu.RUnlock()
 
 	// Check write metrics
-	totalEntries := atomic.LoadInt64(&state.TotalEntries)
+	// TotalEntries removed - check index.CurrentEntryNumber instead
 	totalBytesMetric := atomic.LoadUint64(&state.TotalBytes)
 	totalWrites := atomic.LoadUint64(&state.TotalWrites)
 	lastWriteNanos := atomic.LoadInt64(&state.LastWriteNanos)
 	writeOffset := atomic.LoadUint64(&state.WriteOffset)
 
-	// Note: TotalEntries tracks ALL entries written to the shard, not just ours
-	// So we check that it's at least numEntries
-	if totalEntries < int64(numEntries) {
-		t.Errorf("TotalEntries = %d, want >= %d", totalEntries, numEntries)
+	// Check actual entry count from index
+	shard.mu.RLock()
+	actualEntries := shard.index.CurrentEntryNumber
+	shard.mu.RUnlock()
+	if actualEntries < int64(numEntries) {
+		t.Errorf("CurrentEntryNumber = %d, want >= %d", actualEntries, numEntries)
 	}
 
-	// Verify the relationship between CurrentEntryNumber and TotalEntries
-	if currentEntryNumber != int64(totalEntries) {
-		t.Logf("Note: CurrentEntryNumber (%d) != TotalEntries (%d) - this is expected if state persists across tests", currentEntryNumber, totalEntries)
-	}
+	// CurrentEntryNumber is now our source of truth for entry count
 
 	if totalBytesMetric == 0 {
 		t.Error("TotalBytes = 0, want > 0")
@@ -574,7 +569,7 @@ func TestWriteMetrics(t *testing.T) {
 	}
 
 	t.Logf("Write metrics:")
-	t.Logf("  Total entries: %d", totalEntries)
+	t.Logf("  Current entries: %d", actualEntries)
 	t.Logf("  Total bytes: %d", totalBytesMetric)
 	t.Logf("  Total writes: %d", totalWrites)
 	t.Logf("  Write offset: %d", writeOffset)

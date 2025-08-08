@@ -111,6 +111,21 @@ func (c *Consumer) getAssignedShards(candidateShards []uint32) []uint32 {
 	return assigned
 }
 
+// getExistingShard retrieves an existing shard without creating it
+// Returns an error if the shard doesn't exist
+func (c *Consumer) getExistingShard(shardID uint32) (*Shard, error) {
+	shard := c.client.getShard(shardID)
+	if shard == nil {
+		// Try to load it from disk if it exists
+		var err error
+		shard, err = c.client.loadExistingShard(shardID)
+		if err != nil {
+			return nil, fmt.Errorf("shard %d does not exist: %w", shardID, err)
+		}
+	}
+	return shard, nil
+}
+
 // findExistingShards scans filesystem for existing shard directories
 func (c *Consumer) findExistingShards() ([]uint32, error) {
 	var shards []uint32
@@ -154,10 +169,11 @@ type processConfig struct {
 	onBatch func(size int, duration time.Duration)
 
 	// Behavior
-	batchSize    int
-	maxRetries   int
-	pollInterval time.Duration
-	retryDelay   time.Duration
+	batchSize              int
+	maxRetries             int
+	pollInterval           time.Duration
+	retryDelay             time.Duration
+	shardDiscoveryInterval time.Duration
 
 	// Sharding
 	stream        string
@@ -237,17 +253,26 @@ func WithConsumerAssignment(id, total int) ProcessOption {
 	}
 }
 
+// WithShardDiscoveryInterval sets how often to check for new shards
+// Default is 5 seconds. Set to 0 to disable periodic rediscovery.
+func WithShardDiscoveryInterval(interval time.Duration) ProcessOption {
+	return func(cfg *processConfig) {
+		cfg.shardDiscoveryInterval = interval
+	}
+}
+
 // buildProcessConfig applies options and defaults
 func buildProcessConfig(handler ProcessFunc, opts []ProcessOption) *processConfig {
 	cfg := &processConfig{
-		handler:       handler,
-		autoAck:       true,
-		batchSize:     100,
-		maxRetries:    3,
-		pollInterval:  100 * time.Millisecond,
-		retryDelay:    time.Second,
-		consumerCount: 1,
-		consumerID:    0,
+		handler:                handler,
+		autoAck:                true,
+		batchSize:              100,
+		maxRetries:             3,
+		pollInterval:           100 * time.Millisecond,
+		retryDelay:             time.Second,
+		shardDiscoveryInterval: 5 * time.Second,
+		consumerCount:          1,
+		consumerID:             0,
 	}
 
 	for _, opt := range opts {
@@ -351,7 +376,7 @@ func (c *Consumer) Close() error {
 			reader.Close()
 			// Decrement active readers count
 			shardID := key.(uint32)
-			if shard, err := c.client.getOrCreateShard(shardID); err == nil {
+			if shard, err := c.getExistingShard(shardID); err == nil {
 				if state := shard.state; state != nil {
 					atomic.AddUint64(&state.ActiveReaders, ^uint64(0)) // Decrement by 1
 				}
@@ -368,7 +393,7 @@ func (c *Consumer) Close() error {
 	// Now persist any remaining changes synchronously
 	c.shards.Range(func(key, value any) bool {
 		shardID := key.(uint32)
-		if shard, err := c.client.getOrCreateShard(shardID); err == nil {
+		if shard, err := c.getExistingShard(shardID); err == nil {
 			// Clone index while holding lock
 			shard.mu.Lock()
 
@@ -508,8 +533,8 @@ func (c *Consumer) Read(ctx context.Context, shards []uint32, count int) ([]Stre
 		// Swap the used shard to the end so we don't pick it again
 		shards[j], shards[len(shards)-1-i] = shards[len(shards)-1-i], shards[j]
 
-		// Use getOrCreateShard to ensure we can read from existing shards after restart
-		shard, err := c.client.getOrCreateShard(shardID)
+		// Get existing shard for reading
+		shard, err := c.getExistingShard(shardID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get shard %d: %w", shardID, err)
 		}
@@ -563,9 +588,11 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 
 	// Determine candidate shards to process
 	var candidateShards []uint32
+	var lastShardDiscovery time.Time
 
 	if len(cfg.shards) > 0 {
 		candidateShards = cfg.shards
+		// No discovery needed for explicit shards
 	} else if cfg.stream != "" {
 		// Auto-discover shards from stream pattern using systematic polling
 		discoveredShards, err := c.discoverShards(cfg.stream, cfg.consumerID, cfg.consumerCount)
@@ -573,6 +600,7 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 			return fmt.Errorf("failed to discover shards: %w", err)
 		}
 		candidateShards = discoveredShards
+		lastShardDiscovery = time.Now()
 	} else {
 		return fmt.Errorf("either Shards or Stream must be specified")
 	}
@@ -585,6 +613,27 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 		default:
 		}
 
+		// Check if it's time to rediscover shards (only if using stream pattern)
+		if cfg.stream != "" && cfg.shardDiscoveryInterval > 0 && time.Since(lastShardDiscovery) >= cfg.shardDiscoveryInterval {
+			newShards, err := c.discoverShards(cfg.stream, cfg.consumerID, cfg.consumerCount)
+			if err == nil {
+				if len(newShards) != len(candidateShards) {
+					oldCount := len(candidateShards)
+					candidateShards = newShards
+					lastShardDiscovery = time.Now()
+					if IsDebug() && c.client.logger != nil {
+						c.client.logger.Debug("Periodic shard rediscovery found changes",
+							"old_count", oldCount,
+							"new_count", len(candidateShards),
+							"interval", cfg.shardDiscoveryInterval)
+					}
+					// Re-run shard assignment with new candidates
+					continue
+				}
+				lastShardDiscovery = time.Now()
+			}
+		}
+
 		// Consumer group coordination: get deterministically assigned shards
 		shards := c.getAssignedShards(candidateShards)
 
@@ -594,6 +643,7 @@ func (c *Consumer) Process(ctx context.Context, handler ProcessFunc, opts ...Pro
 			if err == nil && len(newShards) > len(candidateShards) {
 				oldCount := len(candidateShards)
 				candidateShards = newShards
+				lastShardDiscovery = time.Now()
 				if IsDebug() && c.client.logger != nil {
 					c.client.logger.Debug("Systematic rediscovery found new shards",
 						"old_count", oldCount,
@@ -1055,7 +1105,7 @@ func (c *Consumer) Ack(ctx context.Context, messageIDs ...MessageID) error {
 
 		if maxEntry >= 0 {
 			// Get shard first to check durable limit
-			shard, err := c.client.getOrCreateShard(shardID)
+			shard, err := c.getExistingShard(shardID)
 			if err != nil {
 				return err
 			}
@@ -1135,7 +1185,7 @@ func (c *Consumer) Sync(ctx context.Context) error {
 
 // GetLag returns how many entries behind this consumer group is
 func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
-	shard, err := c.client.getOrCreateShard(shardID)
+	shard, err := c.getExistingShard(shardID)
 	if err != nil {
 		return 0, err
 	}
@@ -1172,7 +1222,7 @@ func (c *Consumer) GetLag(ctx context.Context, shardID uint32) (int64, error) {
 
 // ResetOffset sets the consumer offset to a specific entry number
 func (c *Consumer) ResetOffset(ctx context.Context, shardID uint32, entryNumber int64) error {
-	shard, err := c.client.getOrCreateShard(shardID)
+	shard, err := c.getExistingShard(shardID)
 	if err != nil {
 		return err
 	}
@@ -1218,7 +1268,7 @@ func (c *Consumer) AckRange(ctx context.Context, shardID uint32, fromEntry, toEn
 		return fmt.Errorf("invalid range: from %d > to %d", fromEntry, toEntry)
 	}
 
-	shard, err := c.client.getOrCreateShard(shardID)
+	shard, err := c.getExistingShard(shardID)
 	if err != nil {
 		return err
 	}
@@ -1302,7 +1352,7 @@ type StreamStats struct {
 
 // GetShardStats returns statistics for a specific shard
 func (c *Consumer) GetShardStats(ctx context.Context, shardID uint32) (*StreamStats, error) {
-	shard, err := c.client.getOrCreateShard(shardID)
+	shard, err := c.getExistingShard(shardID)
 	if err != nil {
 		return nil, err
 	}
@@ -1361,61 +1411,39 @@ func (c *Consumer) discoverShards(streamPattern string, consumerID, consumerCoun
 			"Got: %s", streamPattern)
 	}
 
-	// Adaptive discovery: start with existing shards, expand range if needed
-	var allShards []uint32
-	// First, find existing shards via filesystem scan
+	// Only discover existing shards - consumers should NEVER create shards
 	existingShards, err := c.findExistingShards()
 	if err != nil {
 		return nil, fmt.Errorf("failed to find existing shards: %w", err)
 	}
 
-	// If no existing shards, generate a small initial range for on-demand creation
 	if len(existingShards) == 0 {
-		// Start with a reasonable initial range (0-31) for on-demand shard creation
-		for shardID := uint32(0); shardID < 32; shardID++ {
-			allShards = append(allShards, shardID)
-		}
+		// No shards exist - return empty list
+		// Consumers wait for writers to create shards
 		if IsDebug() && c.client.logger != nil {
-			c.client.logger.Debug("No existing shards found, using initial range for on-demand creation",
-				"pattern", streamPattern,
-				"range", "0-31")
+			c.client.logger.Debug("No existing shards found",
+				"pattern", streamPattern)
 		}
-	} else {
-		// Use existing shards as base, but expand range to catch potential gaps
-		allShards = existingShards
-
-		// Find the max existing shard ID
-		var maxShardID uint32 = 0
-		for _, shardID := range existingShards {
-			if shardID > maxShardID {
-				maxShardID = shardID
-			}
-		}
-
-		// Add some buffer beyond max to catch new shards
-		bufferSize := uint32(16) // Add 16 more potential shards beyond the max
-		for shardID := maxShardID + 1; shardID <= maxShardID+bufferSize; shardID++ {
-			allShards = append(allShards, shardID)
-		}
-
-		if IsDebug() && c.client.logger != nil {
-			c.client.logger.Debug("Found existing shards, expanded with buffer",
-				"existing_count", len(existingShards),
-				"max_existing", maxShardID,
-				"total_range", len(allShards),
-				"buffer", bufferSize)
-		}
+		return []uint32{}, nil
 	}
 
 	// Sort shards for predictable assignment
-	slices.Sort(allShards)
+	slices.Sort(existingShards)
 
 	// Assign shards to this consumer using modulo distribution
 	var assignedShards []uint32
-	for _, shardID := range allShards {
+	for _, shardID := range existingShards {
 		if int(shardID)%consumerCount == consumerID {
 			assignedShards = append(assignedShards, shardID)
 		}
+	}
+
+	if IsDebug() && c.client.logger != nil {
+		c.client.logger.Debug("Discovered existing shards",
+			"total_shards", len(existingShards),
+			"assigned_shards", len(assignedShards),
+			"consumer_id", consumerID,
+			"consumer_count", consumerCount)
 	}
 
 	return assignedShards, nil
@@ -1434,8 +1462,8 @@ func (c *Consumer) refreshShardIndexes(candidateShards []uint32) {
 	skippedCount := 0
 
 	for _, shardID := range candidateShards {
-		// Get or create the shard (this may trigger on-demand creation)
-		shard, err := c.client.getOrCreateShard(shardID)
+		// Get existing shard
+		shard, err := c.getExistingShard(shardID)
 		if err != nil {
 			continue // Skip this shard on error
 		}

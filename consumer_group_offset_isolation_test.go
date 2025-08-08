@@ -75,7 +75,7 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	}
 
 	// Check group-A offset
-	stats1, err := consumer1.GetShardStats(ctx, 1)
+	stats1, err := consumer1.GetShardStats(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestConsumerGroupOffsetIsolation(t *testing.T) {
 	defer consumer2.Close()
 
 	// Check group-B's view of offsets before reading
-	stats2, err := consumer2.GetShardStats(ctx, 1)
+	stats2, err := consumer2.GetShardStats(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

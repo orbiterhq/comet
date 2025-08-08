@@ -914,7 +914,8 @@ func TestConsumerReadAcrossFileBoundaries(t *testing.T) {
 	}
 
 	// Verify lag is 0
-	lag, err := consumer.GetLag(ctx, 1)
+	shardID, _ := parseShardFromStream(streamName)
+	lag, err := consumer.GetLag(ctx, shardID)
 	if err != nil {
 		t.Fatalf("failed to get lag: %v", err)
 	}

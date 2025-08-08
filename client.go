@@ -793,6 +793,85 @@ func (c *Client) getShard(shardID uint32) *Shard {
 	return shard
 }
 
+// loadExistingShard loads a shard that already exists on disk without creating it
+// This is a read-only operation used by consumers - it will NOT create directories or files
+func (c *Client) loadExistingShard(shardID uint32) (*Shard, error) {
+	// Check if already loaded
+	c.mu.RLock()
+	if shard, exists := c.shards[shardID]; exists {
+		c.mu.RUnlock()
+		return shard, nil
+	}
+	c.mu.RUnlock()
+
+	// Check if shard directory exists
+	shardDir := filepath.Join(c.dataDir, fmt.Sprintf("shard-%04d", shardID))
+	if _, err := os.Stat(shardDir); os.IsNotExist(err) {
+		return nil, fmt.Errorf("shard %d does not exist on disk", shardID)
+	}
+
+	// Load the shard
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if shard, exists := c.shards[shardID]; exists {
+		return shard, nil
+	}
+
+	shard := &Shard{
+		shardID:   shardID,
+		logger:    c.logger.WithFields("shard", shardID),
+		indexPath: filepath.Join(shardDir, "index.bin"),
+		statePath: filepath.Join(shardDir, "comet.state"),
+		stopFlush: make(chan struct{}),
+		index: &ShardIndex{
+			CurrentEntryNumber: 0,
+			CurrentWriteOffset: 0,
+			BoundaryInterval:   c.config.Indexing.BoundaryInterval,
+			ConsumerOffsets:    make(map[string]int64),
+			Files:              make([]FileInfo, 0),
+			BinaryIndex: BinarySearchableIndex{
+				IndexInterval: c.config.Indexing.BoundaryInterval,
+				MaxNodes:      c.config.Indexing.MaxIndexEntries,
+				Nodes:         make([]EntryIndexNode, 0),
+			},
+		},
+		nextEntryNumber:    0,
+		pendingWriteOffset: 0,
+	}
+
+	// Load existing index
+	if err := shard.loadIndex(); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to load index for shard %d: %w", shardID, err)
+		}
+	}
+
+	// Always initialize state mmap (for both single and multi-process modes)
+	if err := shard.initCometStateMmap(); err != nil {
+		return nil, fmt.Errorf("failed to initialize state mmap: %w", err)
+	}
+
+	// Initialize consumer offset mmap
+	offsetMmap, err := NewConsumerOffsetMmap(shardDir, shardID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize consumer offset mmap: %w", err)
+	}
+	shard.offsetMmap = offsetMmap
+
+	// Add to shards map
+	c.shards[shardID] = shard
+
+	if c.logger != nil {
+		c.logger.Debug("Loaded existing shard from disk",
+			"shardID", shardID,
+			"currentEntry", shard.index.CurrentEntryNumber)
+	}
+
+	return shard, nil
+}
+
 func (c *Client) getOrCreateShard(shardID uint32) (*Shard, error) {
 	processID := os.Getpid()
 	if IsDebug() && c.logger != nil {
@@ -1365,7 +1444,6 @@ func (s *Shard) trackWriteMetrics(startTime time.Time, entries [][]byte, compres
 	// Track state metrics
 	if state := s.state; state != nil {
 		// Track write metrics
-		atomic.AddInt64(&state.TotalEntries, int64(len(entries)))
 		atomic.AddUint64(&state.TotalWrites, uint64(len(entries)))
 		atomic.StoreInt64(&state.LastWriteNanos, time.Now().UnixNano())
 
@@ -1782,10 +1860,7 @@ func (s *Shard) updateMmapState() {
 	// Update file count and file size
 	if len(s.index.Files) > 0 {
 		atomic.StoreUint64(&state.CurrentFiles, uint64(len(s.index.Files)))
-		// Update FileSize to the current file's end offset
-		currentFile := &s.index.Files[len(s.index.Files)-1]
-		atomic.StoreUint64(&state.FileSize, uint64(currentFile.EndOffset-currentFile.StartOffset))
-		atomic.StoreUint64(&state.ActiveFileIndex, uint64(len(s.index.Files)-1))
+		// FileSize and ActiveFileIndex removed - never used
 	}
 
 	// Note: LastIndexUpdate is now ONLY updated after index persistence
@@ -2612,6 +2687,7 @@ func (c *Client) GetStats() CometStats {
 	var totalReaders uint64
 	var maxLag uint64
 	var totalFiles uint64
+	var totalEntries int64
 
 	// Aggregate stats from all shards
 	c.mu.RLock()
@@ -2621,6 +2697,8 @@ func (c *Client) GetStats() CometStats {
 
 		shard.mu.RLock()
 		totalFiles += uint64(len(shard.index.Files))
+		// Sum up actual entry counts from indexes
+		totalEntries += shard.index.CurrentEntryNumber
 
 		// Calculate max lag
 		for group, offset := range shard.index.ConsumerOffsets {
@@ -2662,7 +2740,7 @@ func (c *Client) GetStats() CometStats {
 	c.mu.RUnlock()
 
 	return CometStats{
-		TotalEntries:        int64(c.metrics.WritesTotal.Load()),
+		TotalEntries:        totalEntries,
 		TotalBytes:          int64(bytesWritten),
 		TotalCompressed:     totalCompressed,
 		CompressedEntries:   compressedEntries,
@@ -2681,6 +2759,7 @@ func (c *Client) GetStats() CometStats {
 // Smart Sharding helper functions
 
 // PickShard selects a shard ID based on consistent hashing of the key
+// In multi-process mode, returns a shard owned by this process
 func (c *Client) PickShard(key string, shardCount uint32) uint32 {
 	if shardCount == 0 {
 		shardCount = 16
@@ -2691,6 +2770,15 @@ func (c *Client) PickShard(key string, shardCount uint32) uint32 {
 	for i := 0; i < len(key); i++ {
 		h ^= uint32(key[i])
 		h *= 16777619 // FNV prime
+	}
+
+	// In multi-process mode, only pick from owned shards
+	if c.config.Concurrency.IsMultiProcess() {
+		ownedShards := c.getOwnedShards(shardCount)
+		if len(ownedShards) == 0 {
+			panic("no shards owned by this process")
+		}
+		return ownedShards[h%uint32(len(ownedShards))]
 	}
 
 	return h % shardCount
@@ -2720,29 +2808,6 @@ func (c *Client) getOwnedShards(shardCount uint32) []uint32 {
 // Example: client.PickShardStream("events:v1", "user123", 256) returns "events:v1:0255"
 // In multi-process mode, this will only pick from shards owned by this client
 func (c *Client) PickShardStream(prefix string, key string, shardCount uint32) string {
-	if shardCount == 0 {
-		shardCount = 16
-	}
-
-	// In multi-process mode, only pick from owned shards
-	if c.config.Concurrency.IsMultiProcess() {
-		ownedShards := c.getOwnedShards(shardCount)
-		if len(ownedShards) == 0 {
-			panic("no shards owned by this process")
-		}
-
-		// Hash the key and pick from owned shards
-		h := uint32(2166136261) // FNV offset basis
-		for i := 0; i < len(key); i++ {
-			h ^= uint32(key[i])
-			h *= 16777619 // FNV prime
-		}
-
-		shardID := ownedShards[h%uint32(len(ownedShards))]
-		return ShardStreamName(prefix, shardID)
-	}
-
-	// Single-process mode: use regular shard picking
 	shardID := c.PickShard(key, shardCount)
 	return ShardStreamName(prefix, shardID)
 }
@@ -2779,6 +2844,9 @@ func AllShardStreams(prefix string, shardCount uint32) []string {
 
 // Default shard count for tests
 const defaultShardCount = uint32(16)
+
+// MaxShardCount is the maximum number of shards supported (0-255)
+const MaxShardCount = uint32(256)
 
 // GetShardStats returns detailed statistics for a specific shard
 func (c *Client) GetShardStats(shardID uint32) (map[string]any, error) {

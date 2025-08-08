@@ -42,20 +42,8 @@ func TestAllInternalMetrics(t *testing.T) {
 		t.Errorf("LastEntryNumber = %d, want >= 0", lastEntryNumber)
 	}
 
-	// Test ActiveFileIndex
-	activeFileIndex := atomic.LoadUint64(&shard.state.ActiveFileIndex)
-	shard.mu.RLock()
-	expectedIndex := uint64(len(shard.index.Files) - 1)
-	shard.mu.RUnlock()
-	if activeFileIndex != expectedIndex {
-		t.Logf("ActiveFileIndex = %d, expected = %d (may differ in multi-process)", activeFileIndex, expectedIndex)
-	}
-
-	// Test FileSize
-	fileSize := atomic.LoadUint64(&shard.state.FileSize)
-	if fileSize == 0 {
-		t.Error("FileSize = 0, want > 0")
-	}
+	// ActiveFileIndex and FileSize removed - never used
+	// File tracking is done through LastFileSequence and index.Files
 
 	// Test LastFileSequence
 	lastFileSeq := atomic.LoadUint64(&shard.state.LastFileSequence)
@@ -65,8 +53,7 @@ func TestAllInternalMetrics(t *testing.T) {
 	t.Logf("Internal metrics:")
 	t.Logf("  Version: %d", version)
 	t.Logf("  LastEntryNumber: %d", lastEntryNumber)
-	t.Logf("  ActiveFileIndex: %d", activeFileIndex)
-	t.Logf("  FileSize: %d", fileSize)
+	// ActiveFileIndex and FileSize removed - never used
 	t.Logf("  LastFileSequence: %d", lastFileSeq)
 }
 
@@ -379,14 +366,13 @@ func TestMetricsCompleteness(t *testing.T) {
 	state := shard.state
 	// Access ALL 66 metrics to ensure they don't panic
 	metrics := map[string]any{
-		"Version":              atomic.LoadUint64(&state.Version),
-		"WriteOffset":          atomic.LoadUint64(&state.WriteOffset),
-		"LastEntryNumber":      atomic.LoadInt64(&state.LastEntryNumber),
-		"LastIndexUpdate":      atomic.LoadInt64(&state.LastIndexUpdate),
-		"ActiveFileIndex":      atomic.LoadUint64(&state.ActiveFileIndex),
-		"FileSize":             atomic.LoadUint64(&state.FileSize),
-		"LastFileSequence":     atomic.LoadUint64(&state.LastFileSequence),
-		"TotalEntries":         atomic.LoadInt64(&state.TotalEntries),
+		"Version":         atomic.LoadUint64(&state.Version),
+		"WriteOffset":     atomic.LoadUint64(&state.WriteOffset),
+		"LastEntryNumber": atomic.LoadInt64(&state.LastEntryNumber),
+		"LastIndexUpdate": atomic.LoadInt64(&state.LastIndexUpdate),
+		// ActiveFileIndex and FileSize removed - never used
+		"LastFileSequence": atomic.LoadUint64(&state.LastFileSequence),
+		// TotalEntries removed - use index.CurrentEntryNumber instead
 		"TotalBytes":           atomic.LoadUint64(&state.TotalBytes),
 		"TotalWrites":          atomic.LoadUint64(&state.TotalWrites),
 		"LastWriteNanos":       atomic.LoadInt64(&state.LastWriteNanos),
@@ -448,9 +434,9 @@ func TestMetricsCompleteness(t *testing.T) {
 	}
 
 	// Count how many metrics we accessed
-	// Original 70 - 3 removed (BestCompression, WorstCompression, IndexSizeBytes) + 1 added (SyncCount) - 2 removed (P50, P99) = 66
-	if len(metrics) != 66 {
-		t.Errorf("Expected to access 66 metrics, got %d", len(metrics))
+	// Original 70 - 3 removed (BestCompression, WorstCompression, IndexSizeBytes) + 1 added (SyncCount) - 2 removed (P50, P99) - 3 removed (ActiveFileIndex, FileSize, TotalEntries) = 63
+	if len(metrics) != 63 {
+		t.Errorf("Expected to access 63 metrics, got %d", len(metrics))
 	}
 
 	t.Logf("Successfully accessed all %d metrics without panic", len(metrics))

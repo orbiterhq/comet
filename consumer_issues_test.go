@@ -87,7 +87,7 @@ func TestSingleProcessACKPersistence(t *testing.T) {
 	defer consumer2.Close()
 
 	// Check if ACKs were persisted
-	stats, err := consumer2.GetShardStats(ctx, 1)
+	stats, err := consumer2.GetShardStats(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

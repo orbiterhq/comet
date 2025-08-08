@@ -69,16 +69,7 @@ func TestValidateAndRecoverState(t *testing.T) {
 			},
 			expectRecover: true,
 		},
-		{
-			name: "WriteOffsetExceedsFileSize",
-			setupFunc: func() {
-				if state := shard.state; state != nil {
-					atomic.StoreUint64(&state.WriteOffset, 1000000)
-					atomic.StoreUint64(&state.FileSize, 1000)
-				}
-			},
-			expectRecover: true,
-		},
+		// WriteOffsetExceedsFileSize test removed - FileSize field no longer exists
 		{
 			name: "UnreasonablyLargeWriteOffset",
 			setupFunc: func() {
@@ -232,10 +223,7 @@ func TestRecoverCorruptedState(t *testing.T) {
 		t.Errorf("Expected WriteOffset 1234, got %d", writeOffset)
 	}
 
-	fileIndex := atomic.LoadUint64(&state.ActiveFileIndex)
-	if fileIndex != 5 {
-		t.Errorf("Expected ActiveFileIndex 5, got %d", fileIndex)
-	}
+	// ActiveFileIndex removed - file tracking done through LastFileSequence
 
 	// Check metrics were updated
 	recoverySuccesses := atomic.LoadUint64(&state.RecoverySuccesses)
@@ -406,7 +394,10 @@ func TestStateRecoveryWithMultipleProcesses(t *testing.T) {
 
 	// Store metrics before corruption
 	totalWritesBefore := atomic.LoadUint64(&shard1.state.TotalWrites)
-	totalEntriesBefore := atomic.LoadInt64(&shard1.state.TotalEntries)
+	// TotalEntries removed - use index.CurrentEntryNumber
+	shard1.mu.RLock()
+	totalEntriesBefore := shard1.index.CurrentEntryNumber
+	shard1.mu.RUnlock()
 
 	client1.Close()
 
@@ -523,7 +514,7 @@ func TestPartialStateCorruption(t *testing.T) {
 		t.Fatalf("Write after partial corruption failed: %v", err)
 	}
 
-	// Now corrupt a critical field (WriteOffset > FileSize)
+	// Now corrupt a critical field
 	shard, err := client2.getOrCreateShard(0)
 	if err != nil {
 		t.Fatal(err)
@@ -533,8 +524,7 @@ func TestPartialStateCorruption(t *testing.T) {
 	if state == nil {
 		t.Fatal("State is nil")
 	}
-	atomic.StoreUint64(&state.WriteOffset, 1<<40)
-	atomic.StoreUint64(&state.FileSize, 1000)
+	atomic.StoreUint64(&state.WriteOffset, 1<<50) // Unreasonably large value
 
 	// This should trigger recovery on next validation
 	err = shard.validateAndRecoverState()
@@ -722,20 +712,8 @@ func TestSuspiciousMetrics(t *testing.T) {
 	if state == nil {
 		t.Fatal("State is nil")
 	}
-	// Set suspicious metrics (many entries but no writes)
-	atomic.StoreInt64(&state.TotalEntries, 1000)
-	atomic.StoreUint64(&state.TotalWrites, 0)
-
-	// This should NOT trigger recovery (just suspicious, not corrupted)
-	err = shard.validateAndRecoverState()
-	if err != nil {
-		t.Errorf("Suspicious metrics should not trigger recovery: %v", err)
-	}
-
-	// Verify metrics were not reset
-	if atomic.LoadInt64(&state.TotalEntries) != 1000 {
-		t.Error("TotalEntries should not be reset for suspicious metrics")
-	}
+	// TotalEntries removed - this validation test is no longer applicable
+	// The validation now relies on index.CurrentEntryNumber which is authoritative
 }
 
 // TestRecoveryFailure tests recovery behavior with permission issues
@@ -840,14 +818,10 @@ func TestStateWithEmptyCurrentFile(t *testing.T) {
 		t.Fatalf("Recovery failed: %v", err)
 	}
 
-	// ActiveFileIndex should remain 0 when CurrentFile is empty
+	// ActiveFileIndex removed - file tracking done through LastFileSequence
 	state := shard.state
 	if state == nil {
 		t.Fatal("State is nil after recovery")
-	}
-	fileIndex := atomic.LoadUint64(&state.ActiveFileIndex)
-	if fileIndex != 0 {
-		t.Errorf("Expected ActiveFileIndex 0 for empty CurrentFile, got %d", fileIndex)
 	}
 }
 
@@ -884,13 +858,11 @@ func TestStateWithInvalidFilename(t *testing.T) {
 		t.Fatalf("Recovery failed: %v", err)
 	}
 
-	// ActiveFileIndex should remain unchanged when filename is invalid
+	// ActiveFileIndex removed - file tracking done through LastFileSequence
 	state := shard.state
 	if state == nil {
 		t.Fatal("State is nil after recovery")
 	}
-	fileIndex := atomic.LoadUint64(&state.ActiveFileIndex)
-	t.Logf("ActiveFileIndex after invalid filename: %d", fileIndex)
 }
 
 // TestCorruptedFileRecovery tests recovery from corrupted data files
@@ -1135,12 +1107,10 @@ func BenchmarkStateValidation(b *testing.B) {
 		}
 		version := atomic.LoadUint64(&state.Version)
 		writeOffset := atomic.LoadUint64(&state.WriteOffset)
-		fileSize := atomic.LoadUint64(&state.FileSize)
 		lastEntry := atomic.LoadInt64(&state.LastEntryNumber)
 
 		// Simulate validation checks
 		_ = version == 0 || version > CometStateVersion1
-		_ = writeOffset > fileSize && fileSize > 0
 		_ = writeOffset > 1<<40
 		_ = lastEntry < -1
 	}
