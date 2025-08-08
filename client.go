@@ -1984,7 +1984,8 @@ func (s *Shard) openDataFileForAppend(shardDir string) error {
 		s.logger.Debug("openDataFileForAppend: set writer", "shard", s.shardID, "writer_nil", s.writer == nil)
 	}
 
-	// Add to index
+	// Add to index - must hold main mutex for index modifications
+	s.mu.Lock()
 	s.index.Files = append(s.index.Files, FileInfo{
 		Path:        filePath,
 		StartOffset: s.index.CurrentWriteOffset,
@@ -1995,6 +1996,7 @@ func (s *Shard) openDataFileForAppend(shardDir string) error {
 		EndTime:     time.Now(),
 	})
 	s.index.CurrentFile = filePath
+	s.mu.Unlock()
 
 	if IsDebug() && s.logger != nil {
 		s.logger.Debug("openDataFileForAppend: success", "shard", s.shardID, "files", len(s.index.Files))
@@ -2054,8 +2056,10 @@ func (s *Shard) openDataFileWithConfig(shardDir string) error {
 					"shard", s.shardID)
 			}
 			// Reset write offset and create new file
+			s.mu.Lock()
 			s.index.CurrentWriteOffset = 0
 			s.index.Files = s.index.Files[:0] // Clear files list
+			s.mu.Unlock()
 			if err := s.openDataFileForAppend(shardDir); err != nil {
 				return fmt.Errorf("failed to create replacement data file: %w", err)
 			}
