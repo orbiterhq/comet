@@ -605,7 +605,7 @@ func BenchmarkConsumer_SequentialRead(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		// Reset consumer offset for each iteration
-		err := consumer.ResetOffset(ctx, 1, 0)
+		err := consumer.ResetOffset(ctx, 0, 0)
 		if err != nil {
 			b.Fatalf("failed to reset offset: %v", err)
 		}
@@ -677,7 +677,7 @@ func BenchmarkConsumer_RandomAccess(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// Seek to a random position
 		randomOffset := int64(i % 400) // Random offset within range
-		err := consumer.ResetOffset(ctx, 1, randomOffset)
+		err := consumer.ResetOffset(ctx, 0, randomOffset)
 		if err != nil {
 			b.Fatalf("failed to reset offset: %v", err)
 		}
@@ -885,7 +885,7 @@ func BenchmarkSimpleConsumerRead(b *testing.B) {
 			}
 		} else {
 			// Reset to beginning if we've consumed all
-			err = consumer.ResetOffset(ctx, 1, 0)
+			err = consumer.ResetOffset(ctx, 0, 0)
 			if err != nil {
 				b.Fatalf("failed to reset offset: %v", err)
 			}
@@ -2280,10 +2280,10 @@ func runBenchmarkWorker(b *testing.B) {
 	// In multi-process mode, each process writes to shards it owns
 	// Use multiple stream names to distribute across shards
 	streamNames := []string{
-		"bench:v1:user:0",
-		"bench:v1:user:1",
-		"bench:v1:user:2",
-		"bench:v1:user:3",
+		"bench:v1:user:0000",
+		"bench:v1:user:0001",
+		"bench:v1:user:0002",
+		"bench:v1:user:0003",
 	}
 
 	batch := make([][]byte, 100)

@@ -408,8 +408,11 @@ config.Concurrency.ProcessCount = 4    // 64 shards per process
 ```go
 // Helper functions for shard management
 stream := client.PickShardStream("events:v1", uniqueKey, 256) // One-liner
-shardID := client.PickShard(uniqueKey, 256)                   // Get shard ID (0-255)
+shardID := client.PickShard(uniqueKey, 256)                   // Get shard ID
 streamName := comet.ShardStreamName("events:v1", shardID)     // "events:v1:00FF"
+
+// In multi-process mode, PickShard returns only shards owned by this process
+// In single-process mode, returns any shard from 0 to shardCount-1
 
 // Get all shards for parallel processing
 shardIDs := comet.AllShardsRange(256)                   // [0, 1, ..., 255]

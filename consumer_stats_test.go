@@ -80,12 +80,12 @@ func TestGetShardStats(t *testing.T) {
 		t.Errorf("TotalBytes is 0 - FileCount=%d, TotalEntries=%d", stats.FileCount, stats.TotalEntries)
 	}
 
-	// Test non-existent shard - it will create the shard, not error
+	// Test non-existent shard - should return an error
 	stats2, err := consumer.GetShardStats(ctx, 999)
-	if err != nil {
-		t.Errorf("GetShardStats failed for new shard: %v", err)
+	if err == nil {
+		t.Error("GetShardStats should fail for non-existent shard")
 	}
-	if stats2.TotalEntries != 0 {
-		t.Error("New shard should have 0 entries")
+	if stats2 != nil {
+		t.Error("Stats should be nil for non-existent shard")
 	}
 }

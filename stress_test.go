@@ -140,8 +140,9 @@ func TestACKEdgeCases(t *testing.T) {
 
 func testEmptyBatchACK(t *testing.T) {
 	dir := t.TempDir()
+	config := DefaultCometConfig()
 
-	client, err := NewMultiProcessClient(dir)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,10 +338,11 @@ func testOutOfOrderACK(t *testing.T) {
 func testRapidACKUnACK(t *testing.T) {
 	// Test rapid ACK operations that could cause race conditions
 	dir := t.TempDir()
+	config := DefaultCometConfig()
 	stream := "rapid:v1:shard:0000"
 
 	// Write messages
-	client, err := NewMultiProcessClient(dir)
+	client, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +365,7 @@ func testRapidACKUnACK(t *testing.T) {
 	client.Close()
 
 	// Rapid ACK operations
-	client2, err := NewMultiProcessClient(dir)
+	client2, err := NewClient(dir, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,9 +374,12 @@ func testRapidACKUnACK(t *testing.T) {
 	consumer := NewConsumer(client2, ConsumerOptions{Group: "rapid-test"})
 	defer consumer.Close()
 
+	// Parse shard ID from stream name
+	shardID, _ := parseShardFromStream(stream)
+
 	// Read and ACK in rapid succession
 	for batch := 0; batch < 10; batch++ {
-		msgs, err := consumer.Read(context.Background(), []uint32{1}, 5)
+		msgs, err := consumer.Read(context.Background(), []uint32{shardID}, 5)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -393,7 +398,7 @@ func testRapidACKUnACK(t *testing.T) {
 	}
 
 	// Verify no messages left
-	msgs, err := consumer.Read(context.Background(), []uint32{1}, 1)
+	msgs, err := consumer.Read(context.Background(), []uint32{shardID}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

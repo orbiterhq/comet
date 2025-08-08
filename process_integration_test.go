@@ -25,7 +25,7 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 			config:      DefaultCometConfig,
 			totalMsgs:   200,
 			batchSize:   25,
-			shardNumber: 1,
+			shardNumber: 0,
 			streamName:  "integration:v1:shard:0000",
 		},
 		{
@@ -124,7 +124,7 @@ func TestProcessContinuousBatchingIntegration(t *testing.T) {
 			// Start processing
 			startTime := time.Now()
 			consumer.Process(processCtx, processFunc,
-				WithStream("integration:v1:shard:*"),
+				WithShards(tt.shardNumber),
 				WithBatchSize(tt.batchSize),
 				WithAutoAck(true),
 				WithPollInterval(50*time.Millisecond),

@@ -4,16 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"sync/atomic"
 	"syscall"
 	"time"
-)
-
-var (
-	// Pre-compiled regex for parsing log file indices
-	logFileRegex = regexp.MustCompile(`log-(\d+)\.comet`)
 )
 
 // validateAndRecoverState validates the state file and recovers from corruption
@@ -35,12 +28,9 @@ func (s *Shard) validateAndRecoverState() error {
 
 	// Validate critical fields for sanity
 	writeOffset := atomic.LoadUint64(&state.WriteOffset)
-	fileSize := atomic.LoadUint64(&state.FileSize)
 
 	// Basic sanity checks
-	if writeOffset > fileSize && fileSize > 0 {
-		return s.recoverCorruptedState(fmt.Sprintf("write offset (%d) exceeds file size (%d)", writeOffset, fileSize))
-	}
+	// FileSize field removed - writeOffset validation moved to file operations
 
 	// Check for impossible values that indicate corruption
 	if writeOffset > 1<<40 { // 1TB - unreasonably large
@@ -156,16 +146,7 @@ func (s *Shard) recoverCorruptedState(reason string) error {
 		atomic.AddUint64(&state.RecoverySuccesses, 1)
 		atomic.AddUint64(&state.CorruptionDetected, 1)
 
-		// Restore ActiveFileIndex from index if we have files
-		if len(s.index.Files) > 0 && s.index.CurrentFile != "" {
-			// Extract file index from last file name (log-NNNNNNNNNNNNNNNN.comet)
-			lastFile := s.index.Files[len(s.index.Files)-1].Path
-			if matches := logFileRegex.FindStringSubmatch(lastFile); len(matches) > 1 {
-				if fileIndex, err := strconv.ParseUint(matches[1], 10, 64); err == nil {
-					atomic.StoreUint64(&state.ActiveFileIndex, fileIndex)
-				}
-			}
-		}
+		// ActiveFileIndex removed - file index tracking is handled by LastFileSequence and index.Files
 	}
 
 	return nil

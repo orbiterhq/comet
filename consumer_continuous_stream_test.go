@@ -33,8 +33,17 @@ func TestConsumerContinuousStream(t *testing.T) {
 
 	stream := "test:v1:shard:0000"
 
+	// Write at least one message to create the shard
+	initialMsg := [][]byte{[]byte("initial-message")}
+	if _, err := client.Append(ctx, stream, initialMsg); err != nil {
+		t.Fatalf("Failed to write initial message: %v", err)
+	}
+	if err := client.Sync(ctx); err != nil {
+		t.Fatalf("Failed to sync initial message: %v", err)
+	}
+
 	// Counters for tracking
-	var messagesWritten int64
+	var messagesWritten int64 = 1 // We already wrote one
 	var messagesRead int64
 	writerErrors := make(chan error, 1)
 	readerErrors := make(chan error, 1)
@@ -50,7 +59,8 @@ func TestConsumerContinuousStream(t *testing.T) {
 				t.Logf("Writer: Stopped after writing %d messages", atomic.LoadInt64(&messagesWritten))
 				return
 			case <-ticker.C:
-				count := atomic.LoadInt64(&messagesWritten)
+				// Get count before incrementing (we start at 1 due to initial message)
+				count := atomic.LoadInt64(&messagesWritten) - 1
 				msg := fmt.Sprintf("continuous-message-%d", count)
 				entries := [][]byte{[]byte(msg)}
 
@@ -108,6 +118,11 @@ func TestConsumerContinuousStream(t *testing.T) {
 
 					// Verify message content
 					for _, msg := range messages {
+						// Skip the initial message
+						if string(msg.Data) == "initial-message" {
+							continue
+						}
+
 						expectedContent := fmt.Sprintf("continuous-message-%d", atomic.LoadInt64(&messagesRead))
 						if string(msg.Data) != expectedContent {
 							select {
@@ -120,7 +135,7 @@ func TestConsumerContinuousStream(t *testing.T) {
 						atomic.AddInt64(&messagesRead, 1)
 					}
 
-					// ACK the messages
+					// ACK all messages (including initial message)
 					messageIDs := make([]MessageID, len(messages))
 					for i, msg := range messages {
 						messageIDs[i] = msg.ID
@@ -216,8 +231,17 @@ func TestConsumerContinuousStreamWithRestart(t *testing.T) {
 
 	stream := "test:v1:shard:0000"
 
+	// Write initial message to create shard
+	initialMsg := [][]byte{[]byte("restart-test-initial")}
+	if _, err := client.Append(ctx, stream, initialMsg); err != nil {
+		t.Fatalf("Failed to write initial message: %v", err)
+	}
+	if err := client.Sync(ctx); err != nil {
+		t.Fatalf("Failed to sync initial message: %v", err)
+	}
+
 	// Start continuous writer
-	var messagesWritten int64
+	var messagesWritten int64 = 1 // Already wrote one
 	go func() {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()

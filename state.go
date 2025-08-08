@@ -22,13 +22,13 @@ type CometState struct {
 	WriteOffset      uint64  // 8-15:  Current write position in active file
 	LastEntryNumber  int64   // 16-23: Sequence counter for entry IDs
 	LastIndexUpdate  int64   // 24-31: Timestamp of last index modification
-	ActiveFileIndex  uint64  // 32-39: Current file being written to
-	FileSize         uint64  // 40-47: Current size of active file
+	_pad0b           [8]byte // 32-39: Removed ActiveFileIndex - never used
+	_pad0c           [8]byte // 40-47: Removed FileSize - never used
 	LastFileSequence uint64  // 48-55: Sequence counter for file naming
 	_pad0            [8]byte // 56-63: Padding
 
 	// ======== Cache Line 1 (64-127): Write metrics (hot path) ========
-	TotalEntries     int64   // 64-71:  Total entries written
+	_pad0a           [8]byte // 64-71:  Removed TotalEntries - use index.CurrentEntryNumber
 	TotalBytes       uint64  // 72-79:  Total uncompressed bytes
 	TotalWrites      uint64  // 80-87:  Total write operations
 	LastWriteNanos   int64   // 88-95:  Timestamp of last write
@@ -176,27 +176,8 @@ func (s *CometState) StoreWriteOffset(val uint64) {
 	atomic.StoreUint64(&s.WriteOffset, val)
 }
 
-// ActiveFileIndex methods
-func (s *CometState) GetActiveFileIndex() uint64 {
-	return atomic.LoadUint64(&s.ActiveFileIndex)
-}
-
-func (s *CometState) AddActiveFileIndex(delta uint64) uint64 {
-	return atomic.AddUint64(&s.ActiveFileIndex, delta)
-}
-
-func (s *CometState) StoreActiveFileIndex(val uint64) {
-	atomic.StoreUint64(&s.ActiveFileIndex, val)
-}
-
-// FileSize methods
-func (s *CometState) GetFileSize() uint64 {
-	return atomic.LoadUint64(&s.FileSize)
-}
-
-func (s *CometState) StoreFileSize(val uint64) {
-	atomic.StoreUint64(&s.FileSize, val)
-}
+// ActiveFileIndex methods removed - field not used
+// FileSize methods removed - field not used
 
 // LastFileSequence methods
 func (s *CometState) AddLastFileSequence(delta uint64) uint64 {
@@ -220,12 +201,6 @@ func (s *CometState) GetLastWriteNanos() int64 {
 
 func (s *CometState) StoreLastWriteNanos(val int64) {
 	atomic.StoreInt64(&s.LastWriteNanos, val)
-}
-
-// TotalEntries methods - simple atomics since processes own shards exclusively
-func (s *CometState) AddTotalEntries(delta int64) int64 {
-	// Since processes own their shards exclusively, simple atomic add is sufficient
-	return atomic.AddInt64(&s.TotalEntries, delta)
 }
 
 // TotalBytes methods - simple atomics since processes own shards exclusively
