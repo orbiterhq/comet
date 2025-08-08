@@ -122,7 +122,7 @@ func TestConsumerContinuousStream(t *testing.T) {
 						if string(msg.Data) == "initial-message" {
 							continue
 						}
-						
+
 						expectedContent := fmt.Sprintf("continuous-message-%d", atomic.LoadInt64(&messagesRead))
 						if string(msg.Data) != expectedContent {
 							select {

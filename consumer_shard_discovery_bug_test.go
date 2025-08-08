@@ -15,7 +15,7 @@ func TestConsumerShardDiscoveryBug(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 	config.Storage.FlushInterval = 50 * time.Millisecond
-	
+
 	ctx := context.Background()
 
 	// Step 1: Writer creates shards and writes data
@@ -28,7 +28,7 @@ func TestConsumerShardDiscoveryBug(t *testing.T) {
 	// Write to multiple shards
 	shardsToTest := []uint32{0, 1, 2, 3}
 	messagesPerShard := 10
-	
+
 	for _, shardID := range shardsToTest {
 		stream := fmt.Sprintf("test:v1:shard:%04d", shardID)
 		for i := 0; i < messagesPerShard; i++ {
@@ -44,7 +44,7 @@ func TestConsumerShardDiscoveryBug(t *testing.T) {
 	// Force flush to ensure data is persisted
 	writer.Sync(ctx)
 	time.Sleep(100 * time.Millisecond)
-	
+
 	// Verify data was written
 	for _, shardID := range shardsToTest {
 		stream := fmt.Sprintf("test:v1:shard:%04d", shardID)
@@ -54,7 +54,7 @@ func TestConsumerShardDiscoveryBug(t *testing.T) {
 		}
 		t.Logf("  Verified shard %d has %d entries", shardID, length)
 	}
-	
+
 	writer.Close()
 
 	// Step 2: Create a fresh reader client (simulating a restart)
@@ -103,7 +103,7 @@ func TestConsumerShardDiscoveryBug(t *testing.T) {
 
 	// Step 4: Diagnose the issue
 	t.Log("\nStep 4: Diagnosing the issue...")
-	
+
 	// Check what shards are loaded in the reader client
 	reader.mu.RLock()
 	loadedShards := make([]uint32, 0, len(reader.shards))
@@ -125,9 +125,9 @@ func TestConsumerShardDiscoveryBug(t *testing.T) {
 
 	// Final verdict
 	expectedMessages := len(shardsToTest) * messagesPerShard
-	t.Logf("\nFinal result: Read %d/%d messages (%.1f%%)", 
+	t.Logf("\nFinal result: Read %d/%d messages (%.1f%%)",
 		totalRead, expectedMessages, float64(totalRead)/float64(expectedMessages)*100)
-	
+
 	if totalRead == 0 {
 		t.Error("BUG REPRODUCED: Consumer couldn't read any messages from existing shards!")
 		t.Log("\nRoot cause: Consumer discovers shard directories on disk but can't access them")
@@ -139,13 +139,13 @@ func TestConsumerShardDiscoveryBug(t *testing.T) {
 	}
 }
 
-// TestConsumerShardDiscoveryWithLenWorkaround shows that calling Len() 
+// TestConsumerShardDiscoveryWithLenWorkaround shows that calling Len()
 // loads the shard, working around the bug
 func TestConsumerShardDiscoveryWithLenWorkaround(t *testing.T) {
 	dir := t.TempDir()
 	config := DefaultCometConfig()
 	config.Storage.FlushInterval = 50 * time.Millisecond
-	
+
 	ctx := context.Background()
 
 	// Step 1: Writer creates shards and writes data
@@ -181,7 +181,7 @@ func TestConsumerShardDiscoveryWithLenWorkaround(t *testing.T) {
 	consumer1 := NewConsumer(reader, ConsumerOptions{
 		Group: "test-consumer-1",
 	})
-	
+
 	messages, _ := consumer1.Read(ctx, []uint32{0}, 100)
 	t.Logf("  Without workaround: Read %d messages", len(messages))
 	consumer1.Close()
@@ -200,7 +200,7 @@ func TestConsumerShardDiscoveryWithLenWorkaround(t *testing.T) {
 		Group: "test-consumer-2",
 	})
 	defer consumer2.Close()
-	
+
 	messages, _ = consumer2.Read(ctx, []uint32{0}, 100)
 	t.Logf("  With workaround: Read %d messages", len(messages))
 
