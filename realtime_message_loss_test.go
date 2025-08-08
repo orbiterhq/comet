@@ -58,7 +58,7 @@ func TestRealtimeMessageLoss(t *testing.T) {
 	consumerDone := make(chan struct{})
 	go func() {
 		defer close(consumerDone)
-		
+
 		for {
 			select {
 			case <-ctx.Done():
