@@ -55,13 +55,10 @@ func TestRealtimeMessageLoss(t *testing.T) {
 
 	// Start consumer BEFORE any writes
 	consumerErrors := make(chan error, 100)
+	consumerDone := make(chan struct{})
 	go func() {
-		// Pre-specify shards we expect (0-255 like your setup)
-		shardIDs := make([]uint32, 256)
-		for i := range shardIDs {
-			shardIDs[i] = uint32(i)
-		}
-
+		defer close(consumerDone)
+		
 		for {
 			select {
 			case <-ctx.Done():
@@ -69,10 +66,31 @@ func TestRealtimeMessageLoss(t *testing.T) {
 			default:
 			}
 
-			// Read from all shards
+			// Discover existing shards dynamically
+			shardIDs, err := consumer.discoverShards("events:v1:shard:*", 0, 1)
+			if err != nil {
+				select {
+				case consumerErrors <- fmt.Errorf("discovering shards: %w", err):
+				case <-ctx.Done():
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+
+			if len(shardIDs) == 0 {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+
+			// Read from discovered shards
 			msgs, err := consumer.Read(ctx, shardIDs, 100)
 			if err != nil {
-				consumerErrors <- err
+				select {
+				case consumerErrors <- err:
+				case <-ctx.Done():
+					return
+				}
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
@@ -268,6 +286,9 @@ func TestRealtimeMessageLoss(t *testing.T) {
 		t.Logf("  Average: %v", avg)
 		t.Logf("  Maximum: %v", max)
 	}
+
+	// Wait for consumer to finish
+	<-consumerDone
 
 	// Check for consumer errors
 	close(consumerErrors)
